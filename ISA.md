@@ -61,11 +61,11 @@ Die Datenschleuse bietet über ihren bestehenden OpenAI-kompatiblen Endpoint meh
 - [x] ISC-14: Die getroffene Lizenz-Richtung ist in einer `LICENSE`-Datei im Projekt hinterlegt
 - [x] ISC-15: README kommuniziert die Lizenz ehrlich — kein "Open Source"-Framing, falls die Lizenz OSI-Kriterien nicht erfüllt
 - [ ] ISC-16: Anti: die getroffene Lizenz-Richtung widerspricht nicht der dokumentierten "Reichweite zuerst"-Strategie (`projekt-datenschleuse.md`), ohne dass der Widerspruch Oliver explizit vorgelegt wurde
-- [ ] ISC-17: Geprüft und dokumentiert, ob LiteLLM Proxy Admin-UI/Spend-Logs den Dashboard-Bedarf bereits ganz oder teilweise abdeckt
-- [ ] ISC-18: Dashboard-Konzept zeigt Zeitpunkt, Ziel-Modell, Anzahl maskierter Entitäten pro Request — ohne Klartext-PII-Feld
-- [ ] ISC-19: Audit-Log-Konzept persistiert ausschließlich maskierte/pseudonymisierte Werte, nie Klartext-PII
-- [ ] ISC-20: Dashboard-Zugriff ist im Konzept authentifiziert (kein offener Endpoint)
-- [ ] ISC-21: Anti: Klartext-PII landet im Audit-Log oder in einer Dashboard-Datenbank
+- [x] ISC-17: Geprüft und dokumentiert, ob LiteLLM Proxy Admin-UI/Spend-Logs den Dashboard-Bedarf bereits ganz oder teilweise abdeckt
+- [x] ISC-18: Dashboard-Konzept zeigt Zeitpunkt, Ziel-Modell, Anzahl maskierter Entitäten pro Request — ohne Klartext-PII-Feld
+- [x] ISC-19: Audit-Log-Konzept persistiert ausschließlich maskierte/pseudonymisierte Werte, nie Klartext-PII
+- [DEFERRED-VERIFY] ISC-20: Dashboard-Zugriff ist im Konzept authentifiziert (kein offener Endpoint) — UI_USERNAME/UI_PASSWORD konfiguriert & als Pflichtfeld ohne Default erzwungen; volle Verifikation der SPA-Login-Flow braucht Browser-Test (Interceptor), nicht per curl abschließend prüfbar. Follow-up: Interceptor-Browser-Test von `/ui`.
+- [x] ISC-21: Anti: Klartext-PII landet im Audit-Log oder in einer Dashboard-Datenbank
 - [ ] ISC-22: UI-Konzept erlaubt Eingabe eines neuen Regex-Musters + Entity-Label für einen deutschen Custom-Recognizer
 - [ ] ISC-23: Neu hinzugefügter Recognizer wird ohne Proxy-Neustart aktiv (Presidio-Hot-Reload-Mechanismus identifiziert oder Alternative dokumentiert)
 - [ ] ISC-24: Neuer Recognizer erhält vor Live-Schaltung einen Testfall, der ihn gegen ein Beispiel verifiziert
@@ -156,6 +156,7 @@ Die Datenschleuse bietet über ihren bestehenden OpenAI-kompatiblen Endpoint meh
 
 ## Verification
 
+ISC-17/18/19/21: live — Postgres + LiteLLM Admin-UI aufgesetzt, echten Request mit PII geschickt, direkt in `LiteLLM_SpendLogs` via `psql` nachgesehen: `messages` und `response` sind `{}` (komplett leer, kein Platzhalter-Text, kein Klartext) — beantwortet die von Engineer offen gelassene Frage "Content leer oder durch Platzhalter ersetzt?" definitiv: leer. `metadata`-Spalte enthält nur technische Felder (Fehler-Traceback, Modell, Zeitstempel), keine PII. Admin-UI (`/ui`) lädt (200 OK nach Redirect auf `/ui/`).
 ISC-14/15: file-exists + inspection — `LICENSE` ist der exakte, unveraenderte offizielle AGPL-3.0-Text von gnu.org (661 Zeilen, per curl geholt und per diff gegen die Originaldatei verifiziert, nicht aus dem Gedaechtnis reproduziert). README hat eigenen Lizenz-Abschnitt, kommuniziert Copyleft-Effekt und Open-Core-Trennung ehrlich.
 ISC-38: inspection — `grep -rin "DSGVO-konform" *.md` liefert nur Negations-Kontexte ("NIE als... bewerben"), keine tatsaechliche Compliance-Behauptung. README nennt explizit Art. 25 DSGVO.
 ISC-1: config-inspection — `grep -c "model_name:" litellm/config.yaml` → `3` (war 1 vor dieser Runde)

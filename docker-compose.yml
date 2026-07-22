@@ -23,10 +23,41 @@ services:
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+      # Postgres treibt das eingebaute LiteLLM Admin-UI (/ui) + Spend-Logs an
+      # (ISC-17/18) -- Zeitpunkt/Modell/Kosten/Guardrail-Ergebnisse OHNE
+      # Message-Content (turn_off_message_logging, siehe litellm/config.yaml).
+      - DATABASE_URL=postgresql://${DATENSCHLEUSE_DB_USER:-datenschleuse}:${DATENSCHLEUSE_DB_PASSWORD:-datenschleuse}@datenschleuse-db:5432/${DATENSCHLEUSE_DB_NAME:-datenschleuse}
+      # Admin-UI Basic-Auth (ISC-20) -- ohne Werte bleibt /ui in der
+      # aktuellen LiteLLM-Version unauthentifiziert erreichbar, siehe README.
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss in .env gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
     depends_on:
-      - presidio-analyzer
-      - presidio-anonymizer
+      presidio-analyzer:
+        condition: service_started
+      presidio-anonymizer:
+        condition: service_started
+      datenschleuse-db:
+        condition: service_healthy
+    networks:
+      - datenschleuse-net
+
+  # 1b. Postgres fuer das LiteLLM Admin-UI (Spend-Logs, Guardrail-Metadaten,
+  # NIE Message-Content -- siehe turn_off_message_logging in config.yaml).
+  datenschleuse-db:
+    image: postgres:16-alpine
+    container_name: datenschleuse-db
+    environment:
+      - POSTGRES_USER=${DATENSCHLEUSE_DB_USER:-datenschleuse}
+      - POSTGRES_PASSWORD=${DATENSCHLEUSE_DB_PASSWORD:-datenschleuse}
+      - POSTGRES_DB=${DATENSCHLEUSE_DB_NAME:-datenschleuse}
+    volumes:
+      - datenschleuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATENSCHLEUSE_DB_USER:-datenschleuse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - datenschleuse-net
 
@@ -69,3 +100,6 @@ services:
 networks:
   datenschleuse-net:
     driver: bridge
+
+volumes:
+  datenschleuse-db-data:
