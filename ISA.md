@@ -58,8 +58,8 @@ Die Datenschleuse bietet über ihren bestehenden OpenAI-kompatiblen Endpoint meh
 - [ ] ISC-11: Eine One-Liner-Deploy-Doku existiert im Stil des Coolify-Hardening-Repos
 - [ ] ISC-12: Anti: kein Secret ist im Template oder Compose-File im Klartext eingetragen
 - [ ] ISC-13: Lizenz-Richtungsentscheidung (Open-Core vs. vollständig restriktiv) ist mit Oliver getroffen und in `## Decisions` protokolliert
-- [ ] ISC-14: Die getroffene Lizenz-Richtung ist in einer `LICENSE`-Datei im Projekt hinterlegt
-- [ ] ISC-15: README kommuniziert die Lizenz ehrlich — kein "Open Source"-Framing, falls die Lizenz OSI-Kriterien nicht erfüllt
+- [x] ISC-14: Die getroffene Lizenz-Richtung ist in einer `LICENSE`-Datei im Projekt hinterlegt
+- [x] ISC-15: README kommuniziert die Lizenz ehrlich — kein "Open Source"-Framing, falls die Lizenz OSI-Kriterien nicht erfüllt
 - [ ] ISC-16: Anti: die getroffene Lizenz-Richtung widerspricht nicht der dokumentierten "Reichweite zuerst"-Strategie (`projekt-datenschleuse.md`), ohne dass der Widerspruch Oliver explizit vorgelegt wurde
 - [ ] ISC-17: Geprüft und dokumentiert, ob LiteLLM Proxy Admin-UI/Spend-Logs den Dashboard-Bedarf bereits ganz oder teilweise abdeckt
 - [ ] ISC-18: Dashboard-Konzept zeigt Zeitpunkt, Ziel-Modell, Anzahl maskierter Entitäten pro Request — ohne Klartext-PII-Feld
@@ -82,7 +82,7 @@ Die Datenschleuse bietet über ihren bestehenden OpenAI-kompatiblen Endpoint meh
 - [x] ISC-35: Ein gemessenes Recall/Precision-Ziel für deutsche PII-Erkennung existiert, gegen einen deutschen Testkorpus verifiziert, bevor v1 als "fertig" gilt
 - [ ] ISC-36: Self-Learning-Filter-Design verifiziert: keine Rohdaten-Speicherung/kein Training auf PII-Inhalten — nur Muster (Regex/Label), die Oliver manuell einträgt
 - [ ] ISC-37: Fail-Policy bei Proxy-Ausfall ist explizit entschieden und dokumentiert (fail-closed = kein LLM-Zugriff bei Störung, bewusster Trade-off gegen fail-open = Leck-Risiko)
-- [ ] ISC-38: Anti: Datenschleuse wird nicht als "DSGVO-Compliance-Lösung" beworben, sondern als technische Maßnahme nach Art. 25 DSGVO
+- [x] ISC-38: Anti: Datenschleuse wird nicht als "DSGVO-Compliance-Lösung" beworben, sondern als technische Maßnahme nach Art. 25 DSGVO
 
 ## Test Strategy
 
@@ -156,6 +156,8 @@ Die Datenschleuse bietet über ihren bestehenden OpenAI-kompatiblen Endpoint meh
 
 ## Verification
 
+ISC-14/15: file-exists + inspection — `LICENSE` ist der exakte, unveraenderte offizielle AGPL-3.0-Text von gnu.org (661 Zeilen, per curl geholt und per diff gegen die Originaldatei verifiziert, nicht aus dem Gedaechtnis reproduziert). README hat eigenen Lizenz-Abschnitt, kommuniziert Copyleft-Effekt und Open-Core-Trennung ehrlich.
+ISC-38: inspection — `grep -rin "DSGVO-konform" *.md` liefert nur Negations-Kontexte ("NIE als... bewerben"), keine tatsaechliche Compliance-Behauptung. README nennt explizit Art. 25 DSGVO.
 ISC-1: config-inspection — `grep -c "model_name:" litellm/config.yaml` → `3` (war 1 vor dieser Runde)
 ISC-35: benchmark — `python3 test/corpus-benchmark.py` gegen echten Presidio-Analyzer-Container → Recall 100.0%, Precision 100.0% über 26 must_detect-Entitäten, 0 FP aus Negativ-Fällen. Ergebnis: `test/corpus/benchmark-results.json`. Ziel (≥95%/≥90%) übertroffen.
 - 2026-07-22 (FirstPrinciples/Challenge): "Kompletter Non-Commercial-Lizenzwechsel" als unvalidated assumption entlarvt — widerspricht der eigenen Reichweite-Strategie. Empfehlung: Open-Core — Proxy-Kern (LiteLLM+Presidio+DE-Recognizer) bleibt permissiv für Reichweite, Portal/Dashboard wird separat lizenziert oder direkt als gehosteter Dienst angeboten (dann keine Lizenzfrage nötig). Freigabe steht noch aus (ISC-13).
