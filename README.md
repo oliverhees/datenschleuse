@@ -63,6 +63,15 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
                  eurouter.ai (EU)  ──►  Antwort  ──►  Re-Identification lokal  ──►  Dein Tool
 ```
 
+## ⚖️ Fail-Policy: Verfügbarkeit vs. Datenschutz (bewusste Entscheidung)
+
+Die Datenschleuse sitzt inline im Anfrageweg. Fällt Presidio aus, hat das zwei mögliche Verhalten:
+
+- **Fail-closed (so implementiert):** Die Anfrage wird geblockt. Du bekommst gar keine Antwort, statt einer unmaskierten. **Konsequenz:** Ist Presidio down, kannst du über die Datenschleuse gar keine KI-Anfragen mehr stellen — sie wird zum Single Point of Failure für deinen gesamten KI-Zugriff.
+- **Fail-open (bewusst NICHT implementiert):** Bei Presidio-Ausfall würde die Anfrage unmaskiert durchgereicht. Mehr Verfügbarkeit, aber genau in dem Moment, wo der Schutz am nötigsten wäre (Störung), fällt er weg — für ein Privacy-Tool ein inakzeptabler Trade-off.
+
+Wir wählen **fail-closed**, weil ein verlorener Request ärgerlich, aber ein PII-Leck nicht rückgängig zu machen ist. Wenn dir das für deinen Anwendungsfall zu strikt ist (z. B. unkritische interne Tests), kannst du das im Custom-Guardrail-Code (`litellm/datenschleuse_guardrail.py`, `_analyze()`) anpassen — aber das ist eine bewusste Abweichung vom Standard, keine Konfigurationsoption.
+
 ## 🇩🇪 Was erkannt wird
 
 Standard (über Presidio, deutsch): Namen, Orte, E-Mail, Telefon, Kreditkarte, IBAN, IP-Adresse.

@@ -81,7 +81,7 @@ Die Datenschleuse bietet über ihren bestehenden OpenAI-kompatiblen Endpoint meh
 - [ ] ISC-34: Streaming-sichere Re-Identification hat einen dokumentierten Lösungsansatz (Platzhalter-Buffering über SSE-Chunk-Grenzen) und ist als v1-Gate markiert, nicht als Detail
 - [x] ISC-35: Ein gemessenes Recall/Precision-Ziel für deutsche PII-Erkennung existiert, gegen einen deutschen Testkorpus verifiziert, bevor v1 als "fertig" gilt
 - [ ] ISC-36: Self-Learning-Filter-Design verifiziert: keine Rohdaten-Speicherung/kein Training auf PII-Inhalten — nur Muster (Regex/Label), die Oliver manuell einträgt
-- [ ] ISC-37: Fail-Policy bei Proxy-Ausfall ist explizit entschieden und dokumentiert (fail-closed = kein LLM-Zugriff bei Störung, bewusster Trade-off gegen fail-open = Leck-Risiko)
+- [x] ISC-37: Fail-Policy bei Proxy-Ausfall ist explizit entschieden und dokumentiert (fail-closed = kein LLM-Zugriff bei Störung, bewusster Trade-off gegen fail-open = Leck-Risiko)
 - [x] ISC-38: Anti: Datenschleuse wird nicht als "DSGVO-Compliance-Lösung" beworben, sondern als technische Maßnahme nach Art. 25 DSGVO
 
 ## Test Strategy
