@@ -1,0 +1,235 @@
+{
+  "timestamp_utc": "2026-07-22T08:19:08.196545+00:00",
+  "presidio_url": "http://localhost:5001",
+  "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/test/corpus/de-pii-testkorpus.yaml",
+  "case_count": 25,
+  "overlap_min_ratio": 0.5,
+  "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
+  "must_detect": {
+    "overall": {
+      "tp": 26,
+      "fn": 0,
+      "fp": 0,
+      "support": 26,
+      "recall": 1.0,
+      "precision": 1.0
+    },
+    "by_type": {
+      "CREDIT_CARD": {
+        "tp": 1,
+        "fn": 0,
+        "fp": 0,
+        "support": 1,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "DE_HANDELSREGISTER": {
+        "tp": 2,
+        "fn": 0,
+        "fp": 0,
+        "support": 2,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "DE_KFZ_KENNZEICHEN": {
+        "tp": 2,
+        "fn": 0,
+        "fp": 0,
+        "support": 2,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "DE_SOZIALVERSICHERUNG": {
+        "tp": 1,
+        "fn": 0,
+        "fp": 0,
+        "support": 1,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "DE_STEUER_ID": {
+        "tp": 3,
+        "fn": 0,
+        "fp": 0,
+        "support": 3,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "EMAIL_ADDRESS": {
+        "tp": 3,
+        "fn": 0,
+        "fp": 0,
+        "support": 3,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "IBAN_CODE": {
+        "tp": 2,
+        "fn": 0,
+        "fp": 0,
+        "support": 2,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "IP_ADDRESS": {
+        "tp": 1,
+        "fn": 0,
+        "fp": 0,
+        "support": 1,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "LOCATION": {
+        "tp": 4,
+        "fn": 0,
+        "fp": 0,
+        "support": 4,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "PERSON": {
+        "tp": 5,
+        "fn": 0,
+        "fp": 0,
+        "support": 5,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "PHONE_NUMBER": {
+        "tp": 2,
+        "fn": 0,
+        "fp": 0,
+        "support": 2,
+        "recall": 1.0,
+        "precision": 1.0
+      }
+    }
+  },
+  "known_gap": {
+    "overall": {
+      "tp": 0,
+      "fn": 2,
+      "fp": 0,
+      "support": 2,
+      "recall": 0.0,
+      "precision": null
+    },
+    "by_type": {
+      "QUASI_IDENTIFIER_COMBO": {
+        "tp": 0,
+        "fn": 2,
+        "fp": 0,
+        "support": 2,
+        "recall": 0.0,
+        "precision": null
+      }
+    },
+    "detail": [
+      {
+        "case_id": "quasi-001-alter-geschlecht-beruf-ort",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "42, männlich, arbeitet als Ingenieur in Weimar",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "quasi-002-position-firma-ort",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Leiterin der Qualitätssicherung bei einem der drei großen Automobilzulieferer in Bamberg",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      }
+    ]
+  },
+  "negative_cases": {
+    "false_positives_total": 0,
+    "false_positives_by_type": {}
+  },
+  "positive_case_unmatched_detections": [
+    {
+      "case_id": "email-001-standard",
+      "entity_type": "ORGANIZATION",
+      "start": 30,
+      "end": 67,
+      "score": 0.85
+    },
+    {
+      "case_id": "location-001-adresse",
+      "entity_type": "LOCATION",
+      "start": 41,
+      "end": 51,
+      "score": 0.85
+    },
+    {
+      "case_id": "location-002-stadt-allein",
+      "entity_type": "PERSON",
+      "start": 0,
+      "end": 9,
+      "score": 0.85
+    },
+    {
+      "case_id": "iban-001-standard",
+      "entity_type": "LOCATION",
+      "start": 36,
+      "end": 40,
+      "score": 0.85
+    },
+    {
+      "case_id": "de-steuer-001-mit-kontext",
+      "entity_type": "PHONE_NUMBER",
+      "start": 81,
+      "end": 95,
+      "score": 0.4
+    },
+    {
+      "case_id": "de-hr-001-hrb",
+      "entity_type": "LOCATION",
+      "start": 38,
+      "end": 54,
+      "score": 0.85
+    },
+    {
+      "case_id": "de-hr-001-hrb",
+      "entity_type": "LOCATION",
+      "start": 61,
+      "end": 64,
+      "score": 0.85
+    },
+    {
+      "case_id": "de-hr-002-hra",
+      "entity_type": "LOCATION",
+      "start": 54,
+      "end": 62,
+      "score": 0.85
+    },
+    {
+      "case_id": "kombi-001-kundenanfrage",
+      "entity_type": "LOCATION",
+      "start": 63,
+      "end": 70,
+      "score": 0.85
+    },
+    {
+      "case_id": "kombi-001-kundenanfrage",
+      "entity_type": "ORGANIZATION",
+      "start": 82,
+      "end": 119,
+      "score": 0.85
+    },
+    {
+      "case_id": "quasi-001-alter-geschlecht-beruf-ort",
+      "entity_type": "LOCATION",
+      "start": 61,
+      "end": 67,
+      "score": 0.85
+    },
+    {
+      "case_id": "quasi-002-position-firma-ort",
+      "entity_type": "LOCATION",
+      "start": 125,
+      "end": 132,
+      "score": 0.85
+    }
+  ],
+  "offset_ambiguities": []
+}

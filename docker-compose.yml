@@ -42,11 +42,18 @@ services:
       # internen datenschleuse-net (LiteLLM -> presidio-analyzer:3000).
       - "5001:3000"
     environment:
-      # Pfade zu den gemounteten Konfigurationen (gegen reale Presidio-Version verifizieren)
+      # Live-Build-Befund (verifiziert 2026-07-22): ANALYZER_CONF_FILE zeigte
+      # urspruenglich auf eine nie angelegte Datei (Rest aus dem allerersten,
+      # ungetesteten PoC-Geruest). Ohne sie defaultet Presidio auf
+      # supported_languages:[en], was hart mit unserem deutschen NLP-Modell +
+      # Recognizer-Registry kollidiert ("Misconfigured engine, supported
+      # languages have to be consistent") -- die Datei ist zwingend, jetzt
+      # angelegt unter presidio/analyzer-config.yml.
       - ANALYZER_CONF_FILE=/conf/analyzer-config.yml
       - NLP_CONF_FILE=/conf/nlp-config.yml
       - RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
     volumes:
+      - ./presidio/analyzer-config.yml:/conf/analyzer-config.yml:ro
       - ./presidio/nlp-config.yml:/conf/nlp-config.yml:ro
       - ./presidio/recognizers-config.yml:/conf/recognizers-config.yml:ro
     networks:

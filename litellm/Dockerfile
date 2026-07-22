@@ -18,8 +18,15 @@ FROM ghcr.io/berriai/litellm:main-latest
 WORKDIR /app
 
 # 1. Extra-Dependencies (httpx ist i.d.R. schon da; explizit fuer Reproduzierbarkeit)
+#
+# Live-Build-Befund (verifiziert 2026-07-22): das Basis-Image ist Wolfi-basiert
+# und hat KEIN `pip`-Binary und KEIN `pip`-Modul vorinstalliert (nur die nackte
+# venv unter /app/.venv). `python -m ensurepip` bootstrapt pip aus der Python-
+# Stdlib heraus, das funktioniert auf Wolfi (kein apt, kein System-Package-Mgr
+# noetig, laeuft als root).
 COPY requirements-guardrail.txt /app/requirements-guardrail.txt
-RUN pip install --no-cache-dir -r /app/requirements-guardrail.txt
+RUN python -m ensurepip --upgrade \
+    && python -m pip install --no-cache-dir -r /app/requirements-guardrail.txt
 
 # 2. Custom-Guardrail-Code ins Image kopieren (auf den Importpfad)
 COPY datenschleuse_guardrail.py /app/datenschleuse_guardrail.py

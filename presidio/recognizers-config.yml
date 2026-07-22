@@ -1,7 +1,14 @@
 # Datenschleuse — eigene deutsche PII-Recognizer
 # Das ist der Kern-Differenzierer: Entitaeten, die Presidio standardmaessig NICHT erkennt.
-# HINWEIS: Das genaue Schema dieser Registry-Datei ist gegen die konkrete Presidio-Version
-# zu verifizieren (Feld-Namen koennen je nach Version abweichen). Beim ersten Run pruefen.
+#
+# Live-Build-Befund (verifiziert 2026-07-22): ohne top-level `supported_languages`
+# stuerzt der Analyzer-Worker beim Boot mit "argument of type 'NoneType' is not
+# iterable" ab, obwohl jeder einzelne Recognizer sein eigenes supported_language/
+# supported_languages hat (jeder Recognizer wird noch einzeln geladen, siehe
+# Log "Loaded recognizer: ..." fuer alle -- der Crash passiert erst danach beim
+# Zusammenbau der registry-weiten Sprachliste). Fix: explizit setzen.
+supported_languages:
+  - de
 
 global_regex_flags: 26  # re.DOTALL | re.MULTILINE | re.IGNORECASE
 
@@ -24,6 +31,13 @@ recognizers:
     supported_languages:
       - de
   - name: SpacyRecognizer
+    type: predefined
+    supported_languages:
+      - de
+  # Live-Build-Befund (verifiziert 2026-07-22): fehlte hier -- Benchmark zeigte
+  # 0% Recall auf IP_ADDRESS, weil eine explizite `recognizers:`-Liste die
+  # Presidio-Defaults komplett ERSETZT statt ergaenzt. IpRecognizer war nie geladen.
+  - name: IpRecognizer
     type: predefined
     supported_languages:
       - de

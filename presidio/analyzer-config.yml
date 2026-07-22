@@ -1,0 +1,17 @@
+# Datenschleuse — Presidio Analyzer-Engine-Konfiguration
+#
+# Live-Build-Befund (verifiziert 2026-07-22): der Presidio-Analyzer defaultet
+# OHNE diese Datei auf `supported_languages: [en]` (siehe
+# presidio_analyzer/conf/default_analyzer.yaml im Image). Das kollidiert hart
+# mit unserem deutschen NLP-Modell (nlp-config.yml: lang_code de) und der
+# deutschen Recognizer-Registry (recognizers-config.yml: supported_languages
+# [de]) -- der Worker verweigert den Boot ("Misconfigured engine, supported
+# languages have to be consistent"). Diese Datei war im allerersten PoC-Geruest
+# per ANALYZER_CONF_FILE referenziert, aber nie angelegt worden.
+
+supported_languages:
+  - de
+
+# Globaler Default-Score-Schwellwert (0 = aus, jeder Recognizer nutzt seinen
+# eigenen Pattern-Score aus recognizers-config.yml).
+default_score_threshold: 0
