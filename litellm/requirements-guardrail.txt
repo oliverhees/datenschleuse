@@ -1,0 +1,16 @@
+# Zusatz-Dependencies fuer die Datenschleuse Custom-Guardrail
+# (datenschleuse_guardrail.py).
+#
+# httpx ist im offiziellen LiteLLM-Image (ghcr.io/berriai/litellm) bereits
+# vorhanden (LiteLLM-Kern-Dependency) -- hier explizit gepinnt, damit der
+# Custom-Code auch in einem schlanken Standalone-Env laeuft und die Version
+# nachvollziehbar bleibt.
+httpx>=0.27,<1.0
+
+# --- Nur fuer die Test-Suite (nicht ins Laufzeit-Image noetig) ------------
+# Die Tests (test/test_datenschleuse_guardrail.py) laufen mit der stdlib
+# (unittest.IsolatedAsyncioTestCase) OHNE zusaetzliche Pakete. Wer sie lieber
+# mit pytest fahren moechte, installiert zusaetzlich:
+#   pytest>=8.0
+#   pytest-asyncio>=0.23
+# und laeuft `pytest test/test_datenschleuse_guardrail.py`.

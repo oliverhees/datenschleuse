@@ -28,32 +28,52 @@ model_list:
   # erscheint), litellm_params.model muss der reale eurouter-Modell-Pfad sein.
 
 guardrails:
-  - guardrail_name: "datenschleuse-pii"
+  # EIGENE Custom-Guardrail-Klasse statt des eingebauten `guardrail: presidio`.
+  # Grund: das LiteLLM-Bordmittel buffert bei Streaming-Responses den KOMPLETTEN
+  # Antworttext, bevor es Platzhalter zurueck auf Klartext mapped -> es zerstoert
+  # Time-to-first-Token (Streaming fuehlt sich an wie non-streaming). Unsere
+  # Klasse haelt stattdessen nur einen kleinen Sliding-Window-Tail-Puffer und
+  # erhaelt so echtes Token-Streaming. Sie ruft Presidio Analyzer selbst per REST
+  # auf und verwaltet ihr eigenes Platzhalter->Klartext-Mapping in einem eigenen
+  # Metadata-Key -> keine Kopplung an instabile LiteLLM-Interna.
+  # Code: litellm/datenschleuse_guardrail.py  (Klasse DatenschleuseGuardrail)
+  - guardrail_name: "datenschleuse-reid"
     litellm_params:
-      guardrail: presidio
-      mode: "pre_call"
-      # Deutsche PII-Erkennung
+      guardrail: datenschleuse_guardrail.DatenschleuseGuardrail
+      # pre_call  -> PII maskieren, bevor der Request ans LLM geht
+      # post_call -> Antwort (Streaming + non-Streaming) re-identifizieren
+      # Gegen die laufende LiteLLM-Version verifizieren, ob eine Liste
+      # akzeptiert wird; falls nicht, "pre_call" setzen -- die post_call-Hooks
+      # (async_post_call_streaming_iterator_hook / async_post_call_success_hook)
+      # werden fuer aktive Guardrails ohnehin aufgerufen.
+      mode: ["pre_call", "post_call"]
+      default_on: true
+      # --- Eigene Parameter der DatenschleuseGuardrail-Klasse ---
       presidio_language: "de"
-      # Re-Identification: maskierte Werte in der Antwort wieder zuruecksetzen (non-streaming)
-      output_parse_pii: true
-      # Was mit welcher Entitaet passiert: MASK (ersetzen) oder BLOCK (Anfrage stoppen)
-      pii_entities_config:
-        PERSON: "MASK"
-        EMAIL_ADDRESS: "MASK"
-        PHONE_NUMBER: "MASK"
-        LOCATION: "MASK"
-        CREDIT_CARD: "MASK"
-        IBAN_CODE: "MASK"
-        IP_ADDRESS: "MASK"
-        # eigene deutsche Entitaeten (siehe presidio/recognizers-config.yml)
-        DE_STEUER_ID: "MASK"
-        DE_SOZIALVERSICHERUNG: "MASK"
-        DE_HANDELSREGISTER: "MASK"
-        DE_KFZ_KENNZEICHEN: "MASK"
-      presidio_score_thresholds:
-        PERSON: 0.6
-        EMAIL_ADDRESS: 0.6
-        DE_STEUER_ID: 0.5
+      # Analyzer-URL: kommt sonst aus ENV PRESIDIO_ANALYZER_API_BASE
+      # (siehe docker-compose.yml), Default http://presidio-analyzer:3000.
+      # presidio_analyzer_url: "http://presidio-analyzer:3000"
+      # Optionaler globaler Score-Schwellwert (0 = aus, Recognizer-Scores gelten):
+      presidio_score_threshold: 0.0
+      #
+      # HINWEIS zur Migration von der alten `guardrail: presidio`-Config:
+      # Die frueheren presidio-spezifischen Optionen sind bewusst ENTFERNT, weil
+      # sie zu einem anderen Guardrail-Implementierungsvertrag gehoerten und von
+      # unserer eigenen Klasse nicht gelesen werden. Ihre Logik lebt jetzt im
+      # Code (litellm/datenschleuse_guardrail.py):
+      #   - output_parse_pii     -> ersetzt durch die eigene Re-Id in den
+      #                             post_call-Hooks (streaming + non-streaming).
+      #   - pii_entities_config  -> die WELCHE Entitaeten erkannt werden, steuert
+      #                             jetzt die Presidio-Analyzer-/Recognizer-Config
+      #                             (presidio/recognizers-config.yml). Alle vom
+      #                             Analyzer gefundenen Entitaeten werden maskiert
+      #                             (MASK-Verhalten); ein separates BLOCK pro
+      #                             Entitaet ist derzeit nicht implementiert
+      #                             (bei Bedarf als Feature ergaenzen).
+      #   - presidio_score_thresholds (pro Entitaet) -> aktuell nur ein globaler
+      #                             Schwellwert (presidio_score_threshold);
+      #                             feinere Per-Entitaet-Schwellen leben in den
+      #                             Recognizer-Scores der Presidio-Config.
 
 litellm_settings:
   # fail-closed: bei Guardrail-Fehler die Anfrage NICHT durchlassen

@@ -1,13 +1,25 @@
 services:
   # 1. LiteLLM Proxy = die eigentliche Datenschleuse-Schnittstelle (OpenAI-kompatibel)
   datenschleuse:
-    image: ghcr.io/berriai/litellm:main-latest
+    # Eigenes Image (statt Stock ghcr.io/berriai/litellm:main-latest), weil die
+    # Custom-Guardrail-Klasse (litellm/datenschleuse_guardrail.py) importierbar
+    # sein muss und ggf. Extra-Deps braucht -- siehe litellm/Dockerfile.
+    build:
+      context: ./litellm
+      dockerfile: Dockerfile
     container_name: datenschleuse
     ports:
       - "4000:4000"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+      # Custom-Guardrail zusaetzlich read-only mounten: erlaubt Dev-Iteration
+      # ohne Rebuild (Container-Neustart genuegt). Im Image ist die Datei via
+      # Dockerfile ohnehin schon vorhanden -- der Mount ueberschreibt sie nur
+      # mit dem aktuellen Stand vom Host.
+      - ./litellm/datenschleuse_guardrail.py:/app/datenschleuse_guardrail.py:ro
     environment:
+      # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
+      - PYTHONPATH=/app
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
