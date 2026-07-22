@@ -1,0 +1,5 @@
+# Presidio Analyzer mit deutschem spaCy-Sprachmodell
+# Das Standard-Image bringt nur Englisch mit, fuer deutsche Namen/Orte brauchen wir de_core_news_lg.
+FROM mcr.microsoft.com/presidio-analyzer:latest
+
+RUN python -m spacy download de_core_news_lg

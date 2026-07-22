@@ -1,0 +1,297 @@
+# Datenschleuse — Deutscher PII-Testkorpus (ISC-35, v1-Gate)
+#
+# Ground-Truth-Korpus zur Messung von Recall/Precision der Presidio-Erkennung
+# (Standard-Recognizer + eigene deutsche Custom-Recognizer aus
+# presidio/recognizers-config.yml). Jeder Fall listet den Text plus die
+# exakten Teilstrings, die als PII erkannt werden MÜSSEN (Ground Truth).
+#
+# Format: `value` ist der exakte Teilstring aus `text` (kein Regex). Der
+# Benchmark-Runner sucht ihn per str.find() im Text und vergleicht die
+# gefundene Position mit den von Presidio zurückgelieferten Entity-Spans.
+#
+# `expected_recall`: bei bekannten Erkennungslücken (z.B. Quasi-Identifier,
+# noch kein eigener Recognizer) auf "known_gap" gesetzt statt "must_detect" --
+# der Benchmark zählt das getrennt aus (zeigt den Fortschritt über die Zeit,
+# statt den Score künstlich zu drücken oder zu beschönigen).
+#
+# Pflicht-Konvention (CLAUDE.md): jede neue deutsche Entität braucht
+# Recognizer + Testfall + Benchmark-Eintrag zusammen. Dieser Korpus ist der
+# Testfall-Teil davon.
+
+cases:
+  # ---------------------------------------------------------------------
+  # PERSON
+  # ---------------------------------------------------------------------
+  - id: person-001-formal
+    text: >-
+      Sehr geehrter Herr Dr. Michael Bergmann, vielen Dank für Ihre Anfrage
+      vom 12. März.
+    entities:
+      - type: PERSON
+        value: "Michael Bergmann"
+        expected_recall: must_detect
+
+  - id: person-002-vorname-nachname-mitten-im-satz
+    text: >-
+      Die Rückfrage kam heute von Anna-Lena Schweitzer, die sich über den
+      Lieferverzug beschwert hat.
+    entities:
+      - type: PERSON
+        value: "Anna-Lena Schweitzer"
+        expected_recall: must_detect
+
+  - id: person-003-zwei-personen
+    text: >-
+      Das Meeting zwischen Thomas Reinhardt und Fatima Al-Sayed wurde auf
+      Donnerstag verschoben.
+    entities:
+      - type: PERSON
+        value: "Thomas Reinhardt"
+        expected_recall: must_detect
+      - type: PERSON
+        value: "Fatima Al-Sayed"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # EMAIL_ADDRESS
+  # ---------------------------------------------------------------------
+  - id: email-001-standard
+    text: >-
+      Bitte antworten Sie direkt an michael.bergmann@dieselwerke-koeln.de,
+      damit die Buchhaltung informiert ist.
+    entities:
+      - type: EMAIL_ADDRESS
+        value: "michael.bergmann@dieselwerke-koeln.de"
+        expected_recall: must_detect
+
+  - id: email-002-mit-plus-alias
+    text: >-
+      Die Bestellbestätigung ging an support+bestellung.9214@webshop-nord.de
+      raus, bisher keine Reaktion.
+    entities:
+      - type: EMAIL_ADDRESS
+        value: "support+bestellung.9214@webshop-nord.de"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # PHONE_NUMBER
+  # ---------------------------------------------------------------------
+  - id: phone-001-festnetz
+    text: >-
+      Rückruf bitte unter 0221 4587632, am besten nachmittags.
+    entities:
+      - type: PHONE_NUMBER
+        value: "0221 4587632"
+        expected_recall: must_detect
+
+  - id: phone-002-mobil-international
+    text: >-
+      Erreichbar bin ich auch mobil unter +49 172 3344556, falls es
+      dringend ist.
+    entities:
+      - type: PHONE_NUMBER
+        value: "+49 172 3344556"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # LOCATION
+  # ---------------------------------------------------------------------
+  - id: location-001-adresse
+    text: >-
+      Die Ware soll an die Lagerhausstraße 14, 50667 Köln geliefert werden.
+    entities:
+      - type: LOCATION
+        value: "Lagerhausstraße 14"
+        expected_recall: must_detect
+
+  - id: location-002-stadt-allein
+    text: >-
+      Frau Vogt zieht nächsten Monat von Leipzig nach Freiburg im Breisgau.
+    entities:
+      - type: LOCATION
+        value: "Leipzig"
+        expected_recall: must_detect
+      - type: LOCATION
+        value: "Freiburg im Breisgau"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # CREDIT_CARD
+  # ---------------------------------------------------------------------
+  - id: creditcard-001-visa
+    text: >-
+      Die Zahlung wurde mit der Karte 4532 0151 1283 0366 abgewickelt.
+    entities:
+      - type: CREDIT_CARD
+        value: "4532 0151 1283 0366"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # IBAN_CODE
+  # ---------------------------------------------------------------------
+  - id: iban-001-standard
+    text: >-
+      Bitte überweisen Sie den Betrag auf DE89 3704 0044 0532 0130 00.
+    entities:
+      - type: IBAN_CODE
+        value: "DE89 3704 0044 0532 0130 00"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # IP_ADDRESS
+  # ---------------------------------------------------------------------
+  - id: ip-001-ipv4
+    text: >-
+      Im Server-Log taucht wiederholt die Adresse 192.168.87.204 mit
+      fehlgeschlagenen Login-Versuchen auf.
+    entities:
+      - type: IP_ADDRESS
+        value: "192.168.87.204"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # DE_STEUER_ID (eigener Recognizer)
+  # ---------------------------------------------------------------------
+  - id: de-steuer-001-mit-kontext
+    text: >-
+      Für den Lohnsteuerjahresausgleich benötigen wir Ihre
+      Steueridentifikationsnummer 12 345 678 901.
+    entities:
+      - type: DE_STEUER_ID
+        value: "12 345 678 901"
+        expected_recall: must_detect
+
+  - id: de-steuer-002-ohne-leerzeichen
+    text: >-
+      Die IdNr des Antragstellers lautet 65441234567, bitte im Formular
+      ergänzen.
+    entities:
+      - type: DE_STEUER_ID
+        value: "65441234567"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # DE_SOZIALVERSICHERUNG (eigener Recognizer)
+  # ---------------------------------------------------------------------
+  - id: de-sv-001-standard
+    text: >-
+      Die Sozialversicherungsnummer für die Anmeldung lautet
+      65 220195 M 123.
+    entities:
+      - type: DE_SOZIALVERSICHERUNG
+        value: "65 220195 M 123"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # DE_HANDELSREGISTER (eigener Recognizer)
+  # ---------------------------------------------------------------------
+  - id: de-hr-001-hrb
+    text: >-
+      Die Gesellschaft ist eingetragen beim Amtsgericht Köln unter
+      HRB 45231.
+    entities:
+      - type: DE_HANDELSREGISTER
+        value: "HRB 45231"
+        expected_recall: must_detect
+
+  - id: de-hr-002-hra
+    text: >-
+      Der Vertrag verweist auf die im Handelsregister unter HRA 8817
+      geführte Einzelfirma.
+    entities:
+      - type: DE_HANDELSREGISTER
+        value: "HRA 8817"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # DE_KFZ_KENNZEICHEN (eigener Recognizer)
+  # ---------------------------------------------------------------------
+  - id: de-kfz-001-standard
+    text: >-
+      Der beschädigte Firmenwagen mit dem Kennzeichen B-MM 1234 steht seit
+      Montag in der Werkstatt.
+    entities:
+      - type: DE_KFZ_KENNZEICHEN
+        value: "B-MM 1234"
+        expected_recall: must_detect
+
+  - id: de-kfz-002-dreistellig
+    text: >-
+      Vor dem Lager parkt ein Transporter mit dem Kennzeichen K-AB 789,
+      wem gehört der?
+    entities:
+      - type: DE_KFZ_KENNZEICHEN
+        value: "K-AB 789"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # KOMBI-FÄLLE (mehrere Entitäten in einem Text, realistischer Use-Case)
+  # ---------------------------------------------------------------------
+  - id: kombi-001-kundenanfrage
+    text: >-
+      Kunde Herr Jonas Petersen, wohnhaft in der Ahornallee 9, 22303
+      Hamburg, hat unter jonas.petersen@petersen-consulting.de angefragt.
+      Seine Steuer-ID ist 98 765 432 109, IBAN DE12 5001 0517 0648 4898 90.
+    entities:
+      - type: PERSON
+        value: "Jonas Petersen"
+        expected_recall: must_detect
+      - type: LOCATION
+        value: "Ahornallee 9"
+        expected_recall: must_detect
+      - type: EMAIL_ADDRESS
+        value: "jonas.petersen@petersen-consulting.de"
+        expected_recall: must_detect
+      - type: DE_STEUER_ID
+        value: "98 765 432 109"
+        expected_recall: must_detect
+      - type: IBAN_CODE
+        value: "DE12 5001 0517 0648 4898 90"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # QUASI-IDENTIFIER (bekannte Lücke, aus Marktrecherche/Community-Thread)
+  # Presidio + aktuelle Custom-Recognizer erkennen KEIN Wort hier einzeln
+  # als PII, die Kombination ist aber re-identifizierend. expected_recall
+  # ist bewusst "known_gap" gesetzt -- Ziel von ISC-"Quasi-Identifier" ist,
+  # diese Fälle irgendwann auf must_detect umzustellen.
+  # ---------------------------------------------------------------------
+  - id: quasi-001-alter-geschlecht-beruf-ort
+    text: >-
+      Der Hinweisgeber ist 42, männlich, arbeitet als Ingenieur in Weimar
+      und möchte anonym bleiben.
+    entities:
+      - type: QUASI_IDENTIFIER_COMBO
+        value: "42, männlich, arbeitet als Ingenieur in Weimar"
+        expected_recall: known_gap
+
+  - id: quasi-002-position-firma-ort
+    text: >-
+      Die einzige Person mit dieser Rolle ist die Leiterin der Qualitätssicherung
+      bei einem der drei großen Automobilzulieferer in Bamberg.
+    entities:
+      - type: QUASI_IDENTIFIER_COMBO
+        value: "Leiterin der Qualitätssicherung bei einem der drei großen Automobilzulieferer in Bamberg"
+        expected_recall: known_gap
+
+  # ---------------------------------------------------------------------
+  # NEGATIV-FÄLLE (False-Positive-Köder — sehen wie PII aus, sind es nicht)
+  # Der Benchmark zählt hier False Positives, wenn Presidio hier trotzdem
+  # eine Entität meldet.
+  # ---------------------------------------------------------------------
+  - id: negativ-001-bestellnummer-keine-iban
+    text: >-
+      Die Bestellnummer für den Vorgang lautet BE89370400440532013000A,
+      das ist keine Bankverbindung.
+    entities: []
+
+  - id: negativ-002-versionsnummer-keine-telefonnummer
+    text: >-
+      Die Software läuft ab Version 2026.07.22, das ist kein Datum eines
+      Vorfalls.
+    entities: []
+
+  - id: negativ-003-produktcode-kein-kfz-kennzeichen
+    text: >-
+      Der Artikel mit der Produktkennung ABC-123 ist wieder auf Lager.
+    entities: []

@@ -1,0 +1,52 @@
+services:
+  # 1. LiteLLM Proxy = die eigentliche Datenschleuse-Schnittstelle (OpenAI-kompatibel)
+  datenschleuse:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: datenschleuse
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      - EUROUTER_API_KEY=${EUROUTER_API_KEY}
+      - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
+      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+    depends_on:
+      - presidio-analyzer
+      - presidio-anonymizer
+    networks:
+      - datenschleuse-net
+
+  # 2. Presidio Analyzer = erkennt PII (mit deutschem Sprachmodell + eigenen DE-Recognizern)
+  presidio-analyzer:
+    build:
+      context: ./presidio
+      dockerfile: Dockerfile.analyzer
+    container_name: datenschleuse-analyzer
+    ports:
+      # Host-Zugriff nur fuer lokale Entwicklung/Benchmark (test/corpus-benchmark.py).
+      # Kein Teil des Produktiv-Traffics -- der laeuft ausschliesslich ueber den
+      # internen datenschleuse-net (LiteLLM -> presidio-analyzer:3000).
+      - "5001:3000"
+    environment:
+      # Pfade zu den gemounteten Konfigurationen (gegen reale Presidio-Version verifizieren)
+      - ANALYZER_CONF_FILE=/conf/analyzer-config.yml
+      - NLP_CONF_FILE=/conf/nlp-config.yml
+      - RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
+    volumes:
+      - ./presidio/nlp-config.yml:/conf/nlp-config.yml:ro
+      - ./presidio/recognizers-config.yml:/conf/recognizers-config.yml:ro
+    networks:
+      - datenschleuse-net
+
+  # 3. Presidio Anonymizer = ersetzt erkannte PII durch Platzhalter
+  presidio-anonymizer:
+    image: mcr.microsoft.com/presidio-anonymizer:latest
+    container_name: datenschleuse-anonymizer
+    networks:
+      - datenschleuse-net
+
+networks:
+  datenschleuse-net:
+    driver: bridge

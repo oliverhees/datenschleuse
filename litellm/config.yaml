@@ -1,0 +1,70 @@
+# Datenschleuse — LiteLLM-Proxy-Konfiguration
+# Forwardet an eurouter.ai (EU-gehostet, GDPR), mit Presidio-PII-Schutz davor.
+
+model_list:
+  # eurouter.ai ist OpenAI-kompatibel -> als openai-Provider mit eigener api_base.
+  # Jeder Eintrag hier taucht 1:1 als waehlbares Modell in GET /v1/models auf --
+  # das ist der Hebel, ueber den Hermes' "custom"-Provider (fetch_models() -> GET
+  # {base_url}/models) automatisch eine Modellauswahl bekommt, ohne Hermes-Code.
+  # Modell-IDs sind Platzhalter -- gegen die reale eurouter.ai-Modellliste pruefen
+  # (ISC-2), sobald ein Test-Key vorliegt.
+  - model_name: datenschleuse-gpt
+    litellm_params:
+      model: openai/openai/gpt-4o-mini
+      api_base: https://www.eurouter.ai/api/v1
+      api_key: os.environ/EUROUTER_API_KEY
+  - model_name: datenschleuse-claude
+    litellm_params:
+      model: openai/anthropic/claude-sonnet-5
+      api_base: https://www.eurouter.ai/api/v1
+      api_key: os.environ/EUROUTER_API_KEY
+  - model_name: datenschleuse-gemini
+    litellm_params:
+      model: openai/google/gemini-3-pro
+      api_base: https://www.eurouter.ai/api/v1
+      api_key: os.environ/EUROUTER_API_KEY
+  # Weitere eurouter.ai-Modelle nach demselben Muster ergaenzen --
+  # model_name ist frei waehlbar (das ist der Name, der in Hermes' Dropdown
+  # erscheint), litellm_params.model muss der reale eurouter-Modell-Pfad sein.
+
+guardrails:
+  - guardrail_name: "datenschleuse-pii"
+    litellm_params:
+      guardrail: presidio
+      mode: "pre_call"
+      # Deutsche PII-Erkennung
+      presidio_language: "de"
+      # Re-Identification: maskierte Werte in der Antwort wieder zuruecksetzen (non-streaming)
+      output_parse_pii: true
+      # Was mit welcher Entitaet passiert: MASK (ersetzen) oder BLOCK (Anfrage stoppen)
+      pii_entities_config:
+        PERSON: "MASK"
+        EMAIL_ADDRESS: "MASK"
+        PHONE_NUMBER: "MASK"
+        LOCATION: "MASK"
+        CREDIT_CARD: "MASK"
+        IBAN_CODE: "MASK"
+        IP_ADDRESS: "MASK"
+        # eigene deutsche Entitaeten (siehe presidio/recognizers-config.yml)
+        DE_STEUER_ID: "MASK"
+        DE_SOZIALVERSICHERUNG: "MASK"
+        DE_HANDELSREGISTER: "MASK"
+        DE_KFZ_KENNZEICHEN: "MASK"
+      presidio_score_thresholds:
+        PERSON: 0.6
+        EMAIL_ADDRESS: 0.6
+        DE_STEUER_ID: 0.5
+
+litellm_settings:
+  # fail-closed: bei Guardrail-Fehler die Anfrage NICHT durchlassen
+  set_verbose: true
+  # Projekt-Prinzip "kein PII in Logs": Message-Content wird NIE geloggt,
+  # Spend/Tokens/Modell/Zeitpunkt bleiben getrackt -> das ist die Datenbasis
+  # fuer das Audit-Dashboard, ohne dass Klartext irgendwo landet. Vor
+  # Produktivnutzung verifizieren (ISC-19), ob Content bei aktivem Flag durch
+  # Platzhalter ersetzt oder komplett weggelassen wird.
+  turn_off_message_logging: true
+
+general_settings:
+  # Master-Key fuer den Zugriff auf den Proxy (in .env setzen)
+  master_key: os.environ/DATENSCHLEUSE_MASTER_KEY

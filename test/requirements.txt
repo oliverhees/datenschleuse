@@ -1,0 +1,4 @@
+# Abhängigkeiten für den Korpus-Benchmark (test/corpus-benchmark.py).
+# Installation: pip install -r test/requirements.txt
+PyYAML>=6.0
+requests>=2.31

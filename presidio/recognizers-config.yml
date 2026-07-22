@@ -1,0 +1,81 @@
+# Datenschleuse — eigene deutsche PII-Recognizer
+# Das ist der Kern-Differenzierer: Entitaeten, die Presidio standardmaessig NICHT erkennt.
+# HINWEIS: Das genaue Schema dieser Registry-Datei ist gegen die konkrete Presidio-Version
+# zu verifizieren (Feld-Namen koennen je nach Version abweichen). Beim ersten Run pruefen.
+
+global_regex_flags: 26  # re.DOTALL | re.MULTILINE | re.IGNORECASE
+
+recognizers:
+  # --- Standard-Recognizer fuer Deutsch aktiv lassen ---
+  - name: EmailRecognizer
+    type: predefined
+    supported_languages:
+      - de
+  - name: PhoneRecognizer
+    type: predefined
+    supported_languages:
+      - de
+  - name: IbanRecognizer
+    type: predefined
+    supported_languages:
+      - de
+  - name: CreditCardRecognizer
+    type: predefined
+    supported_languages:
+      - de
+  - name: SpacyRecognizer
+    type: predefined
+    supported_languages:
+      - de
+
+  # --- Eigene deutsche Recognizer ---
+  - name: "DE_Steuer_ID"
+    supported_language: "de"
+    supported_entity: "DE_STEUER_ID"
+    patterns:
+      - name: "steuer_id_11_ziffern"
+        regex: "\\b\\d{2}[ ]?\\d{3}[ ]?\\d{3}[ ]?\\d{3}\\b"
+        score: 0.4
+    context:
+      - "steuer"
+      - "steuer-id"
+      - "steueridentifikationsnummer"
+      - "idnr"
+      - "identifikationsnummer"
+
+  - name: "DE_Sozialversicherung"
+    supported_language: "de"
+    supported_entity: "DE_SOZIALVERSICHERUNG"
+    patterns:
+      - name: "sv_nummer"
+        regex: "\\b\\d{2}[ ]?\\d{6}[ ]?[A-Z][ ]?\\d{3}\\b"
+        score: 0.6
+    context:
+      - "sozialversicherung"
+      - "rentenversicherung"
+      - "sv-nummer"
+      - "versicherungsnummer"
+
+  - name: "DE_Handelsregister"
+    supported_language: "de"
+    supported_entity: "DE_HANDELSREGISTER"
+    patterns:
+      - name: "hrb_hra"
+        regex: "\\bHR[AB][ ]?\\d{1,6}\\b"
+        score: 0.7
+    context:
+      - "handelsregister"
+      - "amtsgericht"
+
+  - name: "DE_KFZ_Kennzeichen"
+    supported_language: "de"
+    supported_entity: "DE_KFZ_KENNZEICHEN"
+    patterns:
+      - name: "kfz"
+        regex: "\\b[A-ZÄÖÜ]{1,3}-[A-Z]{1,2}[ ]?\\d{1,4}\\b"
+        score: 0.5
+    context:
+      - "kennzeichen"
+      - "kfz"
+      - "auto"
+      - "fahrzeug"
