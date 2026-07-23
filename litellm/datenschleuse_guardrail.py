@@ -61,6 +61,13 @@ import httpx
 # Modul weiterhin ohne `cryptography` standalone importier-/testbar bleibt.
 import qi_generalization as qig
 
+# Schutzklassen-Modell (Community-Feedback, siehe ISA.md Decision 2026-07-23):
+# 3-Stufen-Sensitivitaetsklassifizierung VOR jeder Maskierung. Stufe 3 ist eine
+# HARTE Code-Garantie (nie Cloud, auch nicht anonymisiert), keine Konfigurations-
+# option -- deshalb IMMER aktiv, anders als der optionale QI-Layer. Reine Logik,
+# keine LiteLLM-/Presidio-Laufzeitabhaengigkeit (nur PyYAML zum Config-Laden).
+import sensitivity_classifier as sc
+
 
 # ---------------------------------------------------------------------------
 # Basisklasse: in Produktion die echte LiteLLM-CustomGuardrail, im Test-/
@@ -287,6 +294,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
         self.placeholder_margin = int(placeholder_margin)
         self.request_timeout = float(request_timeout)
 
+        # --- Schutzklassen-Modell (IMMER aktiv, keine Konfigurationsoption) --
+        # Laedt presidio/sensitivity-keywords.yml einmalig. Fail-closed beim
+        # START: eine kaputte/fehlende Config wirft SensitivityConfigError und
+        # verhindert, dass der Guardrail (und damit der ganze Proxy) ueberhaupt
+        # hochkommt -- blind klassifizieren waere gefaehrlicher als nicht
+        # starten. Siehe docs/SENSITIVITY-INTEGRATION.md.
+        self.classifier = sc.SensitivityClassifier()
+
         # --- Quasi-Identifier-Layer (opt-in) --------------------------------
         # Aktiv, sobald ein Risiko-Preset gesetzt ist (Config: qi_risk_preset).
         # Ist es None/"off", bleibt der QI-Layer komplett aus -> Verhalten exakt
@@ -364,6 +379,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
         messages = data.get("messages")
         masker = Masker()
 
+        # --- Schutzklassen: Metadaten fuer explizite Stufe + Freigabe-Flag ---
+        meta_in = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        requested_level = meta_in.get(sc.SENSITIVITY_LEVEL_KEY)
+        approved = sc.is_release_approved(meta_in)
+
         # QI-Typen werden nur dann aus der direkten Maskierung herausgehalten,
         # wenn der QI-Layer aktiv ist. Sonst laufen sie wie jeder andere
         # erkannte Identifier durch den Masker (harmloser Platzhalter-Roundtrip).
@@ -382,6 +402,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 if isinstance(content, str):
                     original = content
                     entities = await self._analyze(original)
+
+                    # Schutzklassen: klassifizieren BEVOR irgendetwas maskiert
+                    # oder Richtung Cloud aufbereitet wird. Stufe 3 blockt hart
+                    # (kein Bypass), Stufe 2 ohne Freigabe blockt ebenfalls.
+                    classification = self.classifier.classify(
+                        original, entities=entities, requested_level=requested_level,
+                    )
+                    try:
+                        sc.enforce_tier_3_block(classification)
+                        sc.enforce_tier_2_gate(classification, approved)
+                    except (sc.Tier3Blocked, sc.Tier2ApprovalRequired) as exc:
+                        raise DatenschleuseBlocked(str(exc)) from exc
+
                     direct, qi = self._split_entities(entities, qi_types)
                     msg["content"] = masker.mask(original, direct)
                     # QI-Rohwerte aus dem ORIGINAL (vor Maskierung) ziehen.
@@ -397,6 +430,16 @@ class DatenschleuseGuardrail(_GuardrailBase):
                         ):
                             original = part["text"]
                             entities = await self._analyze(original)
+
+                            classification = self.classifier.classify(
+                                original, entities=entities, requested_level=requested_level,
+                            )
+                            try:
+                                sc.enforce_tier_3_block(classification)
+                                sc.enforce_tier_2_gate(classification, approved)
+                            except (sc.Tier3Blocked, sc.Tier2ApprovalRequired) as exc:
+                                raise DatenschleuseBlocked(str(exc)) from exc
+
                             direct, qi = self._split_entities(entities, qi_types)
                             part["text"] = masker.mask(original, direct)
                             turn_qi.extend(self._extract_qi_values(original, qi))

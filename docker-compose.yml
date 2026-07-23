@@ -23,9 +23,17 @@ services:
       - ./litellm/qi_state.py:/app/qi_state.py:ro
       # Verschluesselter QI-Session-State (SQLite) persistent halten.
       - datenschleuse-qi-state:/app/state
+      - ./litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
+      # sensitivity_classifier.py's Default-Config-Pfad ist relativ zur eigenen
+      # Datei (../presidio/sensitivity-keywords.yml) -- das stimmt im Repo
+      # (litellm/ und presidio/ sind Geschwister), aber NICHT im Image (/app/
+      # ist flach, kein Geschwister-presidio/-Verzeichnis). Deshalb die YAML
+      # explizit mounten und den Pfad per ENV ueberschreiben (siehe unten).
+      - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
     environment:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
+      - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
