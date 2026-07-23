@@ -66,16 +66,27 @@ services:
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     volumes:
-      # config.yaml wird NICHT ins Image kopiert (nur die .py-Module) -> Mount
-      # ist zwingend, sonst findet der --config-Aufruf die Datei nicht.
+      # config.yaml wird NICHT ins Image kopiert (nur die .py-Module, siehe
+      # Dockerfile) -> Mount ist zwingend, sonst findet der --config-Aufruf
+      # die Datei nicht.
+      #
+      # Die .py-Module (datenschleuse_guardrail.py, qi_generalization.py,
+      # qi_state.py, sensitivity_classifier.py) werden HIER BEWUSST NICHT
+      # gemountet, obwohl der lokale docker-compose.yml das tut: dort dient
+      # der Mount nur der Dev-Iteration ohne Rebuild, im Image sind die
+      # Dateien via Dockerfile ohnehin schon vorhanden. Live-Deploy-Befund
+      # (2026-07-23, Coolify): mehrere einzelne Datei-Bind-Mounts aus
+      # demselben Quellordner (./litellm/*.py) auf Ziele, die im Image
+      # bereits als Datei existieren, loesen nicht-deterministisch einen
+      # Docker/runc-Mount-Fehler aus ("mounting a directory onto a file") --
+      # welche Datei betroffen ist wechselt zwischen Deploys (Race in
+      # Coolifys Checkout-Kopier-Schritt). Fuer einen produktiven Deploy
+      # sind die Mounts ohnehin ueberfluessig (Code kommt fest aus dem
+      # Image) -> ersatzlos entfernt statt gegen die Race anzukaempfen.
       - ./litellm/config.yaml:/app/config.yaml:ro
-      - ./litellm/datenschleuse_guardrail.py:/app/datenschleuse_guardrail.py:ro
-      - ./litellm/qi_generalization.py:/app/qi_generalization.py:ro
-      - ./litellm/qi_state.py:/app/qi_state.py:ro
       # sensitivity_classifier.py sucht die Keyword-Config relativ zur eigenen
       # Datei (../presidio/...); im flachen /app existiert kein Geschwister-
       # presidio/ -> YAML explizit mounten + Pfad per ENV setzen (s.o.).
-      - ./litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
       - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
       # Verschluesselter QI-Session-State (SQLite) persistent halten.
       - datenschleuse-qi-state:/app/state
