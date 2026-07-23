@@ -6,26 +6,35 @@ model_list:
   # Jeder Eintrag hier taucht 1:1 als waehlbares Modell in GET /v1/models auf --
   # das ist der Hebel, ueber den Hermes' "custom"-Provider (fetch_models() -> GET
   # {base_url}/models) automatisch eine Modellauswahl bekommt, ohne Hermes-Code.
-  # Modell-IDs sind Platzhalter -- gegen die reale eurouter.ai-Modellliste pruefen
-  # (ISC-2), sobald ein Test-Key vorliegt.
+  #
+  # Live-Verifikation (2026-07-23, mit echtem Test-Key, ISC-2/ISC-4):
+  # - Echter API-Host ist eine ANDERE Subdomain als angenommen: api.eurouter.ai,
+  #   NICHT www.eurouter.ai/api. Der urspruengliche Platzhalter (www.eurouter.ai/
+  #   api/v1) war die Website selbst (liefert die Next.js-App als 404-Fallback,
+  #   keine echte API-Route) -- waere ohne echten Key nie aufgefallen.
+  # - Modell-IDs sind PLAIN SLUGS (z.B. "gpt-4o-mini", "claude-sonnet-5"), kein
+  #   "<anbieter>/<modell>"-Pfad. Vollstaendige Liste: GET https://api.eurouter.ai/
+  #   api/models (kein "/v1/" -- eigener, unauthentifizierter Endpoint).
+  # - Kein eigenes "Gemini"-Modell im Katalog verfuegbar (nur Google Gemma-
+  #   Open-Models) -- ersetzt durch ein drittes, echtes Modell (Gemma 3 27B).
   - model_name: datenschleuse-gpt
     litellm_params:
-      model: openai/openai/gpt-4o-mini
-      api_base: https://www.eurouter.ai/api/v1
+      model: openai/gpt-4o-mini
+      api_base: https://api.eurouter.ai/v1
       api_key: os.environ/EUROUTER_API_KEY
   - model_name: datenschleuse-claude
     litellm_params:
-      model: openai/anthropic/claude-sonnet-5
-      api_base: https://www.eurouter.ai/api/v1
+      model: openai/claude-sonnet-5
+      api_base: https://api.eurouter.ai/v1
       api_key: os.environ/EUROUTER_API_KEY
-  - model_name: datenschleuse-gemini
+  - model_name: datenschleuse-gemma
     litellm_params:
-      model: openai/google/gemini-3-pro
-      api_base: https://www.eurouter.ai/api/v1
+      model: openai/gemma-3-27b-it
+      api_base: https://api.eurouter.ai/v1
       api_key: os.environ/EUROUTER_API_KEY
-  # Weitere eurouter.ai-Modelle nach demselben Muster ergaenzen --
-  # model_name ist frei waehlbar (das ist der Name, der in Hermes' Dropdown
-  # erscheint), litellm_params.model muss der reale eurouter-Modell-Pfad sein.
+  # Weitere eurouter.ai-Modelle nach demselben Muster ergaenzen (Katalog siehe
+  # oben) -- model_name ist frei waehlbar (das ist der Name, der in Hermes'
+  # Dropdown erscheint), litellm_params.model muss der reale eurouter-Slug sein.
 
 guardrails:
   # EIGENE Custom-Guardrail-Klasse statt des eingebauten `guardrail: presidio`.
