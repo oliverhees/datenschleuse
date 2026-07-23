@@ -40,6 +40,32 @@ Und falls sich jemand ein Video zum Fortschritt wünscht: sagt einfach Bescheid,
 
 ---
 
+## 2026-07-23 — Beta-Update: Code öffentlich, Coolify-Self-Hosting
+
+**Kontext:** Update-Post nach Live-Verifikation mit echtem eurouter-Key + Open-Core-Lizenzentscheidung (AGPL-3.0 für den Kern, Dashboard/Self-Learning-Filter bleiben proprietär). Deckt ab: Repo-Link (github.com/oliverhees/datenschleuse), Lizenz-Erklärung, Open-Core-Trennung, zwei Nutzungswege (Self-Hosting via Coolify-Template vs. individuelle gebuchte Instanz), ehrlicher Beta-Hinweis (noch keine hochsensiblen Produktivdaten).
+
+**Status:** Gepostet.
+
+---
+
+**Update zur Datenschleuse: Beta ist da, Code ist öffentlich 🔒**
+
+Kurzes Update zum letzten Post. Ist schneller gegangen als gedacht, aber genau deswegen will ich auch ehrlich sagen, was Stand ist und was noch nicht.
+
+**Der Kern ist jetzt öffentlich auf GitHub:** github.com/oliverhees/datenschleuse. AGPL-3.0, also echtes Open Source, keine Marketing-Lizenz. Ihr könnt euch den Code angucken, selbst hosten, verändern, alles. Die einzige Auflage: wer's verändert und als Dienst anbietet, muss seine Änderungen auch wieder offenlegen. Das schützt davor, dass sich jemand den Kern schnappt und closed-source draus macht, verhindert aber nicht, dass ihr's kommerziell nutzt.
+
+**Wichtig für die Ehrlichkeit, weil's gefragt wurde:** Das Cockpit-Dashboard und der Self-Learning-Filter (das Nachtragen eigener Muster im laufenden Betrieb) sind NICHT Teil vom offenen Kern. Die bleiben erstmal bei mir. Der Grund ist simpel: der Erkennungs- und Schutz-Teil ist das, wo Vertrauen und Reichweite dranhängen, das soll jeder prüfen können. Das Drumherum ist der Teil, aus dem irgendwann ein Geschäftsmodell wird. Sauber getrennt, nicht vermischt.
+
+**Zwei Wege, wie ihr's nutzen könnt:**
+1. **Selbst hosten.** Es gibt ein fertiges Coolify-Template, ein paar Klicks und läuft. Braucht euren eigenen eurouter.ai-Key, eure Instanz, eure Daten bleiben komplett bei euch.
+2. **Ich hoste euch eine eigene Instanz.** Wenn ihr keinen Bock auf Selbst-Hosten habt, könnt ihr bei mir buchen, dann setze ich euch was Eigenes auf. Auch da: eigene Instanz pro Person, kein gemeinsamer Topf.
+
+**Ehrlicher Beta-Hinweis:** Ist frisch draußen, live gegen einen echten eurouter-Key getestet (Maskierung, Streaming, die ganze Pipeline funktioniert), aber eben noch Beta. Schickt da aktuell noch keine hochsensiblen Produktivdaten durch, testet erstmal, gebt mir Feedback, dann optimieren wir zusammen weiter.
+
+Wer direkt reinschauen will: Repo ist oben verlinkt, README sollte alles Wichtige erklären. Fragen, Bugs, "das brauch ich auch noch" — immer gerne her damit.
+
+---
+
 ## 2026-07-23 — Diskussion zum Ankündigungspost: Schutzklassen-Modell übernommen
 
 **Kontext:** Unter dem Post vom 22.07. entstand eine inhaltlich starke Diskussion (7 Kommentare). Zentraler Impuls kam von jemandem, der ein ähnliches System ("Variante D", lokaler Anonymisierungs-Tunnel mit Presidio+LiteLLM) bereits produktiv fährt und ein **3-Stufen-Schutzklassen-Modell** vorstellte:
