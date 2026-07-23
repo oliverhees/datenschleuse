@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "name": "Datenschleuse",
+  "description": "PII-Anonymisierungs-Proxy fuer LLM-Anfragen (LiteLLM + Presidio) — Single-Tenant, ein eurouter.ai-Key pro Instanz.",
+  "compose": "docker-compose.coolify.yml",
+  "documentation": "docs/DEPLOY.md",
+  "variables": [
+    {"key": "EUROUTER_API_KEY", "label": "eurouter.ai API-Key", "description": "Dein eigener Upstream-Key von https://www.eurouter.ai — die Instanz spricht ausschliesslich mit diesem Key.", "required": true},
+    {"key": "DATENSCHLEUSE_MASTER_KEY", "label": "Datenschleuse Master-Key", "description": "Key, mit dem deine Tools die Datenschleuse ansprechen. MUSS mit 'sk-' beginnen (LiteLLM-Vorgabe).", "required": true, "generate": "random_hex_32", "prefix": "sk-"},
+    {"key": "DATENSCHLEUSE_STATE_KEY", "label": "QI-State Fernet-Key", "description": "Verschluesselt den Quasi-Identifier-Session-State. Fernet-Key (44 Zeichen). Pflicht, solange der QI-Layer aktiv ist (Default).", "required": true, "generate": "fernet"},
+    {"key": "UI_USERNAME", "label": "Admin-UI Benutzername", "description": "Login fuer das LiteLLM-Admin-UI unter /ui.", "default": "admin"},
+    {"key": "UI_PASSWORD", "label": "Admin-UI Passwort", "description": "Passwort fuer /ui. Kein Default — das Admin-UI startet nie mit bekanntem Passwort.", "required": true, "generate": "random_hex_32"},
+    {"key": "DATENSCHLEUSE_DB_USER", "label": "Postgres Benutzer", "default": "datenschleuse"},
+    {"key": "DATENSCHLEUSE_DB_PASSWORD", "label": "Postgres Passwort", "description": "Starkes Passwort fuer die interne Spend-Log-DB. Kein Default.", "required": true, "generate": "random_hex_32"},
+    {"key": "DATENSCHLEUSE_DB_NAME", "label": "Postgres Datenbank", "default": "datenschleuse"},
+    {"key": "DATENSCHLEUSE_STATE_TTL_SECONDS", "label": "QI-State TTL (Sekunden)", "description": "Lebensdauer des QI-Session-States. Default 24h.", "default": "86400", "required": false}
+  ]
+}
