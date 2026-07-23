@@ -66,31 +66,38 @@ services:
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     volumes:
-      # config.yaml wird NICHT ins Image kopiert (nur die .py-Module, siehe
-      # Dockerfile) -> Mount ist zwingend, sonst findet der --config-Aufruf
-      # die Datei nicht.
+      # NUR NOCH VERZEICHNIS-MOUNTS, keine einzelnen Datei-Mounts mehr.
       #
-      # Die .py-Module (datenschleuse_guardrail.py, qi_generalization.py,
-      # qi_state.py, sensitivity_classifier.py) werden HIER BEWUSST NICHT
-      # gemountet, obwohl der lokale docker-compose.yml das tut: dort dient
-      # der Mount nur der Dev-Iteration ohne Rebuild, im Image sind die
-      # Dateien via Dockerfile ohnehin schon vorhanden. Live-Deploy-Befund
-      # (2026-07-23, Coolify): mehrere einzelne Datei-Bind-Mounts aus
-      # demselben Quellordner (./litellm/*.py) auf Ziele, die im Image
-      # bereits als Datei existieren, loesen nicht-deterministisch einen
-      # Docker/runc-Mount-Fehler aus ("mounting a directory onto a file") --
-      # welche Datei betroffen ist wechselt zwischen Deploys (Race in
-      # Coolifys Checkout-Kopier-Schritt). Fuer einen produktiven Deploy
-      # sind die Mounts ohnehin ueberfluessig (Code kommt fest aus dem
-      # Image) -> ersatzlos entfernt statt gegen die Race anzukaempfen.
-      - ./litellm/config.yaml:/app/config.yaml:ro
-      # sensitivity_classifier.py sucht die Keyword-Config relativ zur eigenen
-      # Datei (../presidio/...); im flachen /app existiert kein Geschwister-
-      # presidio/ -> YAML explizit mounten + Pfad per ENV setzen (s.o.).
-      - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+      # Live-Deploy-Befund #2 (2026-07-23, Coolify, nach dem ersten Fix):
+      # auch nach dem Entfernen der .py-Datei-Mounts traf dieselbe Race noch
+      # die verbliebenen EINZELNEN Datei-Mounts (config.yaml, analyzer-
+      # config.yml) — mit einer zusaetzlichen, gefaehrlicheren Folge: einmal
+      # von Docker als Platzhalter-VERZEICHNIS angelegt (weil die Datei beim
+      # Mount-Validieren noch nicht fertig aus dem Git-Checkout kopiert war),
+      # bleibt der Host-Pfad DAUERHAFT ein Verzeichnis -- Coolifys
+      # Checkout-Kopierschritt scheint eine bestehende Verzeichnis-Leiche
+      # nicht durch die echte Datei zu ersetzen. Ergebnis: LiteLLM startete
+      # mit `IsADirectoryError: [Errno 21] Is a directory: '/app/config.yaml'`,
+      # Presidio-Analyzer mit "Path is not a file: /conf/analyzer-config.yml"
+      # -- beide dauerhaft crash-loopend, trotz "Deployment finished".
+      #
+      # Verzeichnis-Mounts sind gegen genau diese Race immun: das Mounten
+      # selbst braucht nicht, dass der Ordnerinhalt beim Mount-Zeitpunkt
+      # schon vollstaendig kopiert ist (ein Bind-Mount ist eine LIVE-Sicht
+      # auf den Host-Pfad, keine Momentaufnahme) -- und `./litellm` sowie
+      # `./presidio` existieren als Verzeichnisse bereits ab dem ersten
+      # Moment des Git-Checkouts. Deshalb: das ganze `./litellm`-Verzeichnis
+      # nach /mnt/litellm-src mounten (enthaelt config.yaml; die .py-Module
+      # darin werden ignoriert, PYTHONPATH zeigt weiter auf /app mit den
+      # Image-eigenen Kopien) statt einzelner Datei-Mounts.
+      - ./litellm:/mnt/litellm-src:ro
+      # sensitivity_classifier.py braucht presidio/sensitivity-keywords.yml
+      # -> komplettes ./presidio-Verzeichnis mounten (deckt sich mit dem
+      # presidio-analyzer-Service unten, der dieselbe Quelle nach /conf mountet).
+      - ./presidio:/mnt/presidio-src:ro
       # Verschluesselter QI-Session-State (SQLite) persistent halten.
       - datenschleuse-qi-state:/app/state
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    command: ["--config", "/mnt/litellm-src/config.yaml", "--port", "4000"]
     # Health-Check ueber LiteLLMs Liveness-Endpoint (kein DB-/Auth-Zwang).
     # python ist im Image garantiert vorhanden -- kein curl-Zwang. Endpoint-
     # Schreibweise ("liveliness") gegen die verwendete LiteLLM-Version pruefen.
