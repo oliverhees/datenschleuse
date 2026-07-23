@@ -72,6 +72,18 @@ Die Datenschleuse sitzt inline im Anfrageweg. Fällt Presidio aus, hat das zwei 
 
 Wir wählen **fail-closed**, weil ein verlorener Request ärgerlich, aber ein PII-Leck nicht rückgängig zu machen ist. Wenn dir das für deinen Anwendungsfall zu strikt ist (z. B. unkritische interne Tests), kannst du das im Custom-Guardrail-Code (`litellm/datenschleuse_guardrail.py`, `_analyze()`) anpassen — aber das ist eine bewusste Abweichung vom Standard, keine Konfigurationsoption.
 
+## 🛡️ Schutzklassen-Modell: drei Sensitivitätsstufen (Stufe 3 ist eine harte Code-Garantie)
+
+Nicht jede Anfrage ist gleich heikel. Bevor überhaupt maskiert wird, ordnet die Datenschleuse jede Nachricht einer von drei Schutzklassen zu:
+
+- **Stufe 1 — niedrig sensibel:** normaler Inhalt. Geht nach der normalen PII-Maskierung an die Cloud.
+- **Stufe 2 — vertraulich:** interne Geschäfts-/Vertragsdaten mit Personenbezug (z. B. Gehalt, Vertragsnummer, „NDA"/„vertraulich"). Braucht Anonymisierung **und** eine explizite Freigabe (`metadata.sensitivity_approval: true`). **Ohne Freigabe wird blockiert** — „Freigabe fehlt" ist der sichere Default, nicht „automatisch durchlassen".
+- **Stufe 3 — höchst sensibel:** besondere Kategorien personenbezogener Daten nach **Art. 9 DSGVO** (Gesundheit, Religion/Weltanschauung, Gewerkschaft, sexuelle Orientierung, biometrische/genetische Daten) und strafrechtliche Verurteilungen nach **Art. 10 DSGVO** — jeweils in Kombination mit einem Personenbezug. Diese Anfragen werden **NIE an die Cloud geschickt, auch nicht anonymisiert.**
+
+Der entscheidende Punkt bei Stufe 3: **Das ist eine harte Zusage im Code, keine Konfigurationsoption.** Der Block lässt sich nicht per Config, Header oder Freigabe-Flag umgehen. Wer die Anfrage explizit als „harmlos" markiert, kann eine als Stufe 3 erkannte Nachricht trotzdem nicht durchdrücken — die strengere Einstufung gewinnt immer (der Nutzer kann eine Anfrage nur strenger, nie laxer machen). Die Durchsetzungsfunktion nimmt bewusst keinen Bypass-Parameter (`force`, `override`) entgegen, damit auch später niemand versehentlich eine Hintertür einbaut. Genau darum ist es eine Garantie und kein Feature-Flag.
+
+Ehrlich bleibt ehrlich: Die Klassifizierung ist regelbasiert (Signalwörter aus `presidio/sensitivity-keywords.yml` + Personenerkennung) und damit transparent und nachprüfbar — aber wie jede Mustererkennung nicht zu 100 % vollständig. Sie ist bewusst **fail-closed**: bei Unsicherheit stuft sie strenger ein, nicht laxer. Jede Einstufung liefert eine nachvollziehbare Begründung (welche Regel gegriffen hat), damit ein Sicherheits-Gate kein Blackbox bleibt. Details zur Integration: `docs/SENSITIVITY-INTEGRATION.md`.
+
 ## 🇩🇪 Was erkannt wird
 
 Standard (über Presidio, deutsch): Namen, Orte, E-Mail, Telefon, Kreditkarte, IBAN, IP-Adresse.
