@@ -55,6 +55,12 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 # und wird fuer die Presidio-REST-Calls genutzt.
 import httpx
 
+# Reine Quasi-Identifier-Logik (keine Fremd-Abhaengigkeit, immer importierbar).
+# Der zustandsbehaftete, verschluesselte Store (qi_state) wird erst LAZY im
+# Konstruktor importiert -- nur wenn das QI-Feature aktiv ist -- damit dieses
+# Modul weiterhin ohne `cryptography` standalone importier-/testbar bleibt.
+import qi_generalization as qig
+
 
 # ---------------------------------------------------------------------------
 # Basisklasse: in Produktion die echte LiteLLM-CustomGuardrail, im Test-/
@@ -262,6 +268,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
         score_threshold: float = 0.0,
         placeholder_margin: int = DEFAULT_PLACEHOLDER_MARGIN,
         request_timeout: float = 10.0,
+        qi_risk_preset: Optional[str] = None,
+        qi_state_key: Optional[str] = None,
+        qi_state_db: Optional[str] = None,
+        qi_state_ttl_seconds: Optional[int] = None,
+        qi_store: Any = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -275,6 +286,40 @@ class DatenschleuseGuardrail(_GuardrailBase):
         self.score_threshold = float(kwargs.pop("presidio_score_threshold", score_threshold) or 0.0)
         self.placeholder_margin = int(placeholder_margin)
         self.request_timeout = float(request_timeout)
+
+        # --- Quasi-Identifier-Layer (opt-in) --------------------------------
+        # Aktiv, sobald ein Risiko-Preset gesetzt ist (Config: qi_risk_preset).
+        # Ist es None/"off", bleibt der QI-Layer komplett aus -> Verhalten exakt
+        # wie bisher (wichtig: bestehende Tests konstruieren die Guardrail ohne
+        # Preset und brauchen daher KEINEN State-Key).
+        self.qi_risk_preset = kwargs.pop("qi_risk_preset", None) or qi_risk_preset
+        self.qi_enabled = bool(
+            self.qi_risk_preset and str(self.qi_risk_preset).strip().lower() != "off"
+        )
+        self.qi_threshold = qig.threshold_for_preset(self.qi_risk_preset)
+        self._qi_store = None
+        if self.qi_enabled:
+            if qi_store is not None:
+                # Test-/DI-Pfad: fertigen Store injizieren.
+                self._qi_store = qi_store
+            else:
+                # Produktionspfad: verschluesselten TTL-Store bauen. Fehlt der
+                # Schluessel, wirft QiStateStore beim Konstruieren -> fail-closed
+                # beim START (kein unverschluesselter Weiterbetrieb). qi_state
+                # wird LAZY importiert, damit dieses Modul ohne cryptography
+                # importierbar bleibt, solange der QI-Layer aus ist.
+                import qi_state as qs
+
+                ttl = (
+                    int(qi_state_ttl_seconds)
+                    if qi_state_ttl_seconds is not None
+                    else int(os.getenv("DATENSCHLEUSE_STATE_TTL_SECONDS", qs.DEFAULT_TTL_SECONDS))
+                )
+                self._qi_store = qs.QiStateStore(
+                    db_path=qi_state_db or os.getenv("DATENSCHLEUSE_STATE_DB"),
+                    fernet_key=qi_state_key or os.getenv("DATENSCHLEUSE_STATE_KEY"),
+                    ttl_seconds=ttl,
+                )
         super().__init__(**kwargs)
 
     # ---- Presidio Analyzer (echte externe Abhaengigkeit) ------------------
@@ -319,14 +364,29 @@ class DatenschleuseGuardrail(_GuardrailBase):
         messages = data.get("messages")
         masker = Masker()
 
+        # QI-Typen werden nur dann aus der direkten Maskierung herausgehalten,
+        # wenn der QI-Layer aktiv ist. Sonst laufen sie wie jeder andere
+        # erkannte Identifier durch den Masker (harmloser Platzhalter-Roundtrip).
+        qi_types = qig.QI_ENTITY_TYPES if self.qi_enabled else frozenset()
+
+        # Ueber ALLE Messages des Requests gesammelte QI-Instanzen dieses Turns
+        # (Typ, Rohwert) + die Text-Slots, in denen sie ggf. generalisiert werden.
+        turn_qi: List[Tuple[str, str]] = []
+        text_slots: List[Tuple[Any, Any]] = []  # (container, key) auf maskierten Text
+
         if isinstance(messages, list):
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
                 content = msg.get("content")
                 if isinstance(content, str):
-                    entities = await self._analyze(content)
-                    msg["content"] = masker.mask(content, entities)
+                    original = content
+                    entities = await self._analyze(original)
+                    direct, qi = self._split_entities(entities, qi_types)
+                    msg["content"] = masker.mask(original, direct)
+                    # QI-Rohwerte aus dem ORIGINAL (vor Maskierung) ziehen.
+                    turn_qi.extend(self._extract_qi_values(original, qi))
+                    text_slots.append((msg, "content"))
                 elif isinstance(content, list):
                     # Multimodal: nur Text-Parts maskieren.
                     for part in content:
@@ -335,8 +395,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             and part.get("type") == "text"
                             and isinstance(part.get("text"), str)
                         ):
-                            entities = await self._analyze(part["text"])
-                            part["text"] = masker.mask(part["text"], entities)
+                            original = part["text"]
+                            entities = await self._analyze(original)
+                            direct, qi = self._split_entities(entities, qi_types)
+                            part["text"] = masker.mask(original, direct)
+                            turn_qi.extend(self._extract_qi_values(original, qi))
+                            text_slots.append((part, "text"))
 
         # Mapping im EIGENEN Metadata-Key ablegen (nicht LiteLLMs Interna).
         metadata = data.get("metadata")
@@ -344,7 +408,120 @@ class DatenschleuseGuardrail(_GuardrailBase):
             metadata = {}
             data["metadata"] = metadata
         metadata[REID_MAP_KEY] = masker.reid_map
+
+        # --- QI-Layer: Akkumulation ueber die Session + Generalisierung -------
+        # WICHTIG (fail-Semantik): ein Fehler im QI-Layer darf die bereits
+        # erfolgte direkte-PII-Maskierung NICHT zunichte machen und den Request
+        # NICHT blocken (anders als die Presidio-Erreichbarkeit, die hart
+        # fail-closed ist). Deshalb defensiv abfangen + loggen.
+        if self.qi_enabled and self._qi_store is not None and turn_qi:
+            try:
+                self._process_qi(data, user_api_key_dict, turn_qi, text_slots)
+            except Exception as exc:  # pragma: no cover - defensiv
+                print(
+                    f"[datenschleuse] QI-Layer-Fehler ignoriert (direkte Maskierung "
+                    f"bleibt aktiv, Request nicht geblockt): {exc}",
+                    flush=True,
+                )
+
         return data
+
+    # ---- QI-Layer-Helfer ---------------------------------------------------
+    @staticmethod
+    def _split_entities(
+        entities: List[Dict[str, Any]], qi_types: "frozenset"
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Teilt Analyzer-Entities in (direkte Identifier, Quasi-Identifier)."""
+        if not qi_types:
+            return list(entities), []
+        direct: List[Dict[str, Any]] = []
+        qi: List[Dict[str, Any]] = []
+        for ent in entities:
+            if ent.get("entity_type") in qi_types:
+                qi.append(ent)
+            else:
+                direct.append(ent)
+        return direct, qi
+
+    @staticmethod
+    def _extract_qi_values(
+        original: str, qi_entities: List[Dict[str, Any]]
+    ) -> List[Tuple[str, str]]:
+        """(Typ, Rohwert)-Paare der QI-Entities aus dem ORIGINALTEXT (vor
+        Maskierung; nur dort stimmen die Presidio-Offsets)."""
+        out: List[Tuple[str, str]] = []
+        for ent in qi_entities:
+            etype = ent.get("entity_type")
+            start, end = ent.get("start"), ent.get("end")
+            if (
+                etype
+                and isinstance(start, int)
+                and isinstance(end, int)
+                and 0 <= start < end <= len(original)
+            ):
+                out.append((etype, original[start:end]))
+        return out
+
+    def _process_qi(
+        self,
+        data: dict,
+        user_api_key_dict: Any,
+        turn_qi: List[Tuple[str, str]],
+        text_slots: List[Tuple[Any, Any]],
+    ) -> None:
+        """Kernstueck: Session-Key aufloesen, akkumulierte QI-Typen laden,
+        Schwellwert pruefen, State aktualisieren und ggf. die QI-Rohwerte in
+        den bereits maskierten Text-Slots durch ihre generalisierte Form
+        ersetzen.
+
+        Wird nur bei aktivem QI-Layer und vorhandenen QI-Instanzen aufgerufen.
+        Session-Key: bevorzugt eine echte, client-gelieferte Session-ID; sonst
+        (grob) der API-Key-Hash. Fehlt beides, ist keine Session-uebergreifende
+        Akkumulation moeglich -- dann zaehlt nur der aktuelle Turn.
+        """
+        import qi_state as qs
+
+        session_key, coarse = qs.resolve_session_key(data, user_api_key_dict)
+
+        if session_key is None:
+            # Keine Session-Zuordnung moeglich: nur den aktuellen Turn bewerten
+            # (kein persistenter State). Das deckt den Single-Shot-Fall ab, in
+            # dem z.B. unter `paranoid` schon eine einzelne QI generalisiert
+            # werden soll, ohne dass wir etwas speichern koennten.
+            seen_before: set = set()
+            generalize_now, _ = qig.decide_generalization(
+                seen_before, turn_qi, self.qi_threshold
+            )
+            if generalize_now:
+                self._apply_qi_to_slots(text_slots, turn_qi)
+            return
+
+        store = self._qi_store
+        seen_before = store.get_seen_types(session_key)
+        generalize_now, _after = qig.decide_generalization(
+            seen_before, turn_qi, self.qi_threshold
+        )
+
+        # State aktualisieren: pro QI-Typ nur die GENERALISIERTE Kategorie
+        # (nie der Rohwert) verschluesselt ablegen.
+        store.record_many(
+            session_key,
+            [(etype, qig.state_category(etype, value)) for etype, value in turn_qi],
+        )
+
+        if generalize_now:
+            self._apply_qi_to_slots(text_slots, turn_qi)
+
+    @staticmethod
+    def _apply_qi_to_slots(
+        text_slots: List[Tuple[Any, Any]], turn_qi: List[Tuple[str, str]]
+    ) -> None:
+        """Wendet die Generalisierung auf jeden Text-Slot an (wert-basiert;
+        QI-Werte, die in einem Slot nicht vorkommen, sind schlicht No-ops)."""
+        for container, key in text_slots:
+            current = container.get(key) if isinstance(container, dict) else None
+            if isinstance(current, str):
+                container[key] = qig.apply_generalizations(current, turn_qi)
 
     # ---- Post-Call Streaming: streaming-sichere Re-Identification ---------
     async def async_post_call_streaming_iterator_hook(

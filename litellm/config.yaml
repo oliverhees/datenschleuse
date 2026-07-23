@@ -56,6 +56,21 @@ guardrails:
       # Optionaler globaler Score-Schwellwert (0 = aus, Recognizer-Scores gelten):
       presidio_score_threshold: 0.0
       #
+      # --- Quasi-Identifier-Layer (Session-uebergreifende Akkumulation) -----
+      # Erkennt deutsche Quasi-Identifier (PLZ, Geburtsjahr, TVöD/Besoldung,
+      # Geschlecht, Beruf) und generalisiert sie AB einem Schwellwert an
+      # distinkten QI-Typen pro Session, statt sie im Klartext ans LLM zu
+      # lassen (Sweeney: PLZ+Geburtsdatum+Geschlecht identifiziert ~87 %).
+      # Preset steuert den Schwellwert (Utility vs. Privacy, siehe README):
+      #   utility  -> 5 (permissiv, mehr Kontext bleibt)
+      #   balanced -> 3 (Default)
+      #   paranoid -> 1 (jede einzelne QI sofort generalisiert)
+      # Ist qi_risk_preset NICHT gesetzt, bleibt der QI-Layer komplett AUS
+      # (dann wird auch KEIN DATENSCHLEUSE_STATE_KEY gebraucht). Ist er gesetzt,
+      # MUSS DATENSCHLEUSE_STATE_KEY vorhanden sein (fail-closed beim Start) --
+      # der QI-Session-State wird verschluesselt + TTL-begrenzt lokal abgelegt.
+      qi_risk_preset: "balanced"
+      #
       # HINWEIS zur Migration von der alten `guardrail: presidio`-Config:
       # Die frueheren presidio-spezifischen Optionen sind bewusst ENTFERNT, weil
       # sie zu einem anderen Guardrail-Implementierungsvertrag gehoerten und von

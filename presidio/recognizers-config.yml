@@ -93,3 +93,146 @@ recognizers:
       - "kfz"
       - "auto"
       - "fahrzeug"
+
+  # =====================================================================
+  # QUASI-IDENTIFIER (QI) — neue Kategorie (siehe litellm/qi_generalization.py)
+  # Einzeln harmlos, in Kombination re-identifizierend (Sweeney). Diese
+  # Recognizer liefern nur die ERKENNUNG; die Session-Akkumulation und die
+  # Generalisierung passieren im Custom-Guardrail, NICHT hier.
+  # =====================================================================
+
+  # DE_PLZ — 5-stellige deutsche Postleitzahl.
+  # Bewusst MODERATER Score (5-stellige Zahlen sind oft auch Betraege/Kenn-
+  # nummern) -- der Kontext ("plz"/"postleitzahl") hebt die Konfidenz. Wort-
+  # grenzen \b verhindern Treffer INNERHALB langer Ziffernketten (z.B. IBAN,
+  # Bestellnummern -> keine False Positives auf den Negativ-Faellen).
+  - name: "DE_PLZ"
+    supported_language: "de"
+    supported_entity: "DE_PLZ"
+    patterns:
+      - name: "plz_5_ziffern"
+        regex: "\\b\\d{5}\\b"
+        score: 0.35
+    context:
+      - "plz"
+      - "postleitzahl"
+
+  # DE_GEBURTSJAHR — 4-stellige Jahreszahl (1900-2029) NUR mit Kontext-Wort
+  # davor. Der Kontext ist per variabler Lookbehind DIREKT ins Muster gebacken
+  # (Presidio nutzt das `regex`-Modul, das variable Lookbehinds unterstuetzt) --
+  # so matcht eine blanke Jahreszahl NICHT (kein False Positive auf "Version
+  # 2026"), und der Match-Span umfasst nur das JAHR (nicht das Kontext-Wort).
+  - name: "DE_GEBURTSJAHR"
+    supported_language: "de"
+    supported_entity: "DE_GEBURTSJAHR"
+    patterns:
+      - name: "geburtsjahr_mit_kontext"
+        regex: "(?<=(?:geboren|jahrgang|geburtsjahr|geb\\.)[ ]{0,4})(?:19\\d{2}|20[0-2]\\d)\\b"
+        score: 0.6
+    context:
+      - "geboren"
+      - "jahrgang"
+      - "geburtsjahr"
+      - "geb."
+
+  # DE_TVOED_STUFE — Tarif-/Besoldungsangabe.
+  # Zwei Muster: (A) Entgelt-/Besoldungsgruppe mit Schema-Wort davor
+  # ("TVöD E13", "Besoldungsgruppe A13"), (B) freistehende Gruppe wie "EG 9".
+  - name: "DE_TVOED_STUFE"
+    supported_language: "de"
+    supported_entity: "DE_TVOED_STUFE"
+    patterns:
+      - name: "tarif_mit_schema"
+        regex: "\\b(?:TVöD|TVoeD|TV-L|Besoldungsgruppe|Entgeltgruppe|BesGr)[ ]*[A-W]?[ ]?\\d{1,2}\\b"
+        score: 0.6
+      - name: "tarif_gruppe_kurz"
+        regex: "\\b(?:EG|E|A|B|R|W)[ ]?\\d{1,2}\\b"
+        score: 0.3
+    context:
+      - "tvöd"
+      - "tvoed"
+      - "tarif"
+      - "besoldung"
+      - "besoldungsgruppe"
+      - "entgeltgruppe"
+      - "eingruppierung"
+
+  # DE_GENDER — Geschlechtsangabe als eigene Entitaet (deny_list, kein Regex).
+  # WICHTIG (Live-Befund 2026-07-23): der YAML-Registry-Loader setzt den
+  # deny_list_score NICHT auf den PatternRecognizer-Default (1.0), sondern auf
+  # 0.0 -- und __analyze_patterns verwirft jeden Treffer mit score <= 0. Ohne
+  # explizites deny_list_score matcht die deny_list also NIE. Daher zwingend
+  # explizit setzen.
+  - name: "DE_GENDER"
+    supported_language: "de"
+    supported_entity: "DE_GENDER"
+    deny_list_score: 0.9
+    deny_list:
+      - "männlich"
+      - "weiblich"
+      - "divers"
+      - "männl."
+      - "weibl."
+      - "nichtbinär"
+      - "non-binär"
+    context:
+      - "geschlecht"
+
+  # DE_BERUF — gaengige deutsche Berufsbezeichnungen (deny_list).
+  # Beruf ALLEIN ist meist unkritisch -- diese Entitaet zaehlt v.a. zum
+  # Session-Risiko (Beruf+Ort-Kombination). Die Kombinationslogik lebt im
+  # Guardrail, nicht hier. Pragmatische v1-Liste (~40 Berufe).
+  - name: "DE_BERUF"
+    supported_language: "de"
+    supported_entity: "DE_BERUF"
+    deny_list_score: 0.7
+    deny_list:
+      - "Bürgermeister"
+      - "Bürgermeisterin"
+      - "Oberbürgermeister"
+      - "Landrat"
+      - "Landrätin"
+      - "Chefarzt"
+      - "Chefärztin"
+      - "Oberarzt"
+      - "Pfarrer"
+      - "Pfarrerin"
+      - "Priester"
+      - "Rabbiner"
+      - "Imam"
+      - "Geschäftsführer"
+      - "Geschäftsführerin"
+      - "Vorstandsvorsitzender"
+      - "Vorstand"
+      - "Aufsichtsratsvorsitzender"
+      - "Schulleiter"
+      - "Schulleiterin"
+      - "Rektor"
+      - "Rektorin"
+      - "Dekan"
+      - "Professor"
+      - "Professorin"
+      - "Polizeipräsident"
+      - "Polizeichef"
+      - "Feuerwehrkommandant"
+      - "Amtsleiter"
+      - "Amtsleiterin"
+      - "Notar"
+      - "Notarin"
+      - "Staatsanwalt"
+      - "Staatsanwältin"
+      - "Richter"
+      - "Richterin"
+      - "Ingenieur"
+      - "Ingenieurin"
+      - "Apotheker"
+      - "Apothekerin"
+      - "Steuerberater"
+      - "Steuerberaterin"
+      - "Ortsvorsteher"
+      - "Gemeindevorsteher"
+    context:
+      - "beruf"
+      - "tätig"
+      - "arbeitet"
+      - "position"
