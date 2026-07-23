@@ -214,4 +214,7 @@ Fragen, Ideen, "das brauche ich auch für XY": [Wiki](../../wiki) oder [Issues](
 
 Made with 🔒 für die DACH-KI-Community · [AGPL-3.0](LICENSE)
 
+Mit ❤️ und Leidenschaft von **Oliver Hees – Der Aiianer**
+Community: **[aiianer.de](https://aiianer.de)**
+
 </div>
