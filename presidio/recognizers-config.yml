@@ -236,3 +236,67 @@ recognizers:
       - "tätig"
       - "arbeitet"
       - "position"
+
+  # =====================================================================
+  # DIREKT-IDENTIFIER — Aktenzeichen & Firmennamen
+  # =====================================================================
+
+  # DE_AKTENZEICHEN — Gerichts-/Behörden-Aktenzeichen und Geschäftszeichen.
+  # Muster (A) fängt das klassische Gerichts-Aktenzeichen ab: führende
+  # Kammer-/Senatsnummer (Ziffern ODER römisch, z.B. BGH "VI ZR 200/20"),
+  # dann das Registerzeichen (1-5 Buchstaben, z.B. O, K, ZR, BvR), dann
+  # laufende Nummer und Jahr ("123/45"). Der "/Jahr"-Teil ist der starke
+  # Diskriminator -- reine Datums-/Versionszahlen (12/25, 2026.07.22) matchen
+  # nicht, weil ihnen das mittlere Buchstaben-Token fehlt.
+  # Muster (B) fängt behördliche Geschäftszeichen mit Bindestrich-/Punkt-
+  # Struktur ab ("12-3456.7-8/9").
+  - name: "DE_Aktenzeichen"
+    supported_language: "de"
+    supported_entity: "DE_AKTENZEICHEN"
+    patterns:
+      - name: "gerichts_aktenzeichen"
+        regex: "\\b(?:\\d{1,4}|[IVX]{1,4})[ ][A-ZÄÖÜ][A-Za-zÄÖÜ]{0,4}[ ]\\d{1,5}/\\d{2,4}\\b"
+        score: 0.55
+      - name: "geschaeftszeichen"
+        regex: "\\b\\d{1,4}-\\d{1,6}\\.\\d{1,3}-\\d{1,3}/\\d{1,4}\\b"
+        score: 0.5
+    context:
+      - "aktenzeichen"
+      - "az"
+      - "geschäftszeichen"
+      - "gz"
+      - "gericht"
+
+  # DE_FIRMA — deutscher Firmenname anhand der Rechtsform-Suffixe.
+  # Struktur: eine Sequenz großgeschriebener Namens-Tokens (Konnektoren "&"
+  # erlaubt, z.B. "Weber & Söhne") DIREKT gefolgt von einer Rechtsform. So wird
+  # der GANZE Firmenname maskiert, nicht nur die Rechtsform.
+  #
+  # WICHTIG (Groß-/Kleinschreibung): global_regex_flags: 26 enthält
+  # re.IGNORECASE. Die Namens- und Rechtsform-Teile stehen deshalb in einem
+  # scoped-Inline-Flag `(?-i: ... )`, das IGNORECASE lokal ABSCHALTET -- sonst
+  # würde `[A-ZÄÖÜ]` auch Kleinbuchstaben matchen und die "Großbuchstaben-Start"-
+  # Logik wäre wirkungslos (Presidio nutzt das `regex`-Modul, das scoped Flags
+  # unterstützt -- wie schon bei DE_GEBURTSJAHR mit variablem Lookbehind).
+  # Das erzwungene Großschreib-Kriterium ist zugleich der False-Positive-Schutz:
+  # "Für eine GmbH gelten ..." matcht NICHT, weil vor der Rechtsform nur das
+  # kleingeschriebene "eine" steht (kein Name). Der abschließende Negativ-
+  # Lookahead `(?![A-Za-z...])` verhindert, dass "AG" innerhalb von "Agentur"
+  # anschlägt.
+  #
+  # Bekannte Grenze (ehrlich dokumentiert): weil im Deutschen JEDES Substantiv
+  # großgeschrieben wird, kann eine generische Wendung wie "die Rechtsform GmbH"
+  # einen False Positive erzeugen. Suffix-basierte Firmenerkennung im Deutschen
+  # ist inhärent unscharf; der Score ist bewusst moderat gehalten.
+  - name: "DE_Firma"
+    supported_language: "de"
+    supported_entity: "DE_FIRMA"
+    patterns:
+      - name: "firmenname_mit_rechtsform"
+        regex: "\\b(?-i:[A-ZÄÖÜ][A-Za-zÄÖÜäöüß.\\-]+(?:[ ]+(?:&[ ]+)?[A-ZÄÖÜ][A-Za-zÄÖÜäöüß.\\-]+){0,4})[ ]+(?-i:GmbH[ ]?&[ ]?Co\\.[ ]?KG|gGmbH|GmbH|KGaA|UG[ ]?\\(haftungsbeschränkt\\)|mbH|AG|KG|OHG|GbR|e\\.[ ]?V\\.|e\\.[ ]?G\\.|SE|Inc\\.|Ltd\\.|LLC)(?![A-Za-zÄÖÜäöüß])"
+        score: 0.6
+    context:
+      - "firma"
+      - "unternehmen"
+      - "gesellschaft"
+      - "rechtsform"
