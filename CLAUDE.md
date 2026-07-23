@@ -6,6 +6,7 @@ Offener, selbst-hostbarer PII-Anonymisierungs-Proxy für LLM-Anfragen. Community
 - **Vollständiges Konzept:** `KONZEPT.md`
 - **Aktueller Stand:** `PROJEKT-STATUS.md`
 - **Strategie:** Open-Source-first, Reichweite/Autorität zuerst, Monetarisierung folgt
+- **Projektmanagement (ab 2026-07-23): ausschließlich GitHub Issues** (github.com/oliverhees/datenschleuse/issues), NICHT mehr Plane — Community-Transparenz war der Grund für den Wechsel. Offene technische Kriterien bleiben zusätzlich in `ISA.md` protokolliert (interne Historie), aber neue Tasks/Bugs/Feature-Requests gehören als GitHub Issue angelegt, nicht in Plane.
 
 ## Konventionen
 - **Basis-Stack:** Python (LiteLLM + Microsoft Presidio). Bewusste Ausnahme von der bun/TypeScript-Regel, weil LiteLLM/Presidio die Standards sind. Begründung in KONZEPT.md §7.
