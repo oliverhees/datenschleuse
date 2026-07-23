@@ -92,7 +92,33 @@ Genau diese deutschen Entitäten erkennt Standard-Presidio nicht, das ist der Ke
 
 Gemessen gegen einen eigenen deutschen Testkorpus (`test/corpus/`): **Recall 100 %, Precision 100 %** über alle Pflicht-Entitäten (Ziel war ≥95 %/≥90 %). Lauf jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py`.
 
-Noch eine bekannte Lücke: **Quasi-Identifier-Kombinationen** (z. B. "42, männlich, Ingenieur in Weimar") werden noch nicht erkannt, das ist reine Einzelwort-Erkennung. Steht auf der Roadmap.
+### 🧩 Quasi-Identifier: Session-übergreifende Akkumulation
+
+**Quasi-Identifier (QI)** sind einzeln harmlos, in Kombination re-identifizierend. Klassiker (Sweeney): **PLZ + Geburtsdatum + Geschlecht identifiziert ~87 % der Menschen eindeutig.** Presidio ist zustandslos und sieht jede Nachricht isoliert — die Gefahr entsteht erst, wenn sich solche Merkmale über eine Konversation hinweg ansammeln ("männlich" in Nachricht 1, "Jahrgang 1979" in Nachricht 3, "PLZ 84028" in Nachricht 6).
+
+Die Datenschleuse erkennt jetzt fünf deutsche QI-Typen über eigene Recognizer — **Postleitzahl, Geburtsjahr, TVöD-/Besoldungsgruppe, Geschlecht, Beruf** — und akkumuliert sie **verschlüsselt, lokal und TTL-begrenzt** pro Session (Default 24 h). Ab einem Schwellwert an *unterschiedlichen* QI-Typen werden neu auftretende QI nicht mehr im Klartext ans LLM gelassen, sondern **generalisiert statt gelöscht** (Rest-Nutzwert bleibt erhalten):
+
+| QI-Typ | Beispiel | Generalisierung |
+|--------|----------|-----------------|
+| Postleitzahl | `84028` | `Region Bayern (Süd)/…` (grob über erste PLZ-Ziffer) |
+| Geburtsjahr | `1979` | `Ende der 1970er` (Dekade + Phase) |
+| TVöD/Besoldung | `TVöD E13` | `gehobenes Einkommensband (öffentlicher Dienst)` |
+| Geschlecht | `männlich` | `[Geschlecht anonymisiert]` |
+| Beruf | `Bürgermeister` | bleibt stehen, zählt aber zum Session-Risiko (Beruf+Ort) |
+
+Die direkte-Identifier-Maskierung (Namen, IBAN, …) läuft davon **unberührt** weiter — QI-Verarbeitung ist eine zusätzliche Schicht.
+
+### ⚖️ Trade-off: Utility vs. Privacy (konfigurierbar)
+
+Der Schwellwert ist ein bewusster Regler zwischen erhaltenem Kontext (Utility) und Schutz (Privacy), einstellbar über `qi_risk_preset` in `litellm/config.yaml`:
+
+- **`utility`** — Schwellwert 5. Permissiv: mehr Kontext bleibt im Klartext, Generalisierung greift spät. Für Fälle, in denen Nutzwert wichtiger ist als maximale Anonymität.
+- **`balanced`** — Schwellwert 3 (**Default**). Ab drei unterschiedlichen QI-Typen in einer Session wird generalisiert — nah am Sweeney-Trio.
+- **`paranoid`** — Schwellwert 1. Jede einzelne erkannte QI wird sofort generalisiert. Maximaler Schutz, wenig Kontext.
+
+Wie bei der Fail-Policy gilt: der strengere Weg kostet Nutzwert, der permissivere kostet Schutz — die Wahl ist bewusst und dokumentiert, keine versteckte Voreinstellung. Ist `qi_risk_preset` gar nicht gesetzt, bleibt der QI-Layer komplett aus (dann wird auch kein `DATENSCHLEUSE_STATE_KEY` gebraucht).
+
+> **Ehrliche Grenze:** Die Session-Akkumulation greift nur, wenn eine Konversation zuverlässig einer Session zugeordnet werden kann. LiteLLM erzeugt **keine** stabile Session-ID von sich aus — der Client muss eine mitschicken (`litellm_session_id` bzw. Header `x-litellm-session-id`). Fehlt sie, fällt die Datenschleuse auf den **API-Key-Hash** als groben Session-Proxy zurück (ein Key ≈ ein Nutzer). Das bündelt parallele Chats desselben Keys ineinander — akzeptable Näherung, aber keine exakte Konversations-Grenze. Details im Abschnitt „Bekannte Grenzen".
 
 ---
 

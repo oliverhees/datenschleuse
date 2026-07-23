@@ -17,12 +17,27 @@ services:
       # Dockerfile ohnehin schon vorhanden -- der Mount ueberschreibt sie nur
       # mit dem aktuellen Stand vom Host.
       - ./litellm/datenschleuse_guardrail.py:/app/datenschleuse_guardrail.py:ro
+      # Quasi-Identifier-Module ebenfalls read-only mounten (Dev-Iteration ohne
+      # Rebuild; im Image sind sie via Dockerfile ohnehin vorhanden).
+      - ./litellm/qi_generalization.py:/app/qi_generalization.py:ro
+      - ./litellm/qi_state.py:/app/qi_state.py:ro
+      # Verschluesselter QI-Session-State (SQLite) persistent halten.
+      - datenschleuse-qi-state:/app/state
     environment:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+      # Fernet-Schluessel fuer den verschluesselten Quasi-Identifier-State.
+      # PFLICHT sobald der QI-Layer aktiv ist (qi_risk_preset in config.yaml
+      # gesetzt) -- der :?-Guard bricht `docker compose up` hart ab, wenn die
+      # Var fehlt (gleiches Muster wie UI_PASSWORD; fail-closed, nie
+      # unverschluesselt). Erzeugen: siehe .env.example.
+      - DATENSCHLEUSE_STATE_KEY=${DATENSCHLEUSE_STATE_KEY:?DATENSCHLEUSE_STATE_KEY muss in .env gesetzt sein (Fernet-Key) -- der QI-Session-State laeuft nur verschluesselt}
+      # Ablageort der SQLite-State-DB (im persistenten Volume oben) + TTL.
+      - DATENSCHLEUSE_STATE_DB=/app/state/qi_state.db
+      - DATENSCHLEUSE_STATE_TTL_SECONDS=${DATENSCHLEUSE_STATE_TTL_SECONDS:-86400}
       # Postgres treibt das eingebaute LiteLLM Admin-UI (/ui) + Spend-Logs an
       # (ISC-17/18) -- Zeitpunkt/Modell/Kosten/Guardrail-Ergebnisse OHNE
       # Message-Content (turn_off_message_logging, siehe litellm/config.yaml).
@@ -103,3 +118,5 @@ networks:
 
 volumes:
   datenschleuse-db-data:
+  # Verschluesselter, TTL-begrenzter Quasi-Identifier-Session-State (SQLite).
+  datenschleuse-qi-state:

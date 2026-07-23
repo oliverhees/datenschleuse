@@ -225,6 +225,67 @@ cases:
         expected_recall: must_detect
 
   # ---------------------------------------------------------------------
+  # QUASI-IDENTIFIER — eigene QI-Recognizer (neue Kategorie, must_detect)
+  # Einzeln erkannt via presidio/recognizers-config.yml. Die SESSION-
+  # Akkumulation + Generalisierung passiert im Guardrail (litellm/
+  # qi_generalization.py + qi_state.py) und wird dort per Unit-Test geprueft
+  # -- hier geht es nur um die reine EINZEL-Erkennung durch Presidio.
+  # ---------------------------------------------------------------------
+  - id: de-qi-plz-001-mit-kontext
+    text: >-
+      Für den Versand brauche ich noch Ihre Postleitzahl, aktuell steht dort
+      84028 im System.
+    entities:
+      - type: DE_PLZ
+        value: "84028"
+        expected_recall: must_detect
+
+  - id: de-qi-geburtsjahr-001-jahrgang
+    text: >-
+      Der Hinweisgeber gibt an, Jahrgang 1979 zu sein und schon lange im
+      Betrieb zu arbeiten.
+    entities:
+      - type: DE_GEBURTSJAHR
+        value: "1979"
+        expected_recall: must_detect
+
+  - id: de-qi-tvoed-001-entgeltgruppe
+    text: >-
+      Die neue Kollegin wird nach TVöD E13 vergütet, das ist tariflich so
+      hinterlegt.
+    entities:
+      - type: DE_TVOED_STUFE
+        value: "TVöD E13"
+        expected_recall: must_detect
+
+  - id: de-qi-tvoed-002-besoldung
+    text: >-
+      Der Dienstposten ist mit Besoldungsgruppe A13 bewertet, Beamtenverhältnis
+      auf Lebenszeit.
+    entities:
+      - type: DE_TVOED_STUFE
+        value: "Besoldungsgruppe A13"
+        expected_recall: must_detect
+
+  - id: de-qi-gender-001-meldung
+    text: >-
+      Im Meldebogen ist als Geschlecht männlich eingetragen, alles Weitere
+      bleibt vertraulich.
+    entities:
+      - type: DE_GENDER
+        value: "männlich"
+        expected_recall: must_detect
+
+  - id: de-qi-beruf-001-buergermeister
+    text: >-
+      Die betroffene Person arbeitet als Bürgermeister und möchte deshalb
+      unbedingt anonym bleiben.
+    entities:
+      - type: DE_BERUF
+        value: "Bürgermeister"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
   # KOMBI-FÄLLE (mehrere Entitäten in einem Text, realistischer Use-Case)
   # ---------------------------------------------------------------------
   - id: kombi-001-kundenanfrage
