@@ -28,10 +28,18 @@ COPY requirements-guardrail.txt /app/requirements-guardrail.txt
 RUN python -m ensurepip --upgrade \
     && python -m pip install --no-cache-dir -r /app/requirements-guardrail.txt
 
-# 2. Custom-Guardrail-Code ins Image kopieren (auf den Importpfad)
+# 2. Custom-Guardrail-Code + Quasi-Identifier-Module ins Image kopieren
+#    (auf den Importpfad). qi_generalization.py = reine Logik, qi_state.py =
+#    verschluesselter TTL-Session-Store (braucht cryptography, s.o.).
 COPY datenschleuse_guardrail.py /app/datenschleuse_guardrail.py
+COPY qi_generalization.py /app/qi_generalization.py
+COPY qi_state.py /app/qi_state.py
 
-# 3. Sicherstellen, dass /app importierbar ist (Import 'datenschleuse_guardrail')
+# 3. Verzeichnis fuer den lokalen, verschluesselten QI-Session-State (SQLite).
+#    Wird per Volume in docker-compose.yml persistiert (DATENSCHLEUSE_STATE_DB).
+RUN mkdir -p /app/state
+
+# 4. Sicherstellen, dass /app importierbar ist (Import 'datenschleuse_guardrail')
 ENV PYTHONPATH=/app
 
 # Kein eigener ENTRYPOINT/CMD noetig -- der des Basis-Images (litellm) bleibt

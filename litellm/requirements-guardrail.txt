@@ -7,6 +7,12 @@
 # nachvollziehbar bleibt.
 httpx>=0.27,<1.0
 
+# cryptography (Fernet) verschluesselt den Quasi-Identifier-Session-State
+# (litellm/qi_state.py) at rest. Harte Laufzeit-Abhaengigkeit, sobald der
+# QI-Layer aktiv ist (qi_risk_preset gesetzt) -- fail-closed: fehlt der
+# Schluessel/das Paket, startet der QI-Store nicht.
+cryptography>=42.0
+
 # --- Nur fuer die Test-Suite (nicht ins Laufzeit-Image noetig) ------------
 # Die Tests (test/test_datenschleuse_guardrail.py) laufen mit der stdlib
 # (unittest.IsolatedAsyncioTestCase) OHNE zusaetzliche Pakete. Wer sie lieber
