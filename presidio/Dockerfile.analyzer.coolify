@@ -1,0 +1,15 @@
+# Presidio Analyzer mit deutschem spaCy-Sprachmodell — Coolify-Variante.
+#
+# Unterschied zu presidio/Dockerfile.analyzer (lokaler Dev-Build, context:
+# ./presidio): baut mit REPO-ROOT als Build-Context (siehe deploy/coolify/
+# docker-compose.yaml), backt die drei Config-Dateien direkt ins Image statt
+# per Bind-Mount. Grund: siehe litellm/Dockerfile.coolify — Bind-Mounts von
+# Config-Dateien waren in Coolifys Checkout-Pipeline wiederholt unzuverlaessig.
+
+FROM mcr.microsoft.com/presidio-analyzer:latest
+
+RUN python -m spacy download de_core_news_lg
+
+COPY presidio/analyzer-config.yml /conf/analyzer-config.yml
+COPY presidio/nlp-config.yml /conf/nlp-config.yml
+COPY presidio/recognizers-config.yml /conf/recognizers-config.yml

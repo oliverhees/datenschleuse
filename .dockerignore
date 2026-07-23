@@ -1,0 +1,10 @@
+# Root-Build-Context fuer die Coolify-Dockerfiles (litellm/Dockerfile.coolify,
+# presidio/Dockerfile.analyzer.coolify — siehe deploy/coolify/Kommentare in
+# docker-compose.yaml). Alles ausschliessen, was kein Build-Input ist.
+.git/
+.claude/
+test/
+docs/
+*.md
+.env
+.env.example

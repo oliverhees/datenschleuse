@@ -1,0 +1,45 @@
+# Datenschleuse LiteLLM-Image — Coolify-Variante.
+#
+# Unterschied zu litellm/Dockerfile (lokaler Dev-Build, context: ./litellm):
+# diese Variante baut mit REPO-ROOT als Build-Context (siehe deploy/coolify/
+# docker-compose.yaml: context: .), damit sie zusaetzlich config.yaml UND
+# presidio/sensitivity-keywords.yml direkt ins Image backen kann statt sie
+# per Bind-Mount zur Laufzeit nachzuladen.
+#
+# WARUM: Live-Deploy-Befund (2026-07-23, Coolify) — Bind-Mounts von Config-
+# Dateien (einzeln UND als ganzes Verzeichnis) waren in Coolifys Checkout-
+# Pipeline wiederholt unzuverlaessig (mal als Verzeichnis statt Datei
+# materialisiert, mal blieb die Datei im gemounteten Verzeichnis schlicht
+# unauffindbar — vermutlich eine Coolify-interne Eigenheit beim Kopieren des
+# Checkouts in den persistenten App-Ordner, nicht abschliessend reproduzierbar
+# ohne Server-Shell-Zugriff). Docker-BUILD-Copies waren dagegen in jedem
+# einzelnen Versuch zuverlaessig. Deshalb: fuer den Coolify-Pfad alles, was
+# nicht zwingend zur Laufzeit veraenderlich sein muss, fest ins Image backen.
+# Der lokale Dev-Build (litellm/Dockerfile) bleibt unveraendert (dort gibt es
+# diese Race nicht, und Mounts erlauben dort Config-Iteration ohne Rebuild).
+
+FROM ghcr.io/berriai/litellm:main-latest
+
+WORKDIR /app
+
+# Extra-Dependencies (siehe litellm/Dockerfile fuer den vollen Befund-Kommentar
+# zum fehlenden pip im Wolfi-Basisimage).
+COPY litellm/requirements-guardrail.txt /app/requirements-guardrail.txt
+RUN python -m ensurepip --upgrade \
+    && python -m pip install --no-cache-dir -r /app/requirements-guardrail.txt
+
+# Custom-Guardrail-Code + Quasi-Identifier-Module + Schutzklassen-Klassifizierer.
+COPY litellm/datenschleuse_guardrail.py /app/datenschleuse_guardrail.py
+COPY litellm/qi_generalization.py /app/qi_generalization.py
+COPY litellm/qi_state.py /app/qi_state.py
+COPY litellm/sensitivity_classifier.py /app/sensitivity_classifier.py
+
+# Config-Dateien fest ins Image gebacken (siehe Kommentar oben, WARUM).
+COPY litellm/config.yaml /app/config.yaml
+COPY presidio/sensitivity-keywords.yml /app/config/sensitivity-keywords.yml
+
+# Verzeichnis fuer den lokalen, verschluesselten QI-Session-State (SQLite).
+# Wird per Named-Volume persistiert (siehe deploy/coolify/docker-compose.yaml).
+RUN mkdir -p /app/state
+
+ENV PYTHONPATH=/app

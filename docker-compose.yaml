@@ -25,13 +25,43 @@
 #  - Secrets ausschliesslich als `${ENV}`-Referenzen — nie im Klartext (ISC-12).
 #    Die konkreten Werte werden in der Coolify-UI als Environment-Variablen
 #    gesetzt (Vorlage: coolify-template.json / .env.example).
+#  - build.context ist `.` (Repo-Root), nicht `./litellm`/`./presidio`, und
+#    nutzt eigene Dockerfile.coolify-Varianten. Grund: siehe Kommentar unten.
+#
+# WARUM KEINE Config-Bind-Mounts mehr (Live-Deploy-Befund, 2026-07-23):
+# Drei Anlaeufe mit Bind-Mounts scheiterten auf drei unterschiedliche Arten:
+#  1. Einzelne Datei-Mounts (config.yaml, analyzer-config.yml, ...) wurden
+#     nicht-deterministisch zu leeren VERZEICHNISSEN statt Dateien, wenn
+#     Docker beim Mount-Validieren die Datei noch nicht fertig aus Coolifys
+#     Checkout kopiert vorfand -- und blieben das DAUERHAFT (naechster
+#     Checkout ersetzt eine bestehende Verzeichnis-Leiche nicht durch die
+#     echte Datei). Fehlerbild: `IsADirectoryError`.
+#  2. Verzeichnis-Mounts (ganzes ./litellm bzw. ./presidio nach /mnt/*-src)
+#     sollten dagegen immun sein (Bind-Mount = Live-Sicht, kein Snapshot) --
+#     schlugen aber reproduzierbar (nicht nur einmalig) mit "Config file not
+#     found" fehl, obwohl die Datei nachweislich im Git-Commit vorhanden war.
+#     Wahrscheinlichste Erklaerung: eine Coolify-interne Eigenheit beim
+#     Kopieren des Checkouts in den persistenten App-Ordner, nicht
+#     abschliessend reproduzierbar ohne Server-Shell-Zugriff.
+#  3. Ein Unterordner-Ansatz (Compose-Datei in deploy/coolify/, relative
+#     "../../"-Pfade) fuehrte zu von Coolify falsch aufgeloesten Host-Pfaden
+#     (kaputte Mount-Definitionen).
+# Docker-BUILD-Copies waren dagegen in JEDEM Versuch zuverlaessig. Deshalb:
+# alle Config-Dateien fest ins Image backen (siehe litellm/Dockerfile.coolify,
+# presidio/Dockerfile.analyzer.coolify) statt sie zur Laufzeit zu mounten.
+# Einziger verbleibender Mount ist der NAMED VOLUME fuer den QI-State (kein
+# Bind-Mount, von dieser Race nicht betroffen).
+#
+# Kehrseite: Config-Aenderungen brauchen jetzt einen Rebuild+Redeploy statt
+# nur einen Container-Restart. Fuer Coolify (git push -> automatischer
+# Rebuild) ist das ohnehin der normale Workflow, kein echter Nachteil.
 
 services:
   # 1. LiteLLM-Proxy = die Datenschleuse-Schnittstelle (OpenAI-kompatibel).
   datenschleuse:
     build:
-      context: ./litellm
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: litellm/Dockerfile.coolify
     # SERVICE_FQDN_<IDENTIFIER>_<PORT>: Coolify erzeugt hieraus automatisch eine
     # Domain und verdrahtet den Reverse-Proxy auf den Container-Port 4000. Die
     # konkrete Domain setzt/aendert man in der Coolify-UI -- deshalb bewusst KEIN
@@ -66,38 +96,11 @@ services:
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     volumes:
-      # NUR NOCH VERZEICHNIS-MOUNTS, keine einzelnen Datei-Mounts mehr.
-      #
-      # Live-Deploy-Befund #2 (2026-07-23, Coolify, nach dem ersten Fix):
-      # auch nach dem Entfernen der .py-Datei-Mounts traf dieselbe Race noch
-      # die verbliebenen EINZELNEN Datei-Mounts (config.yaml, analyzer-
-      # config.yml) — mit einer zusaetzlichen, gefaehrlicheren Folge: einmal
-      # von Docker als Platzhalter-VERZEICHNIS angelegt (weil die Datei beim
-      # Mount-Validieren noch nicht fertig aus dem Git-Checkout kopiert war),
-      # bleibt der Host-Pfad DAUERHAFT ein Verzeichnis -- Coolifys
-      # Checkout-Kopierschritt scheint eine bestehende Verzeichnis-Leiche
-      # nicht durch die echte Datei zu ersetzen. Ergebnis: LiteLLM startete
-      # mit `IsADirectoryError: [Errno 21] Is a directory: '/app/config.yaml'`,
-      # Presidio-Analyzer mit "Path is not a file: /conf/analyzer-config.yml"
-      # -- beide dauerhaft crash-loopend, trotz "Deployment finished".
-      #
-      # Verzeichnis-Mounts sind gegen genau diese Race immun: das Mounten
-      # selbst braucht nicht, dass der Ordnerinhalt beim Mount-Zeitpunkt
-      # schon vollstaendig kopiert ist (ein Bind-Mount ist eine LIVE-Sicht
-      # auf den Host-Pfad, keine Momentaufnahme) -- und `./litellm` sowie
-      # `./presidio` existieren als Verzeichnisse bereits ab dem ersten
-      # Moment des Git-Checkouts. Deshalb: das ganze `./litellm`-Verzeichnis
-      # nach /mnt/litellm-src mounten (enthaelt config.yaml; die .py-Module
-      # darin werden ignoriert, PYTHONPATH zeigt weiter auf /app mit den
-      # Image-eigenen Kopien) statt einzelner Datei-Mounts.
-      - ./litellm:/mnt/litellm-src:ro
-      # sensitivity_classifier.py braucht presidio/sensitivity-keywords.yml
-      # -> komplettes ./presidio-Verzeichnis mounten (deckt sich mit dem
-      # presidio-analyzer-Service unten, der dieselbe Quelle nach /conf mountet).
-      - ./presidio:/mnt/presidio-src:ro
-      # Verschluesselter QI-Session-State (SQLite) persistent halten.
+      # Nur noch der Named Volume fuer den QI-State -- keine Config-Bind-Mounts
+      # mehr (siehe Kommentar am Dateikopf, WARUM). config.yaml und
+      # sensitivity-keywords.yml sind fest im Image (Dockerfile.coolify).
       - datenschleuse-qi-state:/app/state
-    command: ["--config", "/mnt/litellm-src/config.yaml", "--port", "4000"]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
     # Health-Check ueber LiteLLMs Liveness-Endpoint (kein DB-/Auth-Zwang).
     # python ist im Image garantiert vorhanden -- kein curl-Zwang. Endpoint-
     # Schreibweise ("liveliness") gegen die verwendete LiteLLM-Version pruefen.
@@ -141,16 +144,12 @@ services:
   # Rein intern -- der Produktiv-Traffic laeuft nur ueber datenschleuse-net.
   presidio-analyzer:
     build:
-      context: ./presidio
-      dockerfile: Dockerfile.analyzer
+      context: .
+      dockerfile: presidio/Dockerfile.analyzer.coolify
     environment:
       - ANALYZER_CONF_FILE=/conf/analyzer-config.yml
       - NLP_CONF_FILE=/conf/nlp-config.yml
       - RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
-    volumes:
-      - ./presidio/analyzer-config.yml:/conf/analyzer-config.yml:ro
-      - ./presidio/nlp-config.yml:/conf/nlp-config.yml:ro
-      - ./presidio/recognizers-config.yml:/conf/recognizers-config.yml:ro
     restart: unless-stopped
     networks:
       - datenschleuse-net
