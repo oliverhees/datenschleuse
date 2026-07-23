@@ -24,6 +24,7 @@
 ## Inhaltsverzeichnis
 
 - [Warum die Datenschleuse](#warum-die-datenschleuse)
+- [Was uns unterscheidet](#-was-uns-unterscheidet)
 - [Features](#-features)
 - [Quickstart](#-quickstart)
 - [Architektur](#-architektur)
@@ -46,6 +47,22 @@ Sobald du mit einer Cloud-KI arbeitest (egal ob über [Hermes](https://github.co
 Die Datenschleuse ist ein **OpenAI-kompatibler Proxy**, der personenbezogene Daten lokal erkennt, durch Platzhalter ersetzt, nur den anonymisierten Text an das KI-Modell schickt und die echten Werte in der Antwort wieder einsetzt. Du biegst nur die `base_url` deines Tools auf die Datenschleuse um — sonst ändert sich nichts an deinem Workflow.
 
 Der Unterschied zu den meisten Lösungen am Markt: Closed-Source-Enterprise-Tools mit Preisen auf Anfrage, oder Erkennung nur auf Einzelwort-Ebene ("Rechnungsnummer 12345" ja, aber "42, männlich, Ingenieur in Weimar" als re-identifizierende Kombination nein). Die Datenschleuse ist offen, selbst hostbar, und geht mit dem [Quasi-Identifier-Feature](#quasi-identifier-session-übergreifende-akkumulation) über Einzelwort-Erkennung hinaus.
+
+## 🏆 Was uns unterscheidet
+
+Es gibt zwei Arten von Alternativen: fertige Closed-Source-Enterprise-Tools (Preise auf Anfrage, Blackbox) und DIY-Setups, die sich selbst aus LiteLLM + Presidio zusammenbauen (die Basis, auf der auch wir aufsetzen). Gegen beide unterscheiden wir uns konkret:
+
+| | Closed-Source-Enterprise-Tools | DIY LiteLLM+Presidio | Datenschleuse |
+|---|---|---|---|
+| **Code einsehbar** | ❌ Blackbox | ✅ | ✅ AGPL-3.0 |
+| **Preis** | Auf Anfrage, meist vierstellig+ | Kostenlos, aber Marke Eigenbau | Kostenlos (selbst hosten) oder gebuchte Instanz |
+| **Erkennung über Einzelwörter hinaus** | Unterschiedlich, meist Blackbox | ❌ Presidio erkennt Einzelentitäten, keine Kombinationen | ✅ [Quasi-Identifier-Layer](#quasi-identifier-session-übergreifende-akkumulation): PLZ+Geburtsjahr+Geschlecht+Beruf werden session-übergreifend erkannt und generalisiert |
+| **Streaming ohne Wartezeit** | Unterschiedlich | ❌ LiteLLMs Standard-Guardrail buffert die komplette Antwort, bevor re-identifiziert wird — Streaming fühlt sich an wie non-Streaming | ✅ Eigener Sliding-Window-Guardrail, echtes Token-Streaming bleibt erhalten |
+| **Deutsche Entitäten** | Unterschiedlich | ❌ Presidio erkennt out of the box kaum deutsche Formate | ✅ Eigene Recognizer für Steuer-ID, Sozialversicherungsnummer, Handelsregisternummer, KFZ-Kennzeichen |
+| **Abgestufter Umgang mit besonders sensiblen Daten** | Unterschiedlich | ❌ Alles läuft gleich durch die Pipeline | ✅ [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen): Art. 9/10 DSGVO-Daten (Gesundheit, Religion, sexuelle Orientierung, Gewerkschaft, Vorstrafen) werden hart blockiert, keine Config-Umgehung möglich |
+| **Fail-Verhalten bei Fehlern** | Unterschiedlich | Meist nicht spezifiziert | ✅ Fail-closed by Design: Maskierungsfehler blockieren die Anfrage, nie unmaskiert durchlassen |
+
+Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, das macht im DACH-Raum niemand allein. Unser Mehrwert liegt in dem, was fehlt, wenn man das nur aus der Doku zusammenbaut: streaming-sichere Re-Identifikation, deutsche Recognizer, Quasi-Identifier-Erkennung und das Schutzklassen-Modell — alles live gegen echte Anfragen getestet, nicht nur in der Theorie.
 
 ## ✨ Features
 
