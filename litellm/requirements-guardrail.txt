@@ -7,6 +7,14 @@
 # nachvollziehbar bleibt.
 httpx>=0.27,<1.0
 
+# PyYAML: laedt die Sensitivitaets-Config (presidio/sensitivity-keywords.yml)
+# fuer das Schutzklassen-Modell (sensitivity_classifier.py). Im offiziellen
+# LiteLLM-Image ohnehin vorhanden (transitive Dependency), hier explizit
+# gepinnt fuer den Standalone-Betrieb. Der reine Klassifizierungs-Kern ist
+# ohne PyYAML testbar (Config als dict injizierbar); nur das Laden der
+# YAML-Datei braucht es.
+PyYAML>=6.0
+
 # --- Nur fuer die Test-Suite (nicht ins Laufzeit-Image noetig) ------------
 # Die Tests (test/test_datenschleuse_guardrail.py) laufen mit der stdlib
 # (unittest.IsolatedAsyncioTestCase) OHNE zusaetzliche Pakete. Wer sie lieber
