@@ -37,3 +37,20 @@ Ist noch früh, das Grundgerüst steht, die Architektur ist entschieden, Plugin-
 Wer selbst mit sensiblen Daten arbeitet und da ne Meinung zu hat, ob technisch, ob zu Prioritäten, ob "das brauch ich auch für XY": schreibt's gerne unter den Post. Nehmen wir eventuell direkt mit rein.
 
 Und falls sich jemand ein Video zum Fortschritt wünscht: sagt einfach Bescheid, mach ich gerne, dann können wir da auch nochmal explizit im Detail drüber sprechen.
+
+---
+
+## 2026-07-23 — Diskussion zum Ankündigungspost: Schutzklassen-Modell übernommen
+
+**Kontext:** Unter dem Post vom 22.07. entstand eine inhaltlich starke Diskussion (7 Kommentare). Zentraler Impuls kam von jemandem, der ein ähnliches System ("Variante D", lokaler Anonymisierungs-Tunnel mit Presidio+LiteLLM) bereits produktiv fährt und ein **3-Stufen-Schutzklassen-Modell** vorstellte:
+- Stufe 1 (niedrig sensibel) → nach Anonymisierung erlaubt
+- Stufe 2 (vertraulich) → Anonymisierung + explizites Freigabe-Gate (Human-in-the-loop)
+- Stufe 3 (höchst sensibel) → hart im Code geblockt, nie Cloud, auch nicht anonymisiert, keine Config-Umgehung möglich
+
+Oliver hat entschieden, das Modell sofort und vollständig zu übernehmen ("gleich mit angehen, keine halben Sachen"). Wird als eigenständiges Modul gebaut, siehe ISA.md Decisions 2026-07-23 und Plane-Task "Schutzklassen-Modell (3-Stufen-Sensitivitätsklassifizierung)".
+
+Weitere Diskussionspunkte:
+- Handwerksbetrieb-Use-Case: Pseudonymisierung für Angebote/Anfragen, auftragsbezogen konsistent halten (Feature-Idee für später, noch nicht umgesetzt).
+- Schweiz-Frage: Ansatz ist technisch länderunabhängig (reine Datenminimierung vor Cloud-Versand), aber die rechtliche Einordnung (Art. 25 DSGVO) gilt nur EU/Deutschland — für die Schweiz wäre das revDSG die relevante Grundlage, eigenständig zu prüfen, nicht 1:1 übertragbar.
+- "Nord-Süd-Teilung"-Kommentar: Deutung unsicher — plausibelste Lesart ist die bekannte Varianz in der Auslegungsstrenge zwischen den 16 deutschen Landesdatenschutzbehörden, aber nicht zweifelsfrei aus dem Kommentar ableitbar. Bei Bedarf beim Kommentator direkt nachfragen.
+- Größere Vision eines "Company Brain/OS" (Vertragsmanagement, Dashboards, Zeiterfassung, Rechnungsstellung) wurde geäußert — deutlich größerer Scope als Datenschleuse, eigenes Thema, hier nur als Kontext vermerkt.
