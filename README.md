@@ -1,11 +1,15 @@
 <div align="center">
 
+**🚧 STATUS: BETA v1.1**
+
+![Datenschleuse — Deine Daten. Deine Regeln.](docs/assets/datenschleuse-release.png)
+
 # 🔒 Datenschleuse
 
 **Der offene, selbst-hostbare PII-Anonymisierungs-Proxy für LLM-Anfragen.**
 
 [![Lizenz: AGPL v3](https://img.shields.io/badge/Lizenz-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Beta-orange.svg)](#-status)
+[![Status](https://img.shields.io/badge/Status-Beta%20v1.1-orange.svg)](#-status)
 [![Stack](https://img.shields.io/badge/Stack-LiteLLM%20%2B%20Presidio-informational.svg)](#-architektur)
 [![Sprache](https://img.shields.io/badge/Fokus-🇩🇪%20Deutsch%2FDACH-black.svg)](#-was-erkannt-wird)
 
