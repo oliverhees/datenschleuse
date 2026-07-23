@@ -1,0 +1,210 @@
+# Datenschleuse — Schutzklassen-Modell: Signalwort- und Musterlisten
+# ==================================================================
+#
+# Diese Datei steuert den Sensitivitaets-Klassifizierer
+# (litellm/sensitivity_classifier.py). Sie ist BEWUSST von den
+# Presidio-Recognizer-Configs (presidio/recognizers-config.yml,
+# analyzer-config.yml, nlp-config.yml) getrennt: Presidio erkennt
+# konkrete PII-Werte (Namen, IBAN, ...), diese Datei erkennt den
+# SENSITIVITAETS-KONTEXT einer Nachricht (welche Schutzklasse gilt).
+#
+# WICHTIG: Diese Datei wird NICHT von Presidio geladen. Sie definiert
+# keine Presidio-Entitaeten. Sie ist reine Konfiguration fuer die
+# eigene Klassifizierungslogik und daher frei erweiterbar, ohne die
+# Presidio-Registry (und deren Boot-Verhalten) zu beruehren.
+#
+# Fachlicher Rahmen: Art. 9 DSGVO (besondere Kategorien personen-
+# bezogener Daten) und Art. 10 DSGVO (strafrechtliche Verurteilungen).
+# Die Wortlisten sind SACHLICH-FACHLICH gemeint: sie markieren, dass
+# ein Text sich thematisch im Bereich einer besonderen Datenkategorie
+# bewegt. Sie bewerten keine Person und treffen keine Aussage ueber
+# einzelne Menschen — sie loesen ausschliesslich eine strengere
+# technische Schutzbehandlung der Anfrage aus.
+#
+# Erkennungsrate ist nie 100%. Diese Listen sind bewusst erweiterbar;
+# fehlende Begriffe bitte ergaenzen (jede Ergaenzung macht das Gate
+# strenger, nie laxer).
+
+# ---------------------------------------------------------------------------
+# STUFE 3 — hoechst sensibel (Art. 9 / Art. 10 DSGVO).
+# Trifft ein Begriff aus einer dieser Kategorien UND es gibt eine
+# Personen-Referenz (siehe person_indicators / person_linking_entities),
+# wird die Anfrage als Stufe 3 klassifiziert -> HARTER Block, kein
+# Cloud-Call, auch nicht anonymisiert. Nicht per Config/Flag umgehbar.
+# ---------------------------------------------------------------------------
+tier3_special_categories:
+
+  # Gesundheitsdaten (Art. 9 Abs. 1 DSGVO)
+  gesundheit:
+    - "Diagnose"
+    - "Diagnosen"
+    - "Erkrankung"
+    - "Krankheit"
+    - "psychische Erkrankung"
+    - "psychisch krank"
+    - "Depression"
+    - "Burnout"
+    - "Krebs"
+    - "Tumor"
+    - "HIV"
+    - "AIDS"
+    - "Hepatitis"
+    - "Schwangerschaft"
+    - "schwanger"
+    - "Behinderung"
+    - "Schwerbehinderung"
+    - "Grad der Behinderung"
+    - "Pflegegrad"
+    - "Medikament"
+    - "Medikamente"
+    - "Therapie"
+    - "Psychotherapie"
+    - "Reha"
+    - "Rehabilitation"
+    - "Krankschreibung"
+    - "arbeitsunfaehig"
+    - "Attest"
+    - "Befund"
+    - "Patientenakte"
+    - "Krankengeschichte"
+    - "Suchterkrankung"
+    - "Sucht"
+
+  # Genetische und biometrische Daten (Art. 9 Abs. 1 DSGVO)
+  biometrisch_genetisch:
+    - "genetisch"
+    - "Gentest"
+    - "DNA"
+    - "Erbkrankheit"
+    - "biometrisch"
+    - "Fingerabdruck"
+    - "Gesichtserkennung"
+    - "Iris-Scan"
+
+  # Religioese oder weltanschauliche Ueberzeugungen (Art. 9 Abs. 1 DSGVO)
+  religion_weltanschauung:
+    - "Religion"
+    - "Glaubensrichtung"
+    - "Konfession"
+    - "getauft"
+    - "Kirchenaustritt"
+    - "muslimisch"
+    - "juedisch"
+    - "christlich"
+    - "atheistisch"
+    - "Weltanschauung"
+
+  # Politische Meinungen (Art. 9 Abs. 1 DSGVO)
+  politisch:
+    - "Parteimitglied"
+    - "Parteizugehoerigkeit"
+    - "politische Einstellung"
+    - "waehlt"
+
+  # Gewerkschaftszugehoerigkeit (Art. 9 Abs. 1 DSGVO)
+  gewerkschaft:
+    - "Gewerkschaft"
+    - "Gewerkschaftsmitglied"
+    - "Betriebsrat"
+    - "Streik"
+
+  # Daten zum Sexualleben / zur sexuellen Orientierung (Art. 9 Abs. 1 DSGVO)
+  sexualleben:
+    - "sexuelle Orientierung"
+    - "homosexuell"
+    - "heterosexuell"
+    - "bisexuell"
+    - "transgender"
+    - "queer"
+    - "Sexualleben"
+
+  # Strafrechtliche Verurteilungen und Straftaten (Art. 10 DSGVO)
+  strafrechtlich:
+    - "Vorstrafe"
+    - "vorbestraft"
+    - "verurteilt"
+    - "Verurteilung"
+    - "Strafverfahren"
+    - "Ermittlungsverfahren"
+    - "Anklage"
+    - "Haftstrafe"
+    - "Bewaehrung"
+    - "Straftat"
+    - "Gefaengnis"
+
+# ---------------------------------------------------------------------------
+# STUFE 2 — vertraulich.
+# Interne Geschaefts-/Vertragsdaten mit Personen-/Vertragsbezug OHNE
+# Art.-9-Kontext. Braucht Anonymisierung UND explizite Freigabe, bevor
+# der (anonymisierte) Text die Cloud erreicht.
+# ---------------------------------------------------------------------------
+tier2_context_words:
+  - "vertraulich"
+  - "intern"
+  - "streng vertraulich"
+  - "nicht weitergeben"
+  - "NDA"
+  - "Geheimhaltung"
+  - "Verschwiegenheit"
+  - "Betriebsgeheimnis"
+  - "Geschaeftsgeheimnis"
+
+# Regex-Muster fuer Stufe-2-Kandidaten (mit re.IGNORECASE ausgewertet).
+# Greifen nur in Kombination mit einer Personen-Referenz.
+tier2_patterns:
+  # Vertragsnummer: "Vertragsnummer 12345", "Vertrag Nr. AB-2024-01", "Vertragsnr.: 7788"
+  vertragsnummer: "vertrags?(?:nummer|nr\\.?)\\s*:?\\s*[A-Za-z0-9][A-Za-z0-9\\-/]{2,}"
+  # Gehaltsangabe: "Gehalt von 60.000 EUR", "verdient 5000 €", "Jahresgehalt: 72.000 Euro"
+  gehalt: "(?:gehalt|jahresgehalt|monatsgehalt|lohn|verdienst|verdient)\\D{0,20}\\d{1,3}(?:[.\\s]?\\d{3})*(?:\\s?(?:eur|euro|€))?"
+
+# ---------------------------------------------------------------------------
+# Personen-Referenz.
+# Eine Art.-9-/Stufe-2-Kombination greift nur, wenn der Text sich auf
+# eine PERSON bezieht. Zwei Quellen:
+#   1) Presidio-Entities (person_linking_entities), die der Klassifizierer
+#      als Eingabe bekommt — das ist die primaere, robuste Quelle.
+#   2) person_indicators als Fallback (rein textbasiert), falls Presidio
+#      keine Person erkennt oder ohne laufenden Analyzer klassifiziert wird.
+# ---------------------------------------------------------------------------
+
+# Presidio-Entity-Typen, die eine Anfrage an eine konkrete Person binden.
+# (Namen der bereits vorhandenen Recognizer aus recognizers-config.yml.)
+person_linking_entities:
+  - "PERSON"
+  - "EMAIL_ADDRESS"
+  - "PHONE_NUMBER"
+  - "IBAN_CODE"
+  - "DE_STEUER_ID"
+  - "DE_SOZIALVERSICHERUNG"
+  - "DE_KFZ_KENNZEICHEN"
+
+# Textbasierte Personen-Indikatoren (Fallback, mit Wortgrenzen gematcht).
+person_indicators:
+  - "Patient"
+  - "Patientin"
+  - "Mandant"
+  - "Mandantin"
+  - "Mitarbeiter"
+  - "Mitarbeiterin"
+  - "Kollege"
+  - "Kollegin"
+  - "Kunde"
+  - "Kundin"
+  - "Bewerber"
+  - "Bewerberin"
+  - "Angestellte"
+  - "Angestellter"
+  - "Herr"
+  - "Frau"
+  - "mein Bruder"
+  - "meine Schwester"
+  - "mein Vater"
+  - "meine Mutter"
+  - "mein Sohn"
+  - "meine Tochter"
+  - "mein Mann"
+  - "meine Frau"
+  - "mein Kollege"
+  - "meine Kollegin"
+  - "mein Chef"
+  - "meine Chefin"
