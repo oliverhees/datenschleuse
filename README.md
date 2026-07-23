@@ -15,7 +15,7 @@
 
 *Hänge sie zwischen dein Tool und die KI. Personenbezogene Daten verlassen dein System nie im Klartext.*
 
-[Quickstart](#-quickstart) · [Architektur](#-architektur) · [Sicherheitsmodell](#-sicherheitsmodell) · [Coolify-Deploy](DEPLOY.md) · [Wiki](../../wiki) · [Lizenz](#-lizenz)
+[Quickstart](#-quickstart) · [Architektur](#-architektur) · [Sicherheitsmodell](#-sicherheitsmodell) · [Coolify-Deploy](docs/DEPLOY.md) · [Wiki](../../wiki) · [Lizenz](#-lizenz)
 
 </div>
 
@@ -104,7 +104,7 @@ Deine Tools sprechen die Datenschleuse dann so an:
 - **Modell:** `datenschleuse-gpt` (oder je nach `model_list`-Konfiguration)
 - **Admin-Dashboard:** `http://localhost:4000/ui` (Login: `UI_USERNAME`/`UI_PASSWORD` aus deiner `.env`)
 
-**Lieber auf einem eigenen Server deployen?** Siehe [DEPLOY.md](DEPLOY.md) für den Coolify-Ein-Klick-Weg.
+**Lieber auf einem eigenen Server deployen?** Siehe [DEPLOY.md](docs/DEPLOY.md) für den Coolify-Ein-Klick-Weg.
 
 ## 🧩 Architektur
 
@@ -117,7 +117,7 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
 ```
 
 **Stack:** [LiteLLM](https://litellm.ai) (Proxy) + [Microsoft Presidio](https://microsoft.github.io/presidio/) (Erkennung) + eigene deutsche Recognizer + eigener Custom-Guardrail (`litellm/datenschleuse_guardrail.py`) für streaming-sichere Re-Identification, Quasi-Identifier und Schutzklassen.
-**Backend:** forwardet an [eurouter.ai](https://www.eurouter.ai) (EU-gehostet, GDPR, Zero Data Retention) — Gürtel und Hosenträger: EU-Hosting *plus* PII-Stripping davor.
+**Backend:** forwardet an [eurouter.ai](https://www.eurouter.ai?ref=06ZUHPBK) (EU-gehostet, GDPR, Zero Data Retention) — Gürtel und Hosenträger: EU-Hosting *plus* PII-Stripping davor.
 **Persistenz:** Postgres (LiteLLM Admin-UI/Spend-Logs, nie Message-Content) + verschlüsseltes, TTL-begrenztes SQLite (Quasi-Identifier-Session-State).
 
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
@@ -177,7 +177,7 @@ Die Datenschleuse **reduziert das Risiko erheblich**, indem Personendaten gar ni
 - Pseudonymisierung nimmt die Daten rechtlich **nicht** aus dem DSGVO-Scope.
 - Die Datenschleuse ist **kein** Compliance-Zertifikat und **kein** Ersatz für eine Datenschutz-Folgenabschätzung. Wir bewerben sie nie als „DSGVO-konform".
 - Keine PII-Erkennung ist zu 100 % perfekt. Es gibt immer ein Restrisiko (False Negatives).
-- **Beta-Hinweis:** Wenn du eine von uns/der Community gehostete Beta-Instanz nutzt (statt selbst zu hosten), läuft die Presidio-Analyse auf diesem fremden Server, nicht mehr lokal bei dir. Zum Testen okay — für echte, sensible Produktivdaten: selbst hosten (siehe [DEPLOY.md](DEPLOY.md)).
+- **Beta-Hinweis:** Wenn du eine von uns/der Community gehostete Beta-Instanz nutzt (statt selbst zu hosten), läuft die Presidio-Analyse auf diesem fremden Server, nicht mehr lokal bei dir. Zum Testen okay — für echte, sensible Produktivdaten: selbst hosten (siehe [DEPLOY.md](docs/DEPLOY.md)).
 
 Diese Ehrlichkeit ist Absicht. Wer dir etwas anderes verspricht, verkauft dir Marketing.
 
@@ -205,7 +205,7 @@ Vollständige, laufend gepflegte Kriterienliste: [`ISA.md`](ISA.md). Aktueller P
 
 ## 🏠 Kein Bock auf Selbst-Hosten?
 
-Du kannst die Datenschleuse komplett selbst hosten (siehe [Coolify-Deploy](DEPLOY.md)) — deine Infrastruktur, deine Daten, kein Mittelsmann. Wenn du das aber nicht selbst aufsetzen willst: **erteil uns den Auftrag, wir richten dir eine eigene Instanz ein.** Eigene Instanz pro Kunde, kein gemeinsamer Topf, kein geteilter eurouter-Key. Kontakt: [aiianer.de](https://aiianer.de) oder [Issues](../../issues).
+Du kannst die Datenschleuse komplett selbst hosten (siehe [Coolify-Deploy](docs/DEPLOY.md)) — deine Infrastruktur, deine Daten, kein Mittelsmann. Wenn du das aber nicht selbst aufsetzen willst: **erteil uns den Auftrag, wir richten dir eine eigene Instanz ein.** Eigene Instanz pro Kunde, kein gemeinsamer Topf, kein geteilter eurouter-Key. Kontakt: [aiianer.de](https://aiianer.de) oder [Issues](../../issues).
 
 ## 🤝 Mitmachen
 

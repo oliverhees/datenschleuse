@@ -1,0 +1,135 @@
+services:
+  # 1. LiteLLM Proxy = die eigentliche Datenschleuse-Schnittstelle (OpenAI-kompatibel)
+  datenschleuse:
+    # Eigenes Image (statt Stock ghcr.io/berriai/litellm:main-latest), weil die
+    # Custom-Guardrail-Klasse (litellm/datenschleuse_guardrail.py) importierbar
+    # sein muss und ggf. Extra-Deps braucht -- siehe litellm/Dockerfile.
+    build:
+      context: ./litellm
+      dockerfile: Dockerfile
+    container_name: datenschleuse
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      # Custom-Guardrail zusaetzlich read-only mounten: erlaubt Dev-Iteration
+      # ohne Rebuild (Container-Neustart genuegt). Im Image ist die Datei via
+      # Dockerfile ohnehin schon vorhanden -- der Mount ueberschreibt sie nur
+      # mit dem aktuellen Stand vom Host.
+      - ./litellm/datenschleuse_guardrail.py:/app/datenschleuse_guardrail.py:ro
+      # Quasi-Identifier-Module ebenfalls read-only mounten (Dev-Iteration ohne
+      # Rebuild; im Image sind sie via Dockerfile ohnehin vorhanden).
+      - ./litellm/qi_generalization.py:/app/qi_generalization.py:ro
+      - ./litellm/qi_state.py:/app/qi_state.py:ro
+      # Verschluesselter QI-Session-State (SQLite) persistent halten.
+      - datenschleuse-qi-state:/app/state
+      - ./litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
+      # sensitivity_classifier.py's Default-Config-Pfad ist relativ zur eigenen
+      # Datei (../presidio/sensitivity-keywords.yml) -- das stimmt im Repo
+      # (litellm/ und presidio/ sind Geschwister), aber NICHT im Image (/app/
+      # ist flach, kein Geschwister-presidio/-Verzeichnis). Deshalb die YAML
+      # explizit mounten und den Pfad per ENV ueberschreiben (siehe unten).
+      - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+    environment:
+      # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
+      - PYTHONPATH=/app
+      - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      # Live-Build-Befund (verifiziert 2026-07-23, Coolify-Vorbereitung): diese
+      # Zeile fehlte -- general_settings.master_key in config.yaml referenziert
+      # os.environ/DATENSCHLEUSE_MASTER_KEY, aber ohne diese Env-Var kam der Key
+      # nie im Container an. Der Proxy lief dadurch faktisch OHNE Auth-Pruefung.
+      - DATENSCHLEUSE_MASTER_KEY=${DATENSCHLEUSE_MASTER_KEY:?DATENSCHLEUSE_MASTER_KEY muss in .env gesetzt sein -- kein Default, damit der Proxy nie ohne Auth startet}
+      - EUROUTER_API_KEY=${EUROUTER_API_KEY}
+      - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
+      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+      # Fernet-Schluessel fuer den verschluesselten Quasi-Identifier-State.
+      # PFLICHT sobald der QI-Layer aktiv ist (qi_risk_preset in config.yaml
+      # gesetzt) -- der :?-Guard bricht `docker compose up` hart ab, wenn die
+      # Var fehlt (gleiches Muster wie UI_PASSWORD; fail-closed, nie
+      # unverschluesselt). Erzeugen: siehe .env.example.
+      - DATENSCHLEUSE_STATE_KEY=${DATENSCHLEUSE_STATE_KEY:?DATENSCHLEUSE_STATE_KEY muss in .env gesetzt sein (Fernet-Key) -- der QI-Session-State laeuft nur verschluesselt}
+      # Ablageort der SQLite-State-DB (im persistenten Volume oben) + TTL.
+      - DATENSCHLEUSE_STATE_DB=/app/state/qi_state.db
+      - DATENSCHLEUSE_STATE_TTL_SECONDS=${DATENSCHLEUSE_STATE_TTL_SECONDS:-86400}
+      # Postgres treibt das eingebaute LiteLLM Admin-UI (/ui) + Spend-Logs an
+      # (ISC-17/18) -- Zeitpunkt/Modell/Kosten/Guardrail-Ergebnisse OHNE
+      # Message-Content (turn_off_message_logging, siehe litellm/config.yaml).
+      - DATABASE_URL=postgresql://${DATENSCHLEUSE_DB_USER:-datenschleuse}:${DATENSCHLEUSE_DB_PASSWORD:-datenschleuse}@datenschleuse-db:5432/${DATENSCHLEUSE_DB_NAME:-datenschleuse}
+      # Admin-UI Basic-Auth (ISC-20) -- ohne Werte bleibt /ui in der
+      # aktuellen LiteLLM-Version unauthentifiziert erreichbar, siehe README.
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss in .env gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+    depends_on:
+      presidio-analyzer:
+        condition: service_started
+      presidio-anonymizer:
+        condition: service_started
+      datenschleuse-db:
+        condition: service_healthy
+    networks:
+      - datenschleuse-net
+
+  # 1b. Postgres fuer das LiteLLM Admin-UI (Spend-Logs, Guardrail-Metadaten,
+  # NIE Message-Content -- siehe turn_off_message_logging in config.yaml).
+  datenschleuse-db:
+    image: postgres:16-alpine
+    container_name: datenschleuse-db
+    environment:
+      - POSTGRES_USER=${DATENSCHLEUSE_DB_USER:-datenschleuse}
+      - POSTGRES_PASSWORD=${DATENSCHLEUSE_DB_PASSWORD:-datenschleuse}
+      - POSTGRES_DB=${DATENSCHLEUSE_DB_NAME:-datenschleuse}
+    volumes:
+      - datenschleuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATENSCHLEUSE_DB_USER:-datenschleuse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datenschleuse-net
+
+  # 2. Presidio Analyzer = erkennt PII (mit deutschem Sprachmodell + eigenen DE-Recognizern)
+  presidio-analyzer:
+    build:
+      context: ./presidio
+      dockerfile: Dockerfile.analyzer
+    container_name: datenschleuse-analyzer
+    ports:
+      # Host-Zugriff nur fuer lokale Entwicklung/Benchmark (test/corpus-benchmark.py).
+      # Kein Teil des Produktiv-Traffics -- der laeuft ausschliesslich ueber den
+      # internen datenschleuse-net (LiteLLM -> presidio-analyzer:3000).
+      - "5001:3000"
+    environment:
+      # Live-Build-Befund (verifiziert 2026-07-22): ANALYZER_CONF_FILE zeigte
+      # urspruenglich auf eine nie angelegte Datei (Rest aus dem allerersten,
+      # ungetesteten PoC-Geruest). Ohne sie defaultet Presidio auf
+      # supported_languages:[en], was hart mit unserem deutschen NLP-Modell +
+      # Recognizer-Registry kollidiert ("Misconfigured engine, supported
+      # languages have to be consistent") -- die Datei ist zwingend, jetzt
+      # angelegt unter presidio/analyzer-config.yml.
+      - ANALYZER_CONF_FILE=/conf/analyzer-config.yml
+      - NLP_CONF_FILE=/conf/nlp-config.yml
+      - RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
+    volumes:
+      - ./presidio/analyzer-config.yml:/conf/analyzer-config.yml:ro
+      - ./presidio/nlp-config.yml:/conf/nlp-config.yml:ro
+      - ./presidio/recognizers-config.yml:/conf/recognizers-config.yml:ro
+    networks:
+      - datenschleuse-net
+
+  # 3. Presidio Anonymizer = ersetzt erkannte PII durch Platzhalter
+  presidio-anonymizer:
+    image: mcr.microsoft.com/presidio-anonymizer:latest
+    container_name: datenschleuse-anonymizer
+    networks:
+      - datenschleuse-net
+
+networks:
+  datenschleuse-net:
+    driver: bridge
+
+volumes:
+  datenschleuse-db-data:
+  # Verschluesselter, TTL-begrenzter Quasi-Identifier-Session-State (SQLite).
+  datenschleuse-qi-state:

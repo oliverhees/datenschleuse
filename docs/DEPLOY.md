@@ -5,8 +5,11 @@ Instanz gehoert einem Betreiber, die PII-Pipeline ist fuer alle gleich, nur der
 Upstream-Key ist deiner. Kein Multi-User-Sharing, kein fremdes Kontingent.
 
 Dateien fuer den Deploy:
-- `docker-compose.coolify.yml` — der Stack, Coolify-tauglich (Proxy via Coolify,
-  keine festen Container-Namen, keine Host-Ports, Secrets nur als `${ENV}`).
+- `deploy/coolify/docker-compose.yaml` — der Stack, Coolify-tauglich (Proxy via
+  Coolify, keine festen Container-Namen, keine Host-Ports, Secrets nur als
+  `${ENV}`, ausschliesslich Verzeichnis-Bind-Mounts). Liegt bewusst in einem
+  eigenen Unterordner, nicht am Repo-Root — dort liegt das lokale
+  `docker-compose.yml` fuer den Self-Hosting-Quickstart (siehe README).
 - `coolify-template.json` — Liste aller zu setzenden Variablen (inkl. Generier-Hinweisen).
 - `.env.example` — dieselben Variablen mit Erklaerung.
 
@@ -17,7 +20,7 @@ Dateien fuer den Deploy:
 - Eine laufende Coolify-Instanz auf einem eigenen Server (z. B. Hetzner).
   Server-Haertung als One-Liner: siehe
   [coolify-server-hardening](https://github.com/oliverhees/coolify-server-hardening).
-- Ein eurouter.ai-Account + API-Key (https://www.eurouter.ai).
+- Ein eurouter.ai-Account + API-Key (https://www.eurouter.ai?ref=06ZUHPBK).
 - Eine (Sub-)Domain, die auf den Coolify-Server zeigt (z. B. `datenschleuse.deine-domain.de`).
 
 ---
@@ -25,7 +28,8 @@ Dateien fuer den Deploy:
 ## Weg A — Coolify-UI (empfohlen)
 
 1. **Projekt → New Resource → Docker Compose** (Quelle: dieses Git-Repo,
-   Branch `main`), als Compose-Datei `docker-compose.coolify.yml` waehlen.
+   Branch `main`, Base Directory `/deploy/coolify`) — Coolify findet die
+   `docker-compose.yaml` dort automatisch.
 2. **Environment-Variablen** setzen (Reiter *Environment Variables*) — die Werte
    aus `coolify-template.json` / `.env.example`:
 
@@ -57,7 +61,7 @@ Auf jedem Docker-Host (Reverse-Proxy/TLS stellst du dann selbst davor):
 ```bash
 git clone https://github.com/<dein-user>/datenschleuse.git && cd datenschleuse \
   && cp .env.example .env && $EDITOR .env \
-  && docker compose -f docker-compose.coolify.yml up -d --build
+  && docker compose -f deploy/coolify/docker-compose.yaml up -d --build
 ```
 
 `.env` vorher mit echten Werten fuellen (siehe Tabelle oben). Ohne die
@@ -83,13 +87,19 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
 
 ## Ehrliche Hinweise
 
-- **Nicht gegen eine echte Coolify-Instanz getestet.** Der Compose-Stack selbst
-  ist lokal verifiziert; die Coolify-spezifischen Teile (SERVICE_FQDN-Domain-
-  Erzeugung, Proxy-Verdrahtung) folgen der Coolify-Doku, sind hier aber nicht
-  End-to-End durchgeklickt. Vor Community-Weitergabe einmal real deployen.
+- **Live gegen eine echte Coolify-Instanz getestet und verifiziert** (2026-07-23).
+  Dabei zwei reale Bugs gefunden und gefixt, die kein lokaler Test gezeigt
+  haette: (1) einzelne Datei-Bind-Mounts trafen eine Race in Coolifys
+  Checkout-Kopierschritt und wurden dauerhaft zu leeren Verzeichnissen statt
+  Dateien — behoben durch ausschliessliche Verzeichnis-Mounts (siehe Kommentar
+  am Kopf von `docker-compose.yaml`). (2) Die Coolify-eigene Custom-Domain-
+  Zuordnung (`SERVICE_FQDN_*`) laesst sich nach dem ersten Deploy nicht per
+  Env-Var-Update nachtraeglich umbiegen — die Domain muss beim Anlegen der
+  Resource oder danach manuell in der Coolify-UI gesetzt werden, nicht nur
+  als Environment-Variable.
 - **Health-Check-Endpoint** (`/health/liveliness`) gegen die konkret gebaute
   LiteLLM-Version gegenpruefen — die Schreibweise kann versionsabhaengig sein.
   Faellt der Check falsch-negativ aus, im Compose auskommentieren.
-- **`DATENSCHLEUSE_MASTER_KEY`** wird im Coolify-Compose explizit an den Container
-  uebergeben (im lokalen `docker-compose.yml` fehlt das aktuell — dort startet
-  der Proxy ohne Auth). Fuer jeden erreichbaren Deploy ist der Master-Key Pflicht.
+- **`DATENSCHLEUSE_MASTER_KEY`** wird in beiden Compose-Dateien (lokal und
+  Coolify) explizit an den Container uebergeben, mit `:?`-Guard — kein Start
+  ohne Auth moeglich.

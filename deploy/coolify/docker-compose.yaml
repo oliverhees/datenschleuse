@@ -3,6 +3,15 @@
 # Zweck: denselben Stack (LiteLLM-Proxy + Presidio + Postgres) so aufbauen,
 # dass Coolify ihn direkt aus dem Git-Repo deployen kann.
 #
+# WARUM in deploy/coolify/ statt im Repo-Root: Coolifys Build-Pack-Autodetect
+# erwartet exakt eine Datei namens docker-compose.yaml/.yml am konfigurierten
+# base_directory. Root ist aber schon durch das lokale docker-compose.yml
+# belegt (Self-Hoster-Quickstart, siehe README) -- zwei gleichnamige Dateien
+# am selben Ort sind nicht moeglich, zwei UNTERSCHIEDLICH benannte Dateien am
+# Root wuerden fuer Verwirrung sorgen, welche `docker compose up` ohne -f
+# eigentlich zieht. Deshalb eigener Unterordner; die Coolify-App wird mit
+# base_directory=/deploy/coolify konfiguriert.
+#
 # Single-Tenant by design: EINE Instanz = EIN EUROUTER_API_KEY (in der
 # Coolify-UI gesetzt). Wer einen eigenen eurouter-Key nutzen will, hostet eine
 # eigene Instanz (self-host per Coolify oder von Oliver bereitgestellt). Es gibt
@@ -25,12 +34,26 @@
 #  - Secrets ausschliesslich als `${ENV}`-Referenzen — nie im Klartext (ISC-12).
 #    Die konkreten Werte werden in der Coolify-UI als Environment-Variablen
 #    gesetzt (Vorlage: coolify-template.json / .env.example).
+#  - NUR VERZEICHNIS-Bind-Mounts, keine einzelnen Datei-Mounts. Live-Deploy-
+#    Befund (2026-07-23, Coolify): einzelne Datei-Bind-Mounts (config.yaml,
+#    analyzer-config.yml, die .py-Module) trafen wiederholt eine Race in
+#    Coolifys Checkout-Kopierschritt — wenn Docker beim Mount-Validieren die
+#    Zieldatei noch nicht fertig kopiert vorfand, legte es einen Platzhalter
+#    an, der bei Dateien FEHLERHAFT als VERZEICHNIS erstellt wurde. Einmal
+#    passiert, blieb der Host-Pfad DAUERHAFT ein Verzeichnis (der naechste
+#    Checkout ueberschreibt eine bestehende Verzeichnis-Leiche nicht mit der
+#    echten Datei) — Ergebnis: `IsADirectoryError`/"Path is not a file",
+#    dauerhaftes Crash-Loopen trotz "Deployment finished". Verzeichnis-Mounts
+#    sind gegen diese Race immun (ein Bind-Mount ist eine LIVE-Sicht auf den
+#    Host-Pfad, keine Momentaufnahme -- das Verzeichnis selbst existiert schon
+#    ab dem ersten Moment des Checkouts, unabhaengig davon ob sein Inhalt
+#    schon vollstaendig kopiert ist).
 
 services:
   # 1. LiteLLM-Proxy = die Datenschleuse-Schnittstelle (OpenAI-kompatibel).
   datenschleuse:
     build:
-      context: ./litellm
+      context: ../../litellm
       dockerfile: Dockerfile
     # SERVICE_FQDN_<IDENTIFIER>_<PORT>: Coolify erzeugt hieraus automatisch eine
     # Domain und verdrahtet den Reverse-Proxy auf den Container-Port 4000. Die
@@ -43,7 +66,7 @@ services:
       - SERVICE_FQDN_DATENSCHLEUSE_4000
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
-      - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      - SENSITIVITY_KEYWORDS_PATH=/mnt/presidio-src/sensitivity-keywords.yml
       # Upstream-Key fuer eurouter.ai (Single-Tenant: gehoert dem Instanz-Betreiber).
       - EUROUTER_API_KEY=${EUROUTER_API_KEY:?EUROUTER_API_KEY muss gesetzt sein (dein eurouter.ai-Key)}
       # Master-Key, mit dem Clients die Datenschleuse ansprechen (LiteLLM erwartet
@@ -66,31 +89,17 @@ services:
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     volumes:
-      # config.yaml wird NICHT ins Image kopiert (nur die .py-Module, siehe
-      # Dockerfile) -> Mount ist zwingend, sonst findet der --config-Aufruf
-      # die Datei nicht.
-      #
-      # Die .py-Module (datenschleuse_guardrail.py, qi_generalization.py,
-      # qi_state.py, sensitivity_classifier.py) werden HIER BEWUSST NICHT
-      # gemountet, obwohl der lokale docker-compose.yml das tut: dort dient
-      # der Mount nur der Dev-Iteration ohne Rebuild, im Image sind die
-      # Dateien via Dockerfile ohnehin schon vorhanden. Live-Deploy-Befund
-      # (2026-07-23, Coolify): mehrere einzelne Datei-Bind-Mounts aus
-      # demselben Quellordner (./litellm/*.py) auf Ziele, die im Image
-      # bereits als Datei existieren, loesen nicht-deterministisch einen
-      # Docker/runc-Mount-Fehler aus ("mounting a directory onto a file") --
-      # welche Datei betroffen ist wechselt zwischen Deploys (Race in
-      # Coolifys Checkout-Kopier-Schritt). Fuer einen produktiven Deploy
-      # sind die Mounts ohnehin ueberfluessig (Code kommt fest aus dem
-      # Image) -> ersatzlos entfernt statt gegen die Race anzukaempfen.
-      - ./litellm/config.yaml:/app/config.yaml:ro
-      # sensitivity_classifier.py sucht die Keyword-Config relativ zur eigenen
-      # Datei (../presidio/...); im flachen /app existiert kein Geschwister-
-      # presidio/ -> YAML explizit mounten + Pfad per ENV setzen (s.o.).
-      - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+      # Ganzes litellm/-Verzeichnis mounten (enthaelt config.yaml, das NICHT
+      # ins Image kopiert wird -- nur die .py-Module sind per Dockerfile
+      # gebacken). Die .py-Module in diesem Mount werden ignoriert, PYTHONPATH
+      # zeigt auf /app mit den Image-eigenen Kopien.
+      - ../../litellm:/mnt/litellm-src:ro
+      # sensitivity_classifier.py braucht presidio/sensitivity-keywords.yml
+      # -> komplettes presidio/-Verzeichnis mounten (Pfad s.o. per ENV gesetzt).
+      - ../../presidio:/mnt/presidio-src:ro
       # Verschluesselter QI-Session-State (SQLite) persistent halten.
       - datenschleuse-qi-state:/app/state
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    command: ["--config", "/mnt/litellm-src/config.yaml", "--port", "4000"]
     # Health-Check ueber LiteLLMs Liveness-Endpoint (kein DB-/Auth-Zwang).
     # python ist im Image garantiert vorhanden -- kein curl-Zwang. Endpoint-
     # Schreibweise ("liveliness") gegen die verwendete LiteLLM-Version pruefen.
@@ -134,16 +143,16 @@ services:
   # Rein intern -- der Produktiv-Traffic laeuft nur ueber datenschleuse-net.
   presidio-analyzer:
     build:
-      context: ./presidio
+      context: ../../presidio
       dockerfile: Dockerfile.analyzer
     environment:
       - ANALYZER_CONF_FILE=/conf/analyzer-config.yml
       - NLP_CONF_FILE=/conf/nlp-config.yml
       - RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
     volumes:
-      - ./presidio/analyzer-config.yml:/conf/analyzer-config.yml:ro
-      - ./presidio/nlp-config.yml:/conf/nlp-config.yml:ro
-      - ./presidio/recognizers-config.yml:/conf/recognizers-config.yml:ro
+      # Ganzes presidio/-Verzeichnis als EIN Mount statt drei Einzeldateien
+      # (dieselbe Race-Vermeidung wie beim datenschleuse-Service oben).
+      - ../../presidio:/conf:ro
     restart: unless-stopped
     networks:
       - datenschleuse-net

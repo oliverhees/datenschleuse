@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "Datenschleuse",
   "description": "PII-Anonymisierungs-Proxy fuer LLM-Anfragen (LiteLLM + Presidio) — Single-Tenant, ein eurouter.ai-Key pro Instanz.",
-  "compose": "docker-compose.coolify.yml",
+  "compose": "deploy/coolify/docker-compose.yaml",
   "documentation": "docs/DEPLOY.md",
   "variables": [
     {"key": "EUROUTER_API_KEY", "label": "eurouter.ai API-Key", "description": "Dein eigener Upstream-Key von https://www.eurouter.ai — die Instanz spricht ausschliesslich mit diesem Key.", "required": true},
