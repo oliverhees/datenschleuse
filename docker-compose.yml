@@ -34,6 +34,11 @@ services:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
       - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      # Live-Build-Befund (verifiziert 2026-07-23, Coolify-Vorbereitung): diese
+      # Zeile fehlte -- general_settings.master_key in config.yaml referenziert
+      # os.environ/DATENSCHLEUSE_MASTER_KEY, aber ohne diese Env-Var kam der Key
+      # nie im Container an. Der Proxy lief dadurch faktisch OHNE Auth-Pruefung.
+      - DATENSCHLEUSE_MASTER_KEY=${DATENSCHLEUSE_MASTER_KEY:?DATENSCHLEUSE_MASTER_KEY muss in .env gesetzt sein -- kein Default, damit der Proxy nie ohne Auth startet}
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
