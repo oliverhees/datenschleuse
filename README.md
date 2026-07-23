@@ -4,7 +4,7 @@
 
 ![Datenschleuse — Deine Daten. Deine Regeln.](docs/assets/datenschleuse-release.png)
 
-# 🔒 Datenschleuse
+# 🔒 AIIANER-DATENSCHLEUSE
 
 **Der offene, selbst-hostbare PII-Anonymisierungs-Proxy für LLM-Anfragen.**
 
@@ -36,6 +36,7 @@
 - [Ehrliche DSGVO-Einordnung](#️-ehrliche-dsgvo-einordnung-bitte-lesen)
 - [Lizenz](#-lizenz)
 - [Status](#-status)
+- [Kein Bock auf Selbst-Hosten?](#-kein-bock-auf-selbst-hosten)
 - [Mitmachen](#-mitmachen)
 
 ---
@@ -201,6 +202,10 @@ Ein späteres Portal/Cockpit (Dashboard, Self-Learning-Filter-UI) kann separat l
 - [ ] Self-Learning-Filter (eigene Muster im laufenden Betrieb nachtragen) — konzipiert, noch nicht gebaut
 
 Vollständige, laufend gepflegte Kriterienliste: [`ISA.md`](ISA.md). Aktueller Projektstand: [`PROJEKT-STATUS.md`](PROJEKT-STATUS.md). Vision, Markt, Roadmap: [`KONZEPT.md`](KONZEPT.md).
+
+## 🏠 Kein Bock auf Selbst-Hosten?
+
+Du kannst die Datenschleuse komplett selbst hosten (siehe [Coolify-Deploy](DEPLOY.md)) — deine Infrastruktur, deine Daten, kein Mittelsmann. Wenn du das aber nicht selbst aufsetzen willst: **erteil uns den Auftrag, wir richten dir eine eigene Instanz ein.** Eigene Instanz pro Kunde, kein gemeinsamer Topf, kein geteilter eurouter-Key. Kontakt: [aiianer.de](https://aiianer.de) oder [Issues](../../issues).
 
 ## 🤝 Mitmachen
 
