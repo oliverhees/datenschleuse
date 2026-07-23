@@ -286,6 +286,84 @@ cases:
         expected_recall: must_detect
 
   # ---------------------------------------------------------------------
+  # DE_AKTENZEICHEN (eigener Recognizer)
+  # ---------------------------------------------------------------------
+  - id: de-az-001-gericht
+    text: >-
+      Das Verfahren läuft beim Landgericht unter dem Aktenzeichen 3 O 123/45,
+      bitte im Schriftsatz angeben.
+    entities:
+      - type: DE_AKTENZEICHEN
+        value: "3 O 123/45"
+        expected_recall: must_detect
+
+  - id: de-az-002-az-kuerzel
+    text: >-
+      Bitte nennen Sie im Betreff das Az. 5 K 678/23, damit wir die Akte
+      zuordnen können.
+    entities:
+      - type: DE_AKTENZEICHEN
+        value: "5 K 678/23"
+        expected_recall: must_detect
+
+  - id: de-az-003-bgh-roemisch
+    text: >-
+      Der Bundesgerichtshof entschied unter VI ZR 200/20 zugunsten der
+      Klägerin.
+    entities:
+      - type: DE_AKTENZEICHEN
+        value: "VI ZR 200/20"
+        expected_recall: must_detect
+
+  - id: de-az-004-geschaeftszeichen
+    text: >-
+      Unser Geschäftszeichen lautet Gz. 12-3456.7-8/9, bitte bei Rückfragen
+      angeben.
+    entities:
+      - type: DE_AKTENZEICHEN
+        value: "12-3456.7-8/9"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
+  # DE_FIRMA (eigener Recognizer)
+  # ---------------------------------------------------------------------
+  - id: de-firma-001-gmbh
+    text: >-
+      Der Rahmenvertrag wurde mit der Mustermann Technik GmbH in Köln
+      geschlossen.
+    entities:
+      - type: DE_FIRMA
+        value: "Mustermann Technik GmbH"
+        expected_recall: must_detect
+
+  - id: de-firma-002-gmbh-co-kg
+    text: >-
+      Die Rechnung geht an die Nordlicht Logistik GmbH & Co. KG mit einer
+      Fälligkeit von 30 Tagen.
+    entities:
+      - type: DE_FIRMA
+        value: "Nordlicht Logistik GmbH & Co. KG"
+        expected_recall: must_detect
+
+  - id: de-firma-003-ag
+    text: >-
+      Die Beteiligung an der Solaris Energie AG wurde gestern öffentlich
+      bekanntgegeben.
+    entities:
+      - type: DE_FIRMA
+        value: "Solaris Energie AG"
+        expected_recall: must_detect
+
+  - id: de-firma-004-ug
+    text: >-
+      Gegründet wurde die Kreativ UG (haftungsbeschränkt) erst im vergangenen
+      Frühjahr.
+    entities:
+      - type: DE_FIRMA
+        value: "Kreativ UG (haftungsbeschränkt)"
+        expected_recall: must_detect
+
+  # ---------------------------------------------------------------------
   # KOMBI-FÄLLE (mehrere Entitäten in einem Text, realistischer Use-Case)
   # ---------------------------------------------------------------------
   - id: kombi-001-kundenanfrage
@@ -355,4 +433,21 @@ cases:
   - id: negativ-003-produktcode-kein-kfz-kennzeichen
     text: >-
       Der Artikel mit der Produktkennung ABC-123 ist wieder auf Lager.
+    entities: []
+
+  - id: negativ-004-kalenderwoche-kein-aktenzeichen
+    text: >-
+      Die Rechnungsnummer 2024/0815 ist bereits beglichen und die Lieferung
+      erfolgt in Kalenderwoche 12/25 wie geplant.
+    entities: []
+
+  - id: negativ-005-rechtsform-generisch-keine-firma
+    text: >-
+      Für eine GmbH gelten andere Haftungsregeln als für eine GbR, das sollte
+      man vor der Gründung wissen.
+    entities: []
+
+  - id: negativ-006-grosswort-vor-nomen-keine-firma
+    text: >-
+      Wir haben die Agentur beauftragt und danach alles in Ruhe besprochen.
     entities: []
