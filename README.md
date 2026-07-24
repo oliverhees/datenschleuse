@@ -209,7 +209,9 @@ Du kannst die Datenschleuse komplett selbst hosten (siehe [Coolify-Deploy](docs/
 
 ## 🤝 Mitmachen
 
-Issues, PRs und Diskussionen willkommen. Bevor du eine neue deutsche Entität als Recognizer einreichst: Recognizer + Testfall + Benchmark-Eintrag gehören zusammen (siehe `CLAUDE.md`).
+Issues, PRs und Diskussionen willkommen — siehe [CONTRIBUTING.md](CONTRIBUTING.md) für den vollständigen Ablauf (lokales Setup, Recognizer-Regel, PR-Erwartungen) und den [Verhaltenskodex](CODE_OF_CONDUCT.md). Bevor du eine neue deutsche Entität als Recognizer einreichst: Recognizer + Testfall + Benchmark-Eintrag gehören zusammen (siehe `CLAUDE.md`).
+
+Projektmanagement läuft ausschließlich über [GitHub Issues](../../issues) — kein Plane, kein externes Tool.
 
 Fragen, Ideen, "das brauche ich auch für XY": [Wiki](../../wiki) oder [Issues](../../issues).
 
