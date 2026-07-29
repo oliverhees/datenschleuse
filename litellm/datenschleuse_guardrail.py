@@ -99,11 +99,22 @@ DEFAULT_PLACEHOLDER_MARGIN = 10
 # sowohl die UX als auch (im schlimmsten Fall) die Platzhalter selbst, wenn
 # das Modell sie in seiner Antwort umformuliert statt wortwoertlich
 # zurueckzugeben (worauf die Re-Identifikation angewiesen ist).
+#
+# Live-Deploy-Befund (2026-07-29, preview-api-Livetest gegen gpt-4o-mini via
+# eurouter.ai): eine fruehere Fassung enthielt ein konkretes Beispiel
+# ("<PERSON_1> statt \"Hans Müller\""), um das Prinzip zu illustrieren.
+# Ergebnis: das Modell griff den Beispielnamen als vermeintlich "echten Wert"
+# auf und antwortete mit "Hallo Hans Müller!" -- obwohl der reid_map ein
+# GANZ ANDERER Name zugrunde lag. Kein PII-Leck (der erfundene Name ist
+# harmlos), aber eine kaputte, fuer den Nutzer verwirrende Antwort. Reproduziert
+# mit UND ohne zusaetzliche eigene System-Message. Deshalb bewusst OHNE
+# konkretes Namensbeispiel formuliert -- das Prinzip laesst sich abstrakt
+# erklaeren, ohne dem Modell einen Namen zum Nachplappern anzubieten.
 ANONYMIZATION_NOTICE = (
     "Hinweis: Dieser Text wurde vor der Übermittlung automatisch pseudonymisiert. "
     "Platzhalter wie <PERSON_1>, <ADDRESS_0>, <EMAIL_ADDRESS_0>, <DE_AKTENZEICHEN_0> "
-    "usw. stehen bewusst anstelle der echten Werte (z. B. <PERSON_1> statt "
-    "\"Hans Müller\", <ADDRESS_0> statt einer vollständigen Adresse). Das ist "
+    "usw. stehen bewusst anstelle der jeweils echten Werte (z. B. steht <PERSON_1> "
+    "für einen echten Personennamen, <ADDRESS_0> für eine vollständige Adresse). Das ist "
     "kein Tippfehler und keine fehlende Information — behandle jeden Platzhalter "
     "als den echten Wert, den er ersetzt, und gib ihn in deiner Antwort exakt so "
     "zurück, wie er dir übergeben wurde (nicht umformulieren, nicht durch einen "
