@@ -92,6 +92,24 @@ REID_MAP_KEY = "datenschleuse_reid_map"
 # Siehe ReidStreamProcessor fuer die Begruendung.
 DEFAULT_PLACEHOLDER_MARGIN = 10
 
+# Hinweis an das Ziel-Modell, dass Platzhalter wie <PERSON_1>/<ADDRESS_0>
+# bewusste Anonymisierung sind, kein Fehler. Ohne diesen Hinweis neigen
+# manche Modelle dazu, Platzhalter als vermeintlichen Tippfehler zu behandeln
+# und nachzufragen oder den Text "korrigieren" zu wollen -- das zerstoert
+# sowohl die UX als auch (im schlimmsten Fall) die Platzhalter selbst, wenn
+# das Modell sie in seiner Antwort umformuliert statt wortwoertlich
+# zurueckzugeben (worauf die Re-Identifikation angewiesen ist).
+ANONYMIZATION_NOTICE = (
+    "Hinweis: Dieser Text wurde vor der Übermittlung automatisch pseudonymisiert. "
+    "Platzhalter wie <PERSON_1>, <ADDRESS_0>, <EMAIL_ADDRESS_0>, <DE_AKTENZEICHEN_0> "
+    "usw. stehen bewusst anstelle der echten Werte (z. B. <PERSON_1> statt "
+    "\"Hans Müller\", <ADDRESS_0> statt einer vollständigen Adresse). Das ist "
+    "kein Tippfehler und keine fehlende Information — behandle jeden Platzhalter "
+    "als den echten Wert, den er ersetzt, und gib ihn in deiner Antwort exakt so "
+    "zurück, wie er dir übergeben wurde (nicht umformulieren, nicht durch einen "
+    "Beispielwert ersetzen, nicht danach fragen)."
+)
+
 
 class DatenschleuseBlocked(Exception):
     """Wird geworfen, wenn fail-closed greift. LiteLLM behandelt eine im
@@ -452,6 +470,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
             data["metadata"] = metadata
         metadata[REID_MAP_KEY] = masker.reid_map
 
+        # Anonymisierungs-Hinweis nur einfuegen, wenn tatsaechlich etwas
+        # maskiert wurde (kein Overhead fuer PII-freie Requests) -- und nur
+        # dann, wenn messages ueberhaupt eine Liste ist (defensiv, s.o.).
+        if masker.reid_map and isinstance(messages, list):
+            self._inject_anonymization_notice(messages)
+
         # --- QI-Layer: Akkumulation ueber die Session + Generalisierung -------
         # WICHTIG (fail-Semantik): ein Fehler im QI-Layer darf die bereits
         # erfolgte direkte-PII-Maskierung NICHT zunichte machen und den Request
@@ -468,6 +492,30 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 )
 
         return data
+
+    # ---- Anonymisierungs-Hinweis -------------------------------------------
+    @staticmethod
+    def _inject_anonymization_notice(messages: List[Any]) -> None:
+        """Fuegt ANONYMIZATION_NOTICE in die erste System-Message ein (haengt
+        an, falls schon eine existiert) oder legt eine neue System-Message an
+        Position 0 an, falls keine vorhanden ist. Mutiert ``messages`` in
+        place (wie der Rest von async_pre_call_hook)."""
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    msg["content"] = f"{content}\n\n{ANONYMIZATION_NOTICE}"
+                    return
+                if isinstance(content, list):
+                    # Multimodale System-Message: als zusaetzlichen Text-Part anhaengen.
+                    content.append({"type": "text", "text": ANONYMIZATION_NOTICE})
+                    return
+                # Unbekannter/leerer content -> als String ueberschreiben statt
+                # stillschweigend zu verwerfen.
+                msg["content"] = ANONYMIZATION_NOTICE
+                return
+        # Keine System-Message vorhanden -> neue an Position 0 einfuegen.
+        messages.insert(0, {"role": "system", "content": ANONYMIZATION_NOTICE})
 
     # ---- QI-Layer-Helfer ---------------------------------------------------
     @staticmethod

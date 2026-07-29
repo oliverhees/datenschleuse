@@ -298,6 +298,66 @@ class TestPreCallHook(unittest.IsolatedAsyncioTestCase):
                 user_api_key_dict=None, cache=None, data=data, call_type="completion"
             )
 
+    async def test_pre_call_appends_anonymization_notice_to_existing_system_msg(self):
+        guard = dg.DatenschleuseGuardrail()
+
+        async def fake_analyze(text):
+            if "Max Mustermann" in text:
+                idx = text.index("Max Mustermann")
+                return [{"entity_type": "PERSON", "start": idx, "end": idx + 14, "score": 0.99}]
+            return []
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {
+            "messages": [
+                {"role": "system", "content": "Du bist hilfreich."},
+                {"role": "user", "content": "Max Mustermann braucht Hilfe."},
+            ]
+        }
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        sys_content = out["messages"][0]["content"]
+        self.assertTrue(sys_content.startswith("Du bist hilfreich."))
+        self.assertIn(dg.ANONYMIZATION_NOTICE, sys_content)
+
+    async def test_pre_call_inserts_system_msg_when_none_exists(self):
+        guard = dg.DatenschleuseGuardrail()
+
+        async def fake_analyze(text):
+            if "Max Mustermann" in text:
+                idx = text.index("Max Mustermann")
+                return [{"entity_type": "PERSON", "start": idx, "end": idx + 14, "score": 0.99}]
+            return []
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {"messages": [{"role": "user", "content": "Max Mustermann braucht Hilfe."}]}
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        self.assertEqual(out["messages"][0]["role"], "system")
+        self.assertEqual(out["messages"][0]["content"], dg.ANONYMIZATION_NOTICE)
+        self.assertEqual(out["messages"][1]["content"], "<PERSON_0> braucht Hilfe.")
+
+    async def test_pre_call_no_notice_when_nothing_masked(self):
+        """Kein Overhead fuer PII-freie Requests: ohne Treffer keine Notice,
+        keine zusaetzliche System-Message."""
+        guard = dg.DatenschleuseGuardrail()
+
+        async def fake_analyze(text):
+            return []
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {"messages": [{"role": "user", "content": "Wie spaet ist es?"}]}
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        self.assertEqual(len(out["messages"]), 1)
+        self.assertEqual(out["messages"][0]["content"], "Wie spaet ist es?")
+
     async def test_analyze_fail_closed_on_http_error(self):
         """_analyze selbst: HTTP-Fehler -> DatenschleuseBlocked (fail-closed).
         Wir mocken httpx, damit kein echter Container noetig ist."""
