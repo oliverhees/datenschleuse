@@ -8,6 +8,7 @@ services:
       context: ./litellm
       dockerfile: Dockerfile
     container_name: datenschleuse
+    restart: unless-stopped
     ports:
       - "4000:4000"
     volumes:
@@ -75,6 +76,7 @@ services:
   datenschleuse-db:
     image: postgres:16-alpine
     container_name: datenschleuse-db
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=${DATENSCHLEUSE_DB_USER:-datenschleuse}
       - POSTGRES_PASSWORD=${DATENSCHLEUSE_DB_PASSWORD:-datenschleuse}
@@ -95,6 +97,7 @@ services:
       context: ./presidio
       dockerfile: Dockerfile.analyzer
     container_name: datenschleuse-analyzer
+    restart: unless-stopped
     ports:
       # Host-Zugriff nur fuer lokale Entwicklung/Benchmark (test/corpus-benchmark.py).
       # Kein Teil des Produktiv-Traffics -- der laeuft ausschliesslich ueber den
@@ -122,6 +125,7 @@ services:
   presidio-anonymizer:
     image: mcr.microsoft.com/presidio-anonymizer:latest
     container_name: datenschleuse-anonymizer
+    restart: unless-stopped
     networks:
       - datenschleuse-net
 
