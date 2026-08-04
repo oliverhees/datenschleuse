@@ -506,27 +506,35 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
     # ---- Anonymisierungs-Hinweis -------------------------------------------
     @staticmethod
-    def _inject_anonymization_notice(messages: List[Any]) -> None:
-        """Fuegt ANONYMIZATION_NOTICE in die erste System-Message ein (haengt
-        an, falls schon eine existiert) oder legt eine neue System-Message an
-        Position 0 an, falls keine vorhanden ist. Mutiert ``messages`` in
-        place (wie der Rest von async_pre_call_hook)."""
+    def _inject_anonymization_notice(
+        messages: List[Any], notice: str = ANONYMIZATION_NOTICE
+    ) -> None:
+        """Fuegt ``notice`` (Default: ANONYMIZATION_NOTICE) in die erste
+        System-Message ein (haengt an, falls schon eine existiert) oder legt
+        eine neue System-Message an Position 0 an, falls keine vorhanden ist.
+        Mutiert ``messages`` in place (wie der Rest von async_pre_call_hook).
+
+        ``notice`` ist optional parametrisierbar, damit Aufrufer (z. B. die
+        Cockpit-preview-api) einen nutzerseitig ueberschriebenen Text
+        einfuegen koennen, OHNE diese Platzierungs-/Formatierungslogik zu
+        duplizieren (Drift-Vermeidung — siehe preview-api/app/masking.py::
+        inject_anonymization_notice)."""
         for msg in messages:
             if isinstance(msg, dict) and msg.get("role") == "system":
                 content = msg.get("content")
                 if isinstance(content, str):
-                    msg["content"] = f"{content}\n\n{ANONYMIZATION_NOTICE}"
+                    msg["content"] = f"{content}\n\n{notice}"
                     return
                 if isinstance(content, list):
                     # Multimodale System-Message: als zusaetzlichen Text-Part anhaengen.
-                    content.append({"type": "text", "text": ANONYMIZATION_NOTICE})
+                    content.append({"type": "text", "text": notice})
                     return
                 # Unbekannter/leerer content -> als String ueberschreiben statt
                 # stillschweigend zu verwerfen.
-                msg["content"] = ANONYMIZATION_NOTICE
+                msg["content"] = notice
                 return
         # Keine System-Message vorhanden -> neue an Position 0 einfuegen.
-        messages.insert(0, {"role": "system", "content": ANONYMIZATION_NOTICE})
+        messages.insert(0, {"role": "system", "content": notice})
 
     # ---- QI-Layer-Helfer ---------------------------------------------------
     @staticmethod
