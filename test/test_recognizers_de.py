@@ -111,5 +111,65 @@ class TestDeFirma(_RecognizerRegexMixin, unittest.TestCase):
     ]
 
 
+class TestDeGeburtsjahr(_RecognizerRegexMixin, unittest.TestCase):
+    supported_entity = "DE_GEBURTSJAHR"
+    must_detect = [
+        ("Der Hinweisgeber gibt an, Jahrgang 1979 zu sein.", "1979"),
+        ("Sie ist geboren 1990 und lebt in Köln.", "1990"),
+    ]
+    must_not_detect = [
+        "Die Software läuft ab Version 2026 stabil.",
+        "Der Vertrag endet im Jahr 2027.",
+        # "geboren am 1990" faellt bewusst NICHT hierher -- das "am" bricht den
+        # Match (siehe DE_GEBURTSDATUM fuer volle Daten mit "am").
+    ]
+
+
+class TestDeGeburtsdatum(_RecognizerRegexMixin, unittest.TestCase):
+    """Live-Befund 2026-07-30: "geboren am 14.03.1985" wurde bislang von
+    KEINEM Recognizer erfasst -- DE_GEBURTSJAHR verlangt die Jahreszahl direkt
+    hinterm Kontext-Wort, "am" dazwischen bricht den Match. Ein volles
+    Geburtsdatum ist zudem der staerkere der drei Sweeney-Quasi-Identifier
+    (PLZ+Geburtsdatum+Geschlecht) -- wichtiger als die blosse Jahreszahl."""
+
+    supported_entity = "DE_GEBURTSDATUM"
+    must_detect = [
+        ("Herr Bergmann, geboren am 14.03.1985, wohnhaft in München.", "14.03.1985"),
+        ("Frau Wagner, geboren 22.11.1990, wohnt in Berlin.", "22.11.1990"),
+        ("Geburtsdatum: 01.01.99 laut Akte.", "01.01.99"),
+        ("Laut Personalbogen geb. 5.6.2001 in Hamburg.", "5.6.2001"),
+    ]
+    must_not_detect = [
+        "Die Lieferung erfolgt am 14.03.2026 wie geplant.",
+        "Die Rechnung Nr. 14.03.1985 wurde bereits beglichen.",
+        "Der Termin ist auf den 01.01.2027 verschoben worden.",
+    ]
+
+
+class TestDeStrasse(_RecognizerRegexMixin, unittest.TestCase):
+    """Live-Befund 2026-08-03: "Bahnhofstraße 22" blieb im maskierten Text
+    unveraendert stehen -- PLZ und Ort wurden erkannt, die Strasse selbst von
+    KEINEM Recognizer. Zwei Muster (siehe recognizers-config.yml): Kompositum
+    ("Bahnhofstraße 22", hoher Score) und getrennte Schreibweise ("Neue
+    Straße 5", "Am Ring 9", moderater Score -- braucht Kontext-Boost)."""
+
+    supported_entity = "DE_STRASSE"
+    must_detect = [
+        ("Ich wohne in der Bahnhofstraße 22, 80331 München.", "Bahnhofstraße 22"),
+        ("Bitte senden Sie es an den Musterweg 5a.", "Musterweg 5a"),
+        ("Die Zentrale liegt am Kurfürstendamm 12-14 in Berlin.", "Kurfürstendamm 12-14"),
+        ("Anschrift: Hauptstr. 3, 10115 Berlin.", "Hauptstr. 3"),
+        ("Termin um 10 Uhr am Goetheplatz 1.", "Goetheplatz 1"),
+        ("Neue Anschrift: Neue Straße 5, 12345 Musterstadt.", "Neue Straße 5"),
+        ("Er wohnt jetzt Am Ring 9 in Köln.", "Am Ring 9"),
+    ]
+    must_not_detect = [
+        "Die Wegstrecke war für alle Beteiligten viel zu lang.",
+        "Für eine GmbH gelten strenge Regeln.",
+        "Der Umweg über die Autobahn dauert ewig.",
+        "Schritt 5 von 10 ist bereits erledigt.",
+    ]
+
+
 if __name__ == "__main__":
     unittest.main()

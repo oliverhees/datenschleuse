@@ -1,16 +1,16 @@
 {
-  "timestamp_utc": "2026-07-23T11:31:08.921380+00:00",
+  "timestamp_utc": "2026-08-04T12:52:11.363528+00:00",
   "presidio_url": "http://localhost:5001",
   "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/test/corpus/de-pii-testkorpus.yaml",
-  "case_count": 42,
+  "case_count": 45,
   "overlap_min_ratio": 0.5,
   "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
   "must_detect": {
     "overall": {
-      "tp": 40,
+      "tp": 43,
       "fn": 0,
       "fp": 0,
-      "support": 40,
+      "support": 43,
       "recall": 1.0,
       "precision": 1.0
     },
@@ -44,6 +44,14 @@
         "fn": 0,
         "fp": 0,
         "support": 4,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "DE_GEBURTSDATUM": {
+        "tp": 1,
+        "fn": 0,
+        "fp": 0,
+        "support": 1,
         "recall": 1.0,
         "precision": 1.0
       },
@@ -100,6 +108,14 @@
         "fn": 0,
         "fp": 0,
         "support": 3,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "DE_STRASSE": {
+        "tp": 2,
+        "fn": 0,
+        "fp": 0,
+        "support": 2,
         "recall": 1.0,
         "precision": 1.0
       },
@@ -211,6 +227,13 @@
     },
     {
       "case_id": "location-001-adresse",
+      "entity_type": "DE_STRASSE",
+      "start": 21,
+      "end": 39,
+      "score": 1.0
+    },
+    {
+      "case_id": "location-001-adresse",
       "entity_type": "LOCATION",
       "start": 41,
       "end": 51,
@@ -273,6 +296,20 @@
       "score": 0.85
     },
     {
+      "case_id": "de-qi-geburtsdatum-001-geboren-am",
+      "entity_type": "LOCATION",
+      "start": 50,
+      "end": 57,
+      "score": 0.85
+    },
+    {
+      "case_id": "de-qi-geburtsdatum-001-geboren-am",
+      "entity_type": "DE_BERUF",
+      "start": 67,
+      "end": 76,
+      "score": 0.7
+    },
+    {
       "case_id": "de-qi-tvoed-002-besoldung",
       "entity_type": "LOCATION",
       "start": 42,
@@ -327,6 +364,41 @@
       "start": 20,
       "end": 30,
       "score": 0.85
+    },
+    {
+      "case_id": "de-strasse-001-kompositum",
+      "entity_type": "LOCATION",
+      "start": 63,
+      "end": 70,
+      "score": 0.85
+    },
+    {
+      "case_id": "de-strasse-001-kompositum",
+      "entity_type": "DE_PLZ",
+      "start": 57,
+      "end": 62,
+      "score": 0.35
+    },
+    {
+      "case_id": "de-strasse-002-getrennt",
+      "entity_type": "LOCATION",
+      "start": 26,
+      "end": 39,
+      "score": 0.85
+    },
+    {
+      "case_id": "de-strasse-002-getrennt",
+      "entity_type": "DE_PLZ",
+      "start": 41,
+      "end": 46,
+      "score": 0.35
+    },
+    {
+      "case_id": "kombi-001-kundenanfrage",
+      "entity_type": "DE_STRASSE",
+      "start": 43,
+      "end": 55,
+      "score": 1.0
     },
     {
       "case_id": "kombi-001-kundenanfrage",

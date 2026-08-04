@@ -94,6 +94,61 @@ recognizers:
       - "auto"
       - "fahrzeug"
 
+  # DE_STRASSE — Straßenname + Hausnummer (z. B. "Bahnhofstraße 22",
+  # "Musterweg 5a", "Kurfürstendamm 12-14", "Neue Straße 5", "Am Ring 9").
+  # Live-Befund (2026-08-03): PLZ und Ort werden erkannt (DE_PLZ /
+  # SpacyRecognizer LOCATION), die Straße selbst bislang von KEINEM
+  # Recognizer -- ein Adress-Fragment blieb im maskierten Text stehen.
+  #
+  # ZWEI Muster, bewusst mit unterschiedlichem Score (dasselbe Prinzip wie
+  # DE_PLZ: hohe Konfidenz braucht keinen Kontext, moderate Konfidenz stuetzt
+  # sich auf den Kontext-Score-Boost):
+  #
+  # (A) "kompositum" — Straßenname ALS EIN WORT direkt vor dem Suffix
+  #     ("Bahnhofstraße", "Musterweg", "Kurfürstendamm"). Deutsche
+  #     Straßennamen sind ueberwiegend genau solche Komposita; der Suffix
+  #     DIREKT gefolgt von einer Hausnummer ist ein starkes, seltenes Signal.
+  #     Hoher Score (0.85 = "sicher" in der Review-UI), kein Kontext noetig.
+  #
+  # (B) "getrennt" — Straßenname und Suffix als ZWEI Woerter ("Neue Straße",
+  #     "Am Ring", "Alte Allee"). Real, aber False-Positive-traechtiger, weil
+  #     die Suffix-Woerter (v. a. "Ring", "Platz", "Weg") auch ganz normale
+  #     Substantive sind ("Das Ring 5 Modell kostet 500 Euro" wuerde sonst
+  #     genauso matchen wie eine echte Adresse). Deshalb NUR die Suffixe mit
+  #     geringerem Fehlalarm-Risiko als eigenstaendiges Wort, UND ein
+  #     moderater Score (0.4 = "unsicher" in der Review-UI, wie DE_PLZ) --
+  #     der Kontext-Boost (Woerter unten) hebt ihn bei echten Adress-Nennungen
+  #     ("Anschrift: Neue Straße 5", "wohnhaft in der Alten Allee 3").
+  #     "weg"/"str." bewusst NICHT in dieser Variante: "weg" ist ein sehr
+  #     haeufiges eigenstaendiges deutsches Wort (Adverb "weg" = fort/away),
+  #     "str." als Abkuerzung ergibt getrennt vom Namen ohnehin keinen Sinn.
+  #
+  # Grossschreib-Pflicht am Wortanfang wie bei DE_Firma: `(?-i:[A-ZÄÖÜ])`
+  # schaltet IGNORECASE (global_regex_flags: 26) fuer genau dieses eine
+  # Zeichen ab. Der Suffix selbst bleibt regulaer case-insensitive.
+  #
+  # Bekannte Grenze (ehrlich dokumentiert, wie bei DE_Firma): Straßennamen
+  # OHNE Suffix (z. B. "Unter den Linden", "Am Markt") faengt dieses Muster
+  # nicht -- ein generischer Suffix-loser Ansatz haette ein untragbares
+  # False-Positive-Risiko (praktisch jede grossgeschriebene Wortfolge + Zahl
+  # waere ein Treffer).
+  - name: "DE_Strasse"
+    supported_language: "de"
+    supported_entity: "DE_STRASSE"
+    patterns:
+      - name: "strasse_hausnummer_kompositum"
+        regex: "(?-i:[A-ZÄÖÜ])[A-Za-zÄÖÜäöüß]*(?:straße|strasse|str\\.|weg|allee|platz|gasse|ring|damm|ufer|steig|chaussee|pfad)[ ]+\\d{1,4}[ ]?[a-zA-Z]?(?:[ ]*[-–][ ]*\\d{1,4}[ ]?[a-zA-Z]?)?\\b"
+        score: 0.85
+      - name: "strasse_hausnummer_getrennt"
+        regex: "(?-i:[A-ZÄÖÜ])[A-Za-zÄÖÜäöüß]*[ ](?:straße|strasse|allee|platz|gasse|ring|damm|ufer|steig|chaussee|pfad)[ ]+\\d{1,4}[ ]?[a-zA-Z]?(?:[ ]*[-–][ ]*\\d{1,4}[ ]?[a-zA-Z]?)?\\b"
+        score: 0.4
+    context:
+      - "straße"
+      - "strasse"
+      - "anschrift"
+      - "adresse"
+      - "wohnhaft"
+
   # =====================================================================
   # QUASI-IDENTIFIER (QI) — neue Kategorie (siehe litellm/qi_generalization.py)
   # Einzeln harmlos, in Kombination re-identifizierend (Sweeney). Diese
@@ -122,6 +177,9 @@ recognizers:
   # (Presidio nutzt das `regex`-Modul, das variable Lookbehinds unterstuetzt) --
   # so matcht eine blanke Jahreszahl NICHT (kein False Positive auf "Version
   # 2026"), und der Match-Span umfasst nur das JAHR (nicht das Kontext-Wort).
+  # "geboren am ..." faellt NICHT hierunter (das "am" sprengt die
+  # "[ ]{0,4}"-Luecke) -- siehe stattdessen DE_GEBURTSDATUM direkt darunter,
+  # das genau diesen Fall (volles Datum statt blosser Jahreszahl) abdeckt.
   - name: "DE_GEBURTSJAHR"
     supported_language: "de"
     supported_entity: "DE_GEBURTSJAHR"
@@ -129,6 +187,26 @@ recognizers:
       - name: "geburtsjahr_mit_kontext"
         regex: "(?<=(?:geboren|jahrgang|geburtsjahr|geb\\.)[ ]{0,4})(?:19\\d{2}|20[0-2]\\d)\\b"
         score: 0.6
+
+  # DE_GEBURTSDATUM — volles Geburtsdatum (TT.MM.JJJJ oder TT.MM.JJ), NUR mit
+  # Kontext-Wort davor (Live-Befund 2026-07-30: "geboren am 14.03.1985" wurde
+  # bislang von KEINEM Recognizer erfasst -- DE_GEBURTSJAHR verlangt die
+  # Jahreszahl direkt hinterm Kontext-Wort, "am" dazwischen bricht den Match).
+  # Wichtiger als DE_GEBURTSJAHR fuers QI-Modell: ein volles Datum ist der
+  # staerkere der drei Sweeney-Quasi-Identifier (PLZ+Geburtsdatum+Geschlecht),
+  # eine blosse Jahreszahl der schwaechere. "am" ist im Kontext-Wortstamm
+  # optional mitgefasst, ebenso ein Doppelpunkt (z. B. "Geburtsdatum: ...").
+  - name: "DE_GEBURTSDATUM"
+    supported_language: "de"
+    supported_entity: "DE_GEBURTSDATUM"
+    patterns:
+      - name: "geburtsdatum_mit_kontext"
+        regex: "(?<=(?:geboren(?:[ ]+am)?|geburtsdatum|geb\\.)[ :]{0,4})\\d{1,2}\\.\\d{1,2}\\.(?:\\d{4}|\\d{2})\\b"
+        score: 0.65
+    context:
+      - "geboren"
+      - "geburtsdatum"
+      - "geb."
     context:
       - "geboren"
       - "jahrgang"

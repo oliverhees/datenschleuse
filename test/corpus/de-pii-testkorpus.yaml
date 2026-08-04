@@ -249,6 +249,21 @@ cases:
         value: "1979"
         expected_recall: must_detect
 
+  # Live-Befund 2026-07-30 (Oliver, Cockpit-Livetest): "geboren am 14.03.1985"
+  # wurde von KEINEM Recognizer erfasst -- DE_GEBURTSJAHR verlangt die
+  # Jahreszahl direkt hinterm Kontext-Wort, "am" dazwischen bricht den Match.
+  # Neuer Recognizer DE_GEBURTSDATUM (presidio/recognizers-config.yml) schliesst
+  # die Luecke. Volles Datum statt blosser Jahreszahl -- der staerkere der drei
+  # Sweeney-Quasi-Identifier.
+  - id: de-qi-geburtsdatum-001-geboren-am
+    text: >-
+      Herr Bergmann, geboren am 14.03.1985, wohnhaft in München, ist als
+      Ingenieur tätig.
+    entities:
+      - type: DE_GEBURTSDATUM
+        value: "14.03.1985"
+        expected_recall: must_detect
+
   - id: de-qi-tvoed-001-entgeltgruppe
     text: >-
       Die neue Kollegin wird nach TVöD E13 vergütet, das ist tariflich so
@@ -361,6 +376,28 @@ cases:
     entities:
       - type: DE_FIRMA
         value: "Kreativ UG (haftungsbeschränkt)"
+        expected_recall: must_detect
+
+  # DE_STRASSE — Live-Befund 2026-08-03: "Bahnhofstraße 22" blieb im
+  # maskierten Text unveraendert stehen (PLZ + Ort wurden erkannt, die
+  # Strasse selbst von keinem Recognizer). Siehe recognizers-config.yml fuer
+  # die zwei Muster (Kompositum hoher Score, getrennte Schreibweise
+  # moderater Score).
+  - id: de-strasse-001-kompositum
+    text: >-
+      Bitte senden Sie die Unterlagen an die Bahnhofstraße 22, 80331
+      München.
+    entities:
+      - type: DE_STRASSE
+        value: "Bahnhofstraße 22"
+        expected_recall: must_detect
+
+  - id: de-strasse-002-getrennt
+    text: >-
+      Die neue Anschrift lautet Neue Straße 5, 12345 Musterstadt.
+    entities:
+      - type: DE_STRASSE
+        value: "Neue Straße 5"
         expected_recall: must_detect
 
   # ---------------------------------------------------------------------
