@@ -629,16 +629,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 elif isinstance(content, list):
                     # Multimodal: Text-Parts maskieren, Bild-Parts nach Policy
                     # schwaerzen/blocken (frueher liefen sie hier unveraendert
-                    # durch — genau das war die Luecke).
+                    # durch — genau das war die Luecke). ALLES ANDERE wird
+                    # blockiert (Allowlist statt Denylist, DATENSCHLE-57):
+                    # ``file``-Parts (hochgeladene PDFs/Dokumente),
+                    # ``input_audio``, Parts ohne ``type``-Feld und jeder der
+                    # Guardrail unbekannte/kuenftige Typ liefen bislang
+                    # ungeprueft durch. Statt jeden bekannten unsicheren Typ
+                    # einzeln aufzuzaehlen, gilt: nur was hier explizit als
+                    # geprueft-und-sicher erkannt wird, passiert -- alles
+                    # Uebrige blockt fail-closed, auch ein Part-Typ, den die
+                    # OpenAI-API erst morgen einfuehrt.
                     for part in content:
-                        if isinstance(part, dict) and part.get("type") == "image_url":
+                        part_type = part.get("type") if isinstance(part, dict) else None
+                        if part_type == "image_url":
                             await self._handle_image_part(part)
                             continue
-                        if (
-                            isinstance(part, dict)
-                            and part.get("type") == "text"
-                            and isinstance(part.get("text"), str)
-                        ):
+                        if part_type == "text" and isinstance(part.get("text"), str):
                             original = part["text"]
                             entities = await self._analyze(original)
 
@@ -655,6 +661,65 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             part["text"] = masker.mask(original, direct)
                             turn_qi.extend(self._extract_qi_values(original, qi))
                             text_slots.append((part, "text"))
+                            continue
+                        # Nicht auf der Allowlist -> nicht pruefbar -> blocken.
+                        # KORREKTUR (Security-Review, DATENSCHLE-64 zweites
+                        # Finding): part_type ist NICHT unbedenklich -- es ist
+                        # ``part.get("type")``, also ein Wert, den der Client
+                        # voll kontrolliert: beliebiger Inhalt, beliebiger Typ
+                        # (auch dict/list), beliebige Laenge. Der Auditor hat
+                        # belegt, dass eine IBAN, eine Diagnose oder 5000
+                        # Flooding-Zeichen ueber genau dieses Feld in die
+                        # Meldung durchschlagen -- und DatenschleuseBlocked
+                        # wird von LiteLLM geloggt/an den Client zurueckgegeben,
+                        # laeuft also potenziell in Logging-Callbacks (Gesetz
+                        # 5). Deshalb wird NIE der Wert selbst ausgegeben,
+                        # sondern ausschliesslich sein Python-Typname (z.B.
+                        # "str", "dict", "NoneType") -- kurz, konstant lang,
+                        # ohne jeden Client-Inhalt.
+                        raise DatenschleuseBlocked(
+                            "Content-Part mit nicht erlaubtem Typ "
+                            f"({type(part_type).__name__}) wird von der "
+                            "Datenschleuse nicht geprueft und ist deshalb "
+                            "blockiert (fail-closed). Erlaubt sind nur "
+                            "'text' (mit String-Inhalt) und 'image_url'."
+                        )
+                elif content is not None:
+                    # DATENSCHLE-64 (QA-Folgefund zu DATENSCHLE-57): dieselbe
+                    # Luecke wie bei den Parts, nur eine Ebene hoeher. Ein
+                    # einzelner Content-Part als dict OHNE umschliessende
+                    # Liste -- z.B. {"type": "text", "text": "..."} statt
+                    # [{"type": "text", "text": "..."}] -- ist weder
+                    # isinstance(content, str) noch isinstance(content, list)
+                    # und lief bislang komplett ungeprueft durch (kein
+                    # Maskieren, kein Block). Ebenso jede andere Form (Zahl,
+                    # bool, ...). Konsequente Allowlist wie bei den Parts: nur
+                    # String und Liste sind als pruefbar erkannt, der Rest
+                    # blockt fail-closed.
+                    #
+                    # AUSNAHME, nach erstem Security-Review korrigiert:
+                    # content is None (bzw. ein fehlender content-Key, liefert
+                    # ueber msg.get() ebenfalls None) ist KEIN Bypass, sondern
+                    # spezifikationsgemaess legitim -- eine Assistant-Message
+                    # mit ``tool_calls`` hat im OpenAI-Format kein content.
+                    # Es gibt dort nichts zu maskieren oder zu leaken; ein
+                    # Block wuerde Tool-Calling komplett brechen, ein
+                    # normales, spezifiziertes Nutzungsmuster. Deshalb
+                    # ``elif content is not None`` statt ``else`` -- None
+                    # faellt durch und bleibt unveraendert.
+                    #
+                    # type(content).__name__ ist ein kurzer, konstant
+                    # harmloser Typname -- nie der Wert selbst -- in der
+                    # Meldung (Gesetz 5; siehe auch die Korrektur der
+                    # Part-Fehlermeldung weiter oben, DATENSCHLE-64 zweites
+                    # Finding).
+                    raise DatenschleuseBlocked(
+                        f"Nachricht mit content vom Typ "
+                        f"{type(content).__name__!r} wird von der "
+                        "Datenschleuse nicht geprueft und ist deshalb "
+                        "blockiert (fail-closed). Erlaubt sind nur String- "
+                        "oder Listen-content."
+                    )
 
         # Mapping im EIGENEN Metadata-Key ablegen (nicht LiteLLMs Interna).
         metadata = data.get("metadata")

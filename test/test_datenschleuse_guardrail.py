@@ -4,8 +4,9 @@ Laeuft OHNE laufenden Presidio-Container und OHNE installiertes litellm:
 - Presidio-Calls werden gemockt / das Mapping wird direkt injiziert.
 - Die reine Sliding-Window-Logik wird framework-frei getestet.
 
-Ausfuehren:
-    python3 -m unittest test.test_datenschleuse_guardrail -v
+Ausfuehren (aus dem Repo-Root -- "test.test_datenschleuse_guardrail" kollidiert
+mit dem Python-Stdlib-Paket "test" und schlaegt dort fehl, siehe DATENSCHLE-62):
+    python3 -m unittest discover -s ./test -p "test_datenschleuse_guardrail.py" -v
     # oder aus dem test/-Ordner:
     python3 -m unittest test_datenschleuse_guardrail -v
 

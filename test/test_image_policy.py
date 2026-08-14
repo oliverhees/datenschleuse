@@ -7,8 +7,11 @@ unveraendert zum Modell. Diese Tests decken den neuen Pfad ab.
 
 Laeuft OHNE laufenden Presidio-Container und OHNE installiertes litellm.
 
-Ausfuehren:
-    python3 -m unittest test.test_image_policy -v
+Ausfuehren (aus dem Repo-Root -- "test.test_image_policy" kollidiert mit dem
+Python-Stdlib-Paket "test" und schlaegt dort fehl, siehe DATENSCHLE-62):
+    python3 -m unittest discover -s ./test -p "test_image_policy.py" -v
+    # oder aus dem test/-Ordner:
+    python3 -m unittest test_image_policy -v
 """
 
 import base64

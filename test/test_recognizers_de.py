@@ -10,8 +10,11 @@ Teilstring? loest er auf den Negativ-Koedern NICHT aus?). Die Score-Kalibrierung
 und das Zusammenspiel mit spaCy/Context deckt der Korpus-Benchmark ab
 (test/corpus-benchmark.py gegen den laufenden Analyzer).
 
-Ausfuehren:
-    python3 -m unittest test.test_recognizers_de -v
+Ausfuehren (aus dem Repo-Root -- "test.test_recognizers_de" kollidiert mit dem
+Python-Stdlib-Paket "test" und schlaegt dort fehl, siehe DATENSCHLE-62):
+    python3 -m unittest discover -s ./test -p "test_recognizers_de.py" -v
+    # oder aus dem test/-Ordner:
+    python3 -m unittest test_recognizers_de -v
 """
 
 import os
