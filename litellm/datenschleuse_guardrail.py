@@ -663,15 +663,28 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             text_slots.append((part, "text"))
                             continue
                         # Nicht auf der Allowlist -> nicht pruefbar -> blocken.
-                        # part_type (ein kurzer Typname, keine PII/Nutzdaten)
-                        # ist in der Meldung unbedenklich (Gesetz 5).
+                        # KORREKTUR (Security-Review, DATENSCHLE-64 zweites
+                        # Finding): part_type ist NICHT unbedenklich -- es ist
+                        # ``part.get("type")``, also ein Wert, den der Client
+                        # voll kontrolliert: beliebiger Inhalt, beliebiger Typ
+                        # (auch dict/list), beliebige Laenge. Der Auditor hat
+                        # belegt, dass eine IBAN, eine Diagnose oder 5000
+                        # Flooding-Zeichen ueber genau dieses Feld in die
+                        # Meldung durchschlagen -- und DatenschleuseBlocked
+                        # wird von LiteLLM geloggt/an den Client zurueckgegeben,
+                        # laeuft also potenziell in Logging-Callbacks (Gesetz
+                        # 5). Deshalb wird NIE der Wert selbst ausgegeben,
+                        # sondern ausschliesslich sein Python-Typname (z.B.
+                        # "str", "dict", "NoneType") -- kurz, konstant lang,
+                        # ohne jeden Client-Inhalt.
                         raise DatenschleuseBlocked(
-                            f"Content-Part vom Typ {part_type!r} wird von der "
+                            "Content-Part mit nicht erlaubtem Typ "
+                            f"({type(part_type).__name__}) wird von der "
                             "Datenschleuse nicht geprueft und ist deshalb "
                             "blockiert (fail-closed). Erlaubt sind nur "
                             "'text' (mit String-Inhalt) und 'image_url'."
                         )
-                else:
+                elif content is not None:
                     # DATENSCHLE-64 (QA-Folgefund zu DATENSCHLE-57): dieselbe
                     # Luecke wie bei den Parts, nur eine Ebene hoeher. Ein
                     # einzelner Content-Part als dict OHNE umschliessende
@@ -679,18 +692,27 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # [{"type": "text", "text": "..."}] -- ist weder
                     # isinstance(content, str) noch isinstance(content, list)
                     # und lief bislang komplett ungeprueft durch (kein
-                    # Maskieren, kein Block). Ebenso jede andere Form (None,
-                    # Zahl, ...). Konsequente Allowlist wie bei den Parts:
-                    # nur String und Liste sind als pruefbar erkannt, der
-                    # Rest blockt fail-closed -- auch content=None (z.B. eine
-                    # Assistant-Message mit tool_calls). Fuer None gibt es
-                    # zwar aktuell kein PII-Risiko, aber Tool-Calling wird in
-                    # diesem Projekt bislang nirgends unterstuetzt/getestet;
-                    # sobald es das wird, ist das ein eigenes Work Item mit
-                    # eigener, bewusster Ausnahme -- kein stiller Sonderfall
-                    # hier, der die Allowlist wieder aufweicht. type(content)
-                    # .__name__ ist ein kurzer, harmloser Typname -- nie der
-                    # Wert selbst -- in der Meldung (Gesetz 5).
+                    # Maskieren, kein Block). Ebenso jede andere Form (Zahl,
+                    # bool, ...). Konsequente Allowlist wie bei den Parts: nur
+                    # String und Liste sind als pruefbar erkannt, der Rest
+                    # blockt fail-closed.
+                    #
+                    # AUSNAHME, nach erstem Security-Review korrigiert:
+                    # content is None (bzw. ein fehlender content-Key, liefert
+                    # ueber msg.get() ebenfalls None) ist KEIN Bypass, sondern
+                    # spezifikationsgemaess legitim -- eine Assistant-Message
+                    # mit ``tool_calls`` hat im OpenAI-Format kein content.
+                    # Es gibt dort nichts zu maskieren oder zu leaken; ein
+                    # Block wuerde Tool-Calling komplett brechen, ein
+                    # normales, spezifiziertes Nutzungsmuster. Deshalb
+                    # ``elif content is not None`` statt ``else`` -- None
+                    # faellt durch und bleibt unveraendert.
+                    #
+                    # type(content).__name__ ist ein kurzer, konstant
+                    # harmloser Typname -- nie der Wert selbst -- in der
+                    # Meldung (Gesetz 5; siehe auch die Korrektur der
+                    # Part-Fehlermeldung weiter oben, DATENSCHLE-64 zweites
+                    # Finding).
                     raise DatenschleuseBlocked(
                         f"Nachricht mit content vom Typ "
                         f"{type(content).__name__!r} wird von der "

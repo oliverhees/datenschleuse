@@ -97,6 +97,49 @@ class TestContentPartAllowlist(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(dg.DatenschleuseBlocked):
             await _run_pre_call(guard, content)
 
+    # -- DATENSCHLE-64, zweites Finding: das ``type``-Feld ist voll --------
+    # client-kontrolliert und darf NIE roh in die Blockmeldung uebernommen
+    # werden (Security-Review: IBAN/Diagnose/5000-Zeichen-Flooding liessen
+    # sich sonst ueber das type-Feld in den Log-/Response-Pfad schmuggeln).
+    async def test_block_message_for_string_type_contains_no_payload(self):
+        guard = _guard()
+        pii_type = "Max Mustermann, IBAN DE02120300000000202051, mustermann@example.org"
+        content = [{"type": pii_type}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            self.assertNotIn("Mustermann", str(exc))
+            self.assertNotIn("DE02120300000000202051", str(exc))
+            self.assertNotIn("example.org", str(exc))
+
+    async def test_block_message_for_dict_type_contains_no_payload(self):
+        """Auch wenn der Wert im type-Feld selbst wieder ein dict ist (z.B.
+        ein verschachteltes Objekt mit sensiblen Daten), darf davon nichts
+        in die Meldung durchschlagen."""
+        guard = _guard()
+        content = [{"type": {"payload": "Patientenakte Mustermann, Diagnose F32.1"}}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            self.assertNotIn("Mustermann", str(exc))
+            self.assertNotIn("F32.1", str(exc))
+            self.assertNotIn("Patientenakte", str(exc))
+
+    async def test_block_message_bounded_against_flooding(self):
+        """Ein extrem langes type-Feld (Log-Flooding-Versuch) darf die
+        Meldung nicht aufblaehen -- die Meldung enthaelt den Wert ueberhaupt
+        nicht, ist also automatisch laengenunabhaengig vom Input."""
+        guard = _guard()
+        content = [{"type": "A" * 5000}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            self.assertLess(len(str(exc)), 300)
+            self.assertNotIn("A" * 100, str(exc))
+
     # -- Regression: bekannte, sichere Typen bleiben unveraendert erlaubt ----
     async def test_text_part_still_masked_normally(self):
         guard = _guard()

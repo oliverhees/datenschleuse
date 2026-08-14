@@ -11,8 +11,15 @@ Liste ist?
 ``isinstance(content, str)`` und ``isinstance(content, list)``. Jede andere
 Form -- allen voran ein einzelner Content-Part als dict OHNE umschliessende
 Liste (ein naheliegender Client-Fehler und ein offensichtlicher Umgehungs-
-versuch), aber auch ``None`` oder eine Zahl -- faellt durch BEIDE Zweige und
+versuch), aber auch eine Zahl oder ein bool -- faellt durch BEIDE Zweige und
 laeuft komplett ungeprueft, unmaskiert zum Modell durch.
+
+AUSNAHME (Korrektur nach erstem Security-Review): ``content is None`` (bzw.
+ein ganz fehlender ``content``-Key) ist KEIN Bypass, sondern ein legitimer
+Fall -- Assistant-Messages mit ``tool_calls`` haben im OpenAI-Format
+spezifikationsgemaess kein ``content``. Es gibt dort nichts zu maskieren
+oder zu leaken; ein Block wuerde Tool-Calling brechen. Dieser Fall bleibt
+deshalb wie bisher unveraendert durchgereicht.
 
 Laeuft OHNE laufenden Presidio-Container und OHNE installiertes litellm.
 
@@ -64,17 +71,54 @@ class TestContentContainerAllowlist(unittest.IsolatedAsyncioTestCase):
             await _run_pre_call(guard, messages)
 
     # -- Weitere nicht pruefbare Formen -------------------------------------
-    async def test_content_none_is_blocked(self):
-        guard = _guard()
-        messages = [{"role": "assistant", "content": None}]
-        with self.assertRaises(dg.DatenschleuseBlocked):
-            await _run_pre_call(guard, messages)
-
     async def test_content_number_is_blocked(self):
         guard = _guard()
         messages = [{"role": "user", "content": 12345}]
         with self.assertRaises(dg.DatenschleuseBlocked):
             await _run_pre_call(guard, messages)
+
+    async def test_content_bool_is_blocked(self):
+        guard = _guard()
+        messages = [{"role": "user", "content": True}]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    # -- Korrektur (siehe Team-Lead-Nachricht): content=None ist LEGITIM ----
+    async def test_content_none_is_allowed_not_blocked(self):
+        """KORREKTUR zum urspruenglichen DATENSCHLE-64-Auftrag: eine
+        Assistant-Message mit ``tool_calls`` hat im OpenAI-Format legitim
+        KEIN ``content`` (bzw. ``content: null``). content=None traegt
+        keinerlei Text und damit keine PII -- es gibt nichts zu pruefen oder
+        zu leaken. Ein pauschaler Block wuerde Tool-Calling komplett
+        brechen, ein normales, spezifiziertes Nutzungsmuster. content=None
+        muss deshalb WIE BISHER unveraendert durchgereicht werden."""
+        guard = _guard()
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup_order", "arguments": '{"order_id": "42"}'},
+                    }
+                ],
+            }
+        ]
+        out = await _run_pre_call(guard, messages)
+        assistant_msg = out["messages"][0]
+        self.assertIsNone(assistant_msg["content"])
+        self.assertEqual(len(assistant_msg["tool_calls"]), 1, "tool_calls darf nicht verloren gehen")
+
+    async def test_missing_content_key_is_allowed_not_blocked(self):
+        """Aequivalent zu content=None: eine Message ganz OHNE content-Key
+        (msg.get('content') liefert ebenfalls None) darf ebenso wenig
+        blockieren."""
+        guard = _guard()
+        messages = [{"role": "assistant", "tool_calls": [{"id": "call_1"}]}]
+        out = await _run_pre_call(guard, messages)
+        self.assertNotIn("content", out["messages"][0])
 
     # -- Fehlermeldung darf keine Nutzdaten enthalten (Gesetz 5) ------------
     async def test_block_message_contains_no_payload(self):
