@@ -120,6 +120,16 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
 **Backend:** forwardet an [eurouter.ai](https://www.eurouter.ai?ref=06ZUHPBK) (EU-gehostet, GDPR, Zero Data Retention) — Gürtel und Hosenträger: EU-Hosting *plus* PII-Stripping davor.
 **Persistenz:** Postgres (LiteLLM Admin-UI/Spend-Logs, nie Message-Content) + verschlüsseltes, TTL-begrenztes SQLite (Quasi-Identifier-Session-State).
 
+**Bilder (multimodal):** Ein Screenshot transportiert dieselben Daten wie Text, wird aber von der Textmaskierung nicht erfasst. Bild-Parts laufen deshalb über [presidio-image-redactor](https://microsoft.github.io/presidio/image-redactor/) (OCR + schwarze Boxen). Gesteuert über `DATENSCHLEUSE_IMAGE_POLICY`:
+
+| Policy | Verhalten |
+|---|---|
+| `redact` (Default mit Dienst) | Bild wird geschwärzt, bevor es rausgeht. Fehler beim Schwärzen ⇒ Request blockiert. |
+| `block` (Default ohne Dienst) | Bilder werden abgelehnt. Sicher ohne Zusatzcontainer. |
+| `pass` | Bilder gehen **ungeprüft** raus. Nur bewusst setzen. |
+
+Zwei ehrliche Grenzen: Der Image-Redactor bringt seine eigene Presidio-Instanz mit und kennt die **deutschen Custom-Recognizer nicht** — im Bild greifen nur die eingebauten Typen. Und Bilder, die als externe `http`-URL statt eingebettet ankommen, werden blockiert, weil das Modell sie serverseitig abrufen würde, also an der Schleuse vorbei.
+
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
 ## 🛡️ Sicherheitsmodell

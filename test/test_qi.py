@@ -258,6 +258,17 @@ class TestSessionKeyResolution(unittest.TestCase):
 # ===========================================================================
 # 5. Guardrail-Integration (Presidio gemockt, injizierter Store)
 # ===========================================================================
+def _user_content(out):
+    """Inhalt der User-Message aus dem Hook-Ergebnis.
+
+    NICHT ueber ``messages[0]`` adressieren: sobald etwas maskiert wurde,
+    schiebt der Guardrail den ANONYMIZATION_NOTICE als System-Message an
+    Position 0 (_inject_anonymization_notice) — der Index zeigt dann auf den
+    Hinweis statt auf die Nachricht.
+    """
+    return next(m for m in out["messages"] if m.get("role") == "user")["content"]
+
+
 def _guard_with_store(preset="balanced"):
     store = qs.QiStateStore(db_path=":memory:", fernet_key=_key())
     guard = dg.DatenschleuseGuardrail(qi_risk_preset=preset, qi_store=store)
@@ -290,7 +301,7 @@ class TestGuardrailQiIntegration(unittest.IsolatedAsyncioTestCase):
         out = await guard.async_pre_call_hook(
             user_api_key_dict=None, cache=None, data=data, call_type="completion"
         )
-        return out["messages"][0]["content"]
+        return _user_content(out)
 
     async def test_below_threshold_keeps_qi_values(self):
         guard, _ = _guard_with_store("balanced")
@@ -345,7 +356,7 @@ class TestGuardrailQiIntegration(unittest.IsolatedAsyncioTestCase):
         out = await guard.async_pre_call_hook(
             user_api_key_dict=None, cache=None, data=data, call_type="completion"
         )
-        content = out["messages"][0]["content"]
+        content = _user_content(out)
         # direkter Identifier maskiert:
         self.assertIn("<PERSON_0>", content)
         self.assertNotIn("Max Mustermann", content)
@@ -375,7 +386,7 @@ class TestGuardrailQiIntegration(unittest.IsolatedAsyncioTestCase):
         out = await guard.async_pre_call_hook(
             user_api_key_dict=None, cache=None, data=data, call_type="completion"
         )
-        content = out["messages"][0]["content"]
+        content = _user_content(out)
         # direkte Maskierung greift trotz QI-Fehler:
         self.assertIn("<PERSON_0>", content)
         self.assertNotIn("Max Mustermann", content)
@@ -390,7 +401,7 @@ class TestGuardrailQiIntegration(unittest.IsolatedAsyncioTestCase):
         out = await guard.async_pre_call_hook(
             user_api_key_dict=None, cache=None, data=data, call_type="completion"
         )
-        self.assertIn("<PERSON_0>", out["messages"][0]["content"])
+        self.assertIn("<PERSON_0>", _user_content(out))
 
 
 class TestGuardrailFailClosedOnStateKey(unittest.TestCase):
