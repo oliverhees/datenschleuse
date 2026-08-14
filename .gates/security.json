@@ -1,7 +1,7 @@
 {
   "gate": "security",
   "verdict": "pass",
-  "commit": "353d6a043500636dc1ed33af15c298d62020efad",
+  "commit": "4c64dfafe943a4b5d6927580da64da0e08f660aa",
   "branch": "feature/DATENSCHLE-49-firmen-bootstrap",
-  "timestamp": "2026-08-14T17:01:06Z"
+  "timestamp": "2026-08-14T17:46:52Z"
 }
