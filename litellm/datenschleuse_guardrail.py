@@ -671,6 +671,33 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             "blockiert (fail-closed). Erlaubt sind nur "
                             "'text' (mit String-Inhalt) und 'image_url'."
                         )
+                else:
+                    # DATENSCHLE-64 (QA-Folgefund zu DATENSCHLE-57): dieselbe
+                    # Luecke wie bei den Parts, nur eine Ebene hoeher. Ein
+                    # einzelner Content-Part als dict OHNE umschliessende
+                    # Liste -- z.B. {"type": "text", "text": "..."} statt
+                    # [{"type": "text", "text": "..."}] -- ist weder
+                    # isinstance(content, str) noch isinstance(content, list)
+                    # und lief bislang komplett ungeprueft durch (kein
+                    # Maskieren, kein Block). Ebenso jede andere Form (None,
+                    # Zahl, ...). Konsequente Allowlist wie bei den Parts:
+                    # nur String und Liste sind als pruefbar erkannt, der
+                    # Rest blockt fail-closed -- auch content=None (z.B. eine
+                    # Assistant-Message mit tool_calls). Fuer None gibt es
+                    # zwar aktuell kein PII-Risiko, aber Tool-Calling wird in
+                    # diesem Projekt bislang nirgends unterstuetzt/getestet;
+                    # sobald es das wird, ist das ein eigenes Work Item mit
+                    # eigener, bewusster Ausnahme -- kein stiller Sonderfall
+                    # hier, der die Allowlist wieder aufweicht. type(content)
+                    # .__name__ ist ein kurzer, harmloser Typname -- nie der
+                    # Wert selbst -- in der Meldung (Gesetz 5).
+                    raise DatenschleuseBlocked(
+                        f"Nachricht mit content vom Typ "
+                        f"{type(content).__name__!r} wird von der "
+                        "Datenschleuse nicht geprueft und ist deshalb "
+                        "blockiert (fail-closed). Erlaubt sind nur String- "
+                        "oder Listen-content."
+                    )
 
         # Mapping im EIGENEN Metadata-Key ablegen (nicht LiteLLMs Interna).
         metadata = data.get("metadata")
