@@ -629,16 +629,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 elif isinstance(content, list):
                     # Multimodal: Text-Parts maskieren, Bild-Parts nach Policy
                     # schwaerzen/blocken (frueher liefen sie hier unveraendert
-                    # durch — genau das war die Luecke).
+                    # durch — genau das war die Luecke). ALLES ANDERE wird
+                    # blockiert (Allowlist statt Denylist, DATENSCHLE-57):
+                    # ``file``-Parts (hochgeladene PDFs/Dokumente),
+                    # ``input_audio``, Parts ohne ``type``-Feld und jeder der
+                    # Guardrail unbekannte/kuenftige Typ liefen bislang
+                    # ungeprueft durch. Statt jeden bekannten unsicheren Typ
+                    # einzeln aufzuzaehlen, gilt: nur was hier explizit als
+                    # geprueft-und-sicher erkannt wird, passiert -- alles
+                    # Uebrige blockt fail-closed, auch ein Part-Typ, den die
+                    # OpenAI-API erst morgen einfuehrt.
                     for part in content:
-                        if isinstance(part, dict) and part.get("type") == "image_url":
+                        part_type = part.get("type") if isinstance(part, dict) else None
+                        if part_type == "image_url":
                             await self._handle_image_part(part)
                             continue
-                        if (
-                            isinstance(part, dict)
-                            and part.get("type") == "text"
-                            and isinstance(part.get("text"), str)
-                        ):
+                        if part_type == "text" and isinstance(part.get("text"), str):
                             original = part["text"]
                             entities = await self._analyze(original)
 
@@ -655,6 +661,16 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             part["text"] = masker.mask(original, direct)
                             turn_qi.extend(self._extract_qi_values(original, qi))
                             text_slots.append((part, "text"))
+                            continue
+                        # Nicht auf der Allowlist -> nicht pruefbar -> blocken.
+                        # part_type (ein kurzer Typname, keine PII/Nutzdaten)
+                        # ist in der Meldung unbedenklich (Gesetz 5).
+                        raise DatenschleuseBlocked(
+                            f"Content-Part vom Typ {part_type!r} wird von der "
+                            "Datenschleuse nicht geprueft und ist deshalb "
+                            "blockiert (fail-closed). Erlaubt sind nur "
+                            "'text' (mit String-Inhalt) und 'image_url'."
+                        )
 
         # Mapping im EIGENEN Metadata-Key ablegen (nicht LiteLLMs Interna).
         metadata = data.get("metadata")
