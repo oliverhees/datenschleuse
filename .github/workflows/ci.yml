@@ -9,24 +9,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
+          python-version: "3.12"
+      - run: pip install -r test/requirements.txt
+      - run: python3 -m unittest discover -s test -p "test_*.py"
 
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
+          python-version: "3.12"
+      # Kein Linter (ruff/flake8/...) festgelegt -- das ist eine
+      # Tech-Stack-Entscheidung fuer docs/foundation/techstack.md, die Oliver
+      # trifft, keine stillschweigende Wahl im CI-Workflow. Bis dahin nur ein
+      # Syntax-Check ohne neue Dependency: prueft, dass jede Datei parst.
+      - run: python3 -m compileall -q litellm test presidio
 
   security:
     name: security
