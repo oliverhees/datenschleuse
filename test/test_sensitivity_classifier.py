@@ -7,8 +7,9 @@ als Dicts direkt injiziert, die Config als dict uebergeben (kein PyYAML noetig).
 Ein separater Test laedt zusaetzlich die echte YAML-Config (uebersprungen,
 falls PyYAML fehlt).
 
-Ausfuehren:
-    python3 -m unittest test.test_sensitivity_classifier -v
+Ausfuehren (aus dem Repo-Root -- "test.test_sensitivity_classifier" kollidiert
+mit dem Python-Stdlib-Paket "test" und schlaegt dort fehl, siehe DATENSCHLE-62):
+    python3 -m unittest discover -s ./test -p "test_sensitivity_classifier.py" -v
     # oder aus dem test/-Ordner:
     python3 -m unittest test_sensitivity_classifier -v
 """
