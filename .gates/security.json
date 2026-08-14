@@ -1,7 +1,7 @@
 {
   "gate": "security",
-  "verdict": "fail",
-  "commit": "4baf2e534d3babd47ea26454ff7099f8bd89a57e",
+  "verdict": "pass",
+  "commit": "6380cc38e66e60f2375085f68074574d0a86bf65",
   "branch": "feature/DATENSCHLE-57-content-part-allowlist",
-  "timestamp": "2026-08-14T19:06:46Z"
+  "timestamp": "2026-08-14T19:19:20Z"
 }
