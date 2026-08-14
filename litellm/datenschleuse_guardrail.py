@@ -483,8 +483,20 @@ class DatenschleuseGuardrail(_GuardrailBase):
         """
         mime, raw = _split_data_url(data_url)
         if raw is None:
-            # Externe URL (http/https): die koennen wir nicht schwaerzen — und
-            # das Modell wuerde sie serverseitig abrufen, also am Proxy vorbei.
+            # _split_data_url liefert (mime, None) in zwei unterschiedlichen
+            # Faellen, die eine unterschiedliche Meldung verdienen (kein
+            # Bildinhalt/Base64-Fragment in der Meldung -- Gesetz 5):
+            # - mime gesetzt: der data:-Header wurde erkannt, aber das
+            #   Base64-Payload liess sich nicht dekodieren (kaputte Daten).
+            # - mime leer: es war ueberhaupt keine ``data:``-URL (z.B. eine
+            #   externe http/https-URL), die das Modell serverseitig abrufen
+            #   wuerde -- also am Proxy vorbei.
+            if mime:
+                raise DatenschleuseBlocked(
+                    "Bild-Part enthaelt eine data:-URL mit ungueltigem oder "
+                    "beschaedigtem Base64-Payload; der Inhalt kann nicht "
+                    "dekodiert werden (fail-closed)."
+                )
             raise DatenschleuseBlocked(
                 "Bild-Part verweist auf eine externe URL statt auf eingebettete "
                 "Daten; der Inhalt kann nicht geprueft werden (fail-closed)."

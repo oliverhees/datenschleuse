@@ -215,6 +215,113 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(dg.DatenschleuseBlocked):
                 await guard._redact_image(data_url())
 
+    async def test_redactor_http_error_status_is_fail_closed(self):
+        """4xx/5xx vom Image-Redactor (z.B. Presidio-Dienst down oder 400 bei
+        kaputtem Upload) muss ueber raise_for_status() zu DatenschleuseBlocked
+        eskalieren -- bisher nur ad hoc verifiziert, nicht durch die Suite
+        belegt (QA-Finding 3)."""
+        guard = dg.DatenschleuseGuardrail(image_redactor_url="http://redactor:3000")
+        with _RedactorPatch() as fake:
+            fake.status = 500
+            with self.assertRaises(dg.DatenschleuseBlocked):
+                await guard._redact_image(data_url())
+
+    async def test_redactor_http_client_error_status_is_fail_closed(self):
+        """Auch ein 4xx (z.B. 400 Bad Request bei nicht dekodierbarem Bild
+        auf Presidio-Seite) darf nie unmaskiert durchrutschen."""
+        guard = dg.DatenschleuseGuardrail(image_redactor_url="http://redactor:3000")
+        with _RedactorPatch() as fake:
+            fake.status = 400
+            with self.assertRaises(dg.DatenschleuseBlocked):
+                await guard._redact_image(data_url())
+
+    async def test_multiple_images_in_one_message_all_redacted(self):
+        """Typischer multimodaler Fall: mehrere Bilder in derselben Nachricht
+        muessen alle geschwaerzt werden, nicht nur das erste (QA-Finding 4)."""
+        guard = dg.DatenschleuseGuardrail(image_redactor_url="http://redactor:3000")
+        original_a = data_url(raw=b"bild-a")
+        original_b = data_url(raw=b"bild-b")
+        data = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": original_a}},
+                        {"type": "image_url", "image_url": {"url": original_b}},
+                    ],
+                }
+            ]
+        }
+        with _RedactorPatch() as fake:
+            out = await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        parts = out["messages"][0]["content"]
+        self.assertEqual(len(parts), 2)
+        for part in parts:
+            self.assertEqual(
+                part["image_url"]["url"], dg._to_data_url(REDACTED, "image/png")
+            )
+        self.assertEqual(len(fake.calls), 2, "beide Bilder muessen den Redactor durchlaufen haben")
+
+    async def test_multiple_messages_with_images_all_redacted(self):
+        """Mehrere Nachrichten mit je einem Bild (z.B. laufende Konversation)
+        muessen ebenfalls vollstaendig geschwaerzt werden (QA-Finding 4)."""
+        guard = dg.DatenschleuseGuardrail(image_redactor_url="http://redactor:3000")
+        original_1 = data_url(raw=b"nachricht-1")
+        original_2 = data_url(raw=b"nachricht-2")
+        data = {
+            "messages": [
+                image_message(url=original_1),
+                # Leerer Content, damit dieser Zwischenschritt nicht zusaetzlich
+                # den Presidio-Analyzer-Pfad (_analyze) beruehrt -- der ist hier
+                # nicht Testgegenstand, nur die Bild-Redaktion ueber mehrere
+                # Messages hinweg.
+                {"role": "assistant", "content": ""},
+                image_message(url=original_2),
+            ]
+        }
+        with _RedactorPatch() as fake:
+            out = await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        image_messages = [
+            m for m in out["messages"] if m.get("role") == "user"
+        ]
+        self.assertEqual(len(image_messages), 2)
+        for msg in image_messages:
+            self.assertEqual(
+                msg["content"][0]["image_url"]["url"],
+                dg._to_data_url(REDACTED, "image/png"),
+            )
+        self.assertEqual(len(fake.calls), 2, "beide Bild-Nachrichten muessen den Redactor durchlaufen haben")
+
+    async def test_broken_base64_error_message_differs_from_external_url(self):
+        """QA-Finding 5: eine data:-URL mit kaputtem Base64 und eine externe
+        http-URL landen beide fail-closed in DatenschleuseBlocked, aber mit
+        UNTERSCHIEDLICHEN, jeweils zutreffenden Meldungen -- vorher wurde
+        immer 'externe URL' gemeldet, auch bei kaputten eingebetteten Daten.
+        Keine der Meldungen darf Bildinhalt/Base64-Fragmente enthalten."""
+        guard = dg.DatenschleuseGuardrail(image_redactor_url="http://redactor:3000")
+
+        broken = "data:image/png;base64,!!!nicht-base64!!!"
+        with self.assertRaises(dg.DatenschleuseBlocked) as broken_ctx:
+            await guard._redact_image(broken)
+        broken_message = str(broken_ctx.exception)
+        self.assertIn("Base64", broken_message)
+        self.assertNotIn("!!!nicht-base64!!!", broken_message)
+
+        external = "https://example.org/scan.png"
+        with self.assertRaises(dg.DatenschleuseBlocked) as external_ctx:
+            await guard._redact_image(external)
+        external_message = str(external_ctx.exception)
+        self.assertIn("externe URL", external_message)
+
+        self.assertNotEqual(
+            broken_message, external_message,
+            "kaputtes Base64 und externe URL muessen unterscheidbare Meldungen liefern",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

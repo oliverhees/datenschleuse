@@ -21,8 +21,8 @@ jobs:
       - run: pip install -r litellm/requirements-guardrail.txt -r test/requirements.txt
       - run: python3 -m unittest discover -s test -p "test_*.py"
 
-  lint:
-    name: lint
+  syntax-check:
+    name: syntax-check
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
