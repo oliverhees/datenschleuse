@@ -3,21 +3,28 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: GITHUB_TOKEN bekommt repo-weit nur Lesezugriff.
+# Jobs, die mehr brauchen, bekommen es explizit und einzeln (aktuell keiner).
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r test/requirements.txt
+      - run: pip install -r litellm/requirements-guardrail.txt -r test/requirements.txt
       - run: python3 -m unittest discover -s test -p "test_*.py"
 
   lint:
     name: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,27 +39,31 @@ jobs:
   security:
     name: security
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: gitleaks (Secrets-Scan)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   gates:
     name: gates
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Laufzettel pruefen (SHA-gepinnte Verdicts)
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          BASE="origin/${{ github.base_ref }}"
-          git fetch origin "${{ github.base_ref }}" --depth=200
+          BASE="origin/$BASE_REF"
+          git fetch origin "$BASE_REF" --depth=200
 
           CODE_CHANGED=$(git diff --name-only "$BASE"...HEAD -- . ':(exclude).gates' ':(exclude)docs' ':(exclude)*.md' | wc -l)
           if [ "$CODE_CHANGED" -eq 0 ]; then
