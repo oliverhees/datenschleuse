@@ -47,6 +47,7 @@ Sicherheits-Rationale zu Streaming (Fail-closed vs. UX)
 
 from __future__ import annotations
 
+import base64
 import copy
 import os
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -91,6 +92,52 @@ REID_MAP_KEY = "datenschleuse_reid_map"
 # Sicherheitsmarge (in Zeichen) auf die laengste bekannte Platzhalter-Laenge.
 # Siehe ReidStreamProcessor fuer die Begruendung.
 DEFAULT_PLACEHOLDER_MARGIN = 10
+
+# Umgang mit Bild-Parts in multimodalen Nachrichten. Siehe Konstruktor.
+IMAGE_POLICIES = ("redact", "block", "pass")
+
+
+def _image_part_url(part: Dict[str, Any]) -> str:
+    """Liest die URL aus einem ``image_url``-Part. Das OpenAI-Format ist
+    ``{"type": "image_url", "image_url": {"url": "..."}}``, manche Clients
+    schicken den String direkt — beides akzeptieren, nichts erraten."""
+    value = part.get("image_url")
+    if isinstance(value, dict):
+        url = value.get("url")
+        return url if isinstance(url, str) else ""
+    return value if isinstance(value, str) else ""
+
+
+def _split_data_url(url: str) -> Tuple[str, Optional[bytes]]:
+    """``data:image/png;base64,XXXX`` -> ``("image/png", b"...")``.
+
+    Liefert ``(mime, None)``, wenn aus der URL keine Bilddaten gewonnen
+    werden konnten -- der Aufrufer entscheidet dann fail-closed. ``mime``
+    ist dabei das verlaessliche Signal FUER DEN AUFRUFER, WARUM es keine
+    Bytes gab: leer, wenn ueberhaupt kein ``data:``-Header mit
+    base64-Marker erkannt wurde (z.B. eine externe http-URL); gesetzt,
+    wenn der Header erkannt wurde, das Payload danach aber fehlt oder
+    nicht dekodierbar ist. WICHTIG: mime muss deshalb VOR der
+    Payload-Pruefung berechnet werden -- sonst geht bei einem leeren
+    Payload (``data:image/png;base64,``) das mime-Signal verloren und ein
+    Aufrufer kann eine leere eingebettete data:-URL nicht mehr von einer
+    echten externen URL unterscheiden (siehe QA-Finding zu Finding 5)."""
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return "", None
+    header, _, payload = url.partition(",")
+    if "base64" not in header:
+        return "", None
+    mime = header[len("data:") :].split(";")[0].strip()
+    if not payload:
+        return mime, None
+    try:
+        return mime, base64.b64decode(payload, validate=True)
+    except Exception:
+        return mime, None
+
+
+def _to_data_url(raw: bytes, mime: str) -> str:
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 # Hinweis an das Ziel-Modell, dass Platzhalter wie <PERSON_1>/<ADDRESS_0>
 # bewusste Anonymisierung sind, kein Fehler. Ohne diesen Hinweis neigen
@@ -304,6 +351,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
         score_threshold: float = 0.0,
         placeholder_margin: int = DEFAULT_PLACEHOLDER_MARGIN,
         request_timeout: float = 10.0,
+        image_redactor_url: Optional[str] = None,
+        image_policy: Optional[str] = None,
         qi_risk_preset: Optional[str] = None,
         qi_state_key: Optional[str] = None,
         qi_state_db: Optional[str] = None,
@@ -322,6 +371,42 @@ class DatenschleuseGuardrail(_GuardrailBase):
         self.score_threshold = float(kwargs.pop("presidio_score_threshold", score_threshold) or 0.0)
         self.placeholder_margin = int(placeholder_margin)
         self.request_timeout = float(request_timeout)
+
+        # --- Bild-Parts (multimodal) ----------------------------------------
+        # Text war nie das ganze Problem: ein Screenshot mit derselben Adresse
+        # drauf lief bis hierher unveraendert zum Modell, weil unten nur
+        # ``type == "text"``-Parts maskiert werden. Presidio kann Bilder
+        # schwaerzen (OCR + Boxen), das laeuft aber in einem EIGENEN Dienst
+        # (microsoft/presidio-image-redactor, POST /redact).
+        #
+        # Policy statt stillem Default, weil beide Enden gefaehrlich sind: ohne
+        # Redactor-Container waere "durchlassen" ein stilles Leck und "blocken"
+        # ein hartes Verhaltensbruch. Deshalb explizit:
+        #   redact = schwaerzen, Fehler => Block (empfohlen, braucht den Dienst)
+        #   block  = Bilder grundsaetzlich ablehnen (sicher ohne Extra-Dienst)
+        #   pass   = altes Verhalten, Bilder gehen UNGEPRUEFT raus (bewusste Luecke)
+        self.image_redactor_url = (
+            image_redactor_url
+            or kwargs.pop("presidio_image_redactor_url", None)
+            or os.getenv("PRESIDIO_IMAGE_REDACTOR_API_BASE")
+            or ""
+        ).rstrip("/")
+        policy = (kwargs.pop("image_policy", None) or image_policy or os.getenv("DATENSCHLEUSE_IMAGE_POLICY") or "").strip().lower()
+        if not policy:
+            # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
+            # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
+            policy = "redact" if self.image_redactor_url else "block"
+        if policy not in IMAGE_POLICIES:
+            raise ValueError(
+                f"image_policy={policy!r} unbekannt — erlaubt: {', '.join(sorted(IMAGE_POLICIES))}"
+            )
+        if policy == "redact" and not self.image_redactor_url:
+            raise ValueError(
+                "image_policy='redact' ohne image_redactor_url/"
+                "PRESIDIO_IMAGE_REDACTOR_API_BASE — der Dienst muss erreichbar "
+                "konfiguriert sein, sonst waere jedes Bild ein Blindflug."
+            )
+        self.image_policy = policy
 
         # --- Schutzklassen-Modell (IMMER aktiv, keine Konfigurationsoption) --
         # Laedt presidio/sensitivity-keywords.yml einmalig. Fail-closed beim
@@ -392,6 +477,98 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"Request blockiert (fail-closed, kein unmaskiertes PII)."
             ) from exc
 
+    # ---- Presidio Image Redactor (Bild-Parts) -----------------------------
+    async def _redact_image(self, data_url: str) -> str:
+        """Schickt ein ``data:``-Bild durch ``POST /redact`` und gibt die
+        geschwaerzte Fassung als neue ``data:``-URL zurueck.
+
+        Fail-closed wie ``_analyze``: jeder Fehler wird zu DatenschleuseBlocked,
+        damit nie ein ungepruefres Bild durchrutscht.
+
+        GRENZE, die man kennen muss: Der Image-Redactor bringt seine EIGENE
+        Presidio-Instanz mit und kennt deshalb die deutschen Custom-Recognizer
+        aus presidio/recognizers-config.yml NICHT. Im Bild werden also die
+        eingebauten Typen erkannt (Namen, E-Mail, Telefon, IBAN, ...), aber
+        z.B. ein deutsches Aktenzeichen nicht zwingend. Das ist der Grund,
+        warum 'block' fuer sensible Setups die ehrlichere Wahl bleibt.
+        """
+        mime, raw = _split_data_url(data_url)
+        if raw is None:
+            # _split_data_url liefert (mime, None) in DREI unterschiedlichen
+            # Faellen, die je eine zutreffende Meldung verdienen (kein
+            # Bildinhalt/Base64-Fragment in der Meldung -- Gesetz 5). mime
+            # allein reicht NICHT als Unterscheidungsmerkmal (nur binaer),
+            # deshalb zusaetzlich pruefen, ob nach dem Komma ueberhaupt ein
+            # Payload vorlag -- ohne dessen Inhalt in die Meldung zu uebernehmen:
+            # - mime leer: es war ueberhaupt keine ``data:``-URL (z.B. eine
+            #   externe http/https-URL), die das Modell serverseitig abrufen
+            #   wuerde -- also am Proxy vorbei.
+            # - mime gesetzt, kein Payload nach dem Komma: eine eingebettete
+            #   data:-URL ohne jeden Bildinhalt (leeres Base64-Feld).
+            # - mime gesetzt, Payload vorhanden: der data:-Header wurde
+            #   erkannt, aber das Base64-Payload liess sich nicht dekodieren
+            #   (kaputte/beschaedigte Daten).
+            if not mime:
+                raise DatenschleuseBlocked(
+                    "Bild-Part verweist auf eine externe URL statt auf eingebettete "
+                    "Daten; der Inhalt kann nicht geprueft werden (fail-closed)."
+                )
+            payload = data_url.partition(",")[2] if isinstance(data_url, str) else ""
+            if not payload:
+                raise DatenschleuseBlocked(
+                    "Bild-Part ist eine eingebettete data:-URL ohne Payload "
+                    "(leeres Base64-Feld); der Inhalt kann nicht geprueft "
+                    "werden (fail-closed)."
+                )
+            raise DatenschleuseBlocked(
+                "Bild-Part enthaelt eine data:-URL mit ungueltigem oder "
+                "beschaedigtem Base64-Payload; der Inhalt kann nicht "
+                "dekodiert werden (fail-closed)."
+            )
+        try:
+            files = {"image": ("upload", raw, mime or "application/octet-stream")}
+            async with httpx.AsyncClient(timeout=self.request_timeout) as client:
+                resp = await client.post(
+                    f"{self.image_redactor_url}/redact",
+                    files=files,
+                    data={"data": '{"color_fill": "0"}'},
+                )
+            resp.raise_for_status()
+            redacted = resp.content
+            if not redacted:
+                raise ValueError("leere Antwort vom Image-Redactor")
+        except DatenschleuseBlocked:
+            raise
+        except Exception as exc:  # fail-closed
+            raise DatenschleuseBlocked(
+                f"Presidio Image Redactor nicht erreichbar/fehlerhaft ({exc}); "
+                f"Request blockiert (fail-closed, kein ungeprueftes Bild)."
+            ) from exc
+        return _to_data_url(redacted, mime or "image/png")
+
+    async def _handle_image_part(self, part: Dict[str, Any]) -> None:
+        """Wendet die konfigurierte Bild-Policy auf einen ``image_url``-Part an.
+        Mutiert den Part in-place (wie der Text-Pfad auch)."""
+        if self.image_policy == "pass":
+            return
+        if self.image_policy == "block":
+            raise DatenschleuseBlocked(
+                "Bild-Anhaenge sind blockiert (image_policy='block'). Die "
+                "Datenschleuse maskiert Text; Bilder muessten geschwaerzt "
+                "werden, wofuer der Image-Redactor-Dienst noetig ist."
+            )
+        url = _image_part_url(part)
+        if not url:
+            raise DatenschleuseBlocked(
+                "Bild-Part ohne lesbare URL — Inhalt nicht pruefbar (fail-closed)."
+            )
+        redacted = await self._redact_image(url)
+        target = part.get("image_url")
+        if isinstance(target, dict):
+            target["url"] = redacted
+        else:
+            part["image_url"] = redacted
+
     # ---- Pre-Call: PII maskieren ------------------------------------------
     async def async_pre_call_hook(
         self,
@@ -450,8 +627,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     turn_qi.extend(self._extract_qi_values(original, qi))
                     text_slots.append((msg, "content"))
                 elif isinstance(content, list):
-                    # Multimodal: nur Text-Parts maskieren.
+                    # Multimodal: Text-Parts maskieren, Bild-Parts nach Policy
+                    # schwaerzen/blocken (frueher liefen sie hier unveraendert
+                    # durch — genau das war die Luecke).
                     for part in content:
+                        if isinstance(part, dict) and part.get("type") == "image_url":
+                            await self._handle_image_part(part)
+                            continue
                         if (
                             isinstance(part, dict)
                             and part.get("type") == "text"

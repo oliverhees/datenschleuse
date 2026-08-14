@@ -1,0 +1,102 @@
+name: ci
+on:
+  pull_request:
+    branches: [main]
+
+# Least privilege: GITHUB_TOKEN bekommt repo-weit nur Lesezugriff.
+# Jobs, die mehr brauchen, bekommen es explizit und einzeln (aktuell keiner).
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r litellm/requirements-guardrail.txt -r test/requirements.txt
+      # -s ./test statt -s test: aus einem anderen Arbeitsverzeichnis
+      # sammelt "-s test" sonst stillschweigend die Python-Stdlib-Suite
+      # namens "test" ein (falsch-gruenes Gate, siehe DATENSCHLE-62). Mit
+      # ./test schlaegt der Aufruf fehl statt falsch gruen zu werden, wenn
+      # das Arbeitsverzeichnis mal nicht das Repo-Root ist.
+      - run: python3 -m unittest discover -s ./test -p "test_*.py"
+
+  syntax-check:
+    name: syntax-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Kein Linter (ruff/flake8/...) festgelegt -- das ist eine
+      # Tech-Stack-Entscheidung fuer docs/foundation/techstack.md, die Oliver
+      # trifft, keine stillschweigende Wahl im CI-Workflow. Bis dahin nur ein
+      # Syntax-Check ohne neue Dependency: prueft, dass jede Datei parst.
+      - run: python3 -m compileall -q litellm test presidio
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (Secrets-Scan)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  gates:
+    name: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Laufzettel pruefen (SHA-gepinnte Verdicts)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          BASE="origin/$BASE_REF"
+          git fetch origin "$BASE_REF" --depth=200
+
+          CODE_CHANGED=$(git diff --name-only "$BASE"...HEAD -- . ':(exclude).gates' ':(exclude)docs' ':(exclude)*.md' | wc -l)
+          if [ "$CODE_CHANGED" -eq 0 ]; then
+            echo "Nur Doku/Gates geaendert — keine Verdicts noetig. ✅"
+            exit 0
+          fi
+
+          UI_CHANGED=$(git diff --name-only "$BASE"...HEAD | grep -E '\.(tsx|jsx)$|styles?/' | wc -l || true)
+          REQUIRED="security qa"
+          [ "$UI_CHANGED" -gt 0 ] && REQUIRED="$REQUIRED ux"
+
+          FAIL=0
+          for GATE in $REQUIRED; do
+            FILE=".gates/$GATE.json"
+            if [ ! -f "$FILE" ]; then
+              echo "❌ Verdict fehlt: $GATE"; FAIL=1; continue
+            fi
+            VERDICT=$(python3 -c "import json;print(json.load(open('$FILE'))['verdict'])")
+            PINNED=$(python3 -c "import json;print(json.load(open('$FILE'))['commit'])")
+            if [ "$VERDICT" != "pass" ]; then
+              echo "❌ $GATE: Verdict ist '$VERDICT'"; FAIL=1; continue
+            fi
+            STALE=$(git rev-list "$PINNED"..HEAD -- . ':(exclude).gates' | wc -l)
+            if [ "$STALE" -gt 0 ]; then
+              echo "❌ $GATE: $STALE Code-Commit(s) NACH dem Audit (gepinnt: ${PINNED:0:8}) — erneutes Audit noetig."
+              FAIL=1
+            else
+              echo "✅ $GATE: pass @ ${PINNED:0:8} (frisch)"
+            fi
+          done
+          exit $FAIL

@@ -43,6 +43,12 @@ services:
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+      # Bild-Parts: mit gesetztem Redactor schwaerzt die Guardrail sie, ohne
+      # lehnt sie sie ab. Nie stillschweigend durchlassen -- 'pass' waere ein
+      # bewusster Verzicht und muss ueber DATENSCHLEUSE_IMAGE_POLICY gesetzt
+      # werden (siehe Guardrail-Konstruktor).
+      - PRESIDIO_IMAGE_REDACTOR_API_BASE=http://presidio-image-redactor:3000
+      - DATENSCHLEUSE_IMAGE_POLICY=${DATENSCHLEUSE_IMAGE_POLICY:-redact}
       # Fernet-Schluessel fuer den verschluesselten Quasi-Identifier-State.
       # PFLICHT sobald der QI-Layer aktiv ist (qi_risk_preset in config.yaml
       # gesetzt) -- der :?-Guard bricht `docker compose up` hart ab, wenn die
@@ -65,6 +71,8 @@ services:
       presidio-analyzer:
         condition: service_started
       presidio-anonymizer:
+        condition: service_started
+      presidio-image-redactor:
         condition: service_started
       datenschleuse-db:
         condition: service_healthy
@@ -125,6 +133,27 @@ services:
   presidio-anonymizer:
     image: mcr.microsoft.com/presidio-anonymizer:latest
     container_name: datenschleuse-anonymizer
+    restart: unless-stopped
+    networks:
+      - datenschleuse-net
+
+  # 4. Presidio Image Redactor = schwaerzt PII IM BILD (OCR + Boxen).
+  #
+  # WOFUER: Ein Screenshot oder Foto transportiert dieselben Daten wie Text,
+  # lief aber bis dahin unveraendert zum Modell -- der Guardrail maskierte nur
+  # ``type == "text"``-Parts. Ohne diesen Dienst lehnt die Guardrail Bilder ab
+  # (image_policy-Default 'block'), statt sie still durchzulassen.
+  #
+  # OPTIONAL: Wer keine Bilder schickt, kann den Dienst weglassen; dann bleibt
+  # es beim Block. 'pass' (altes Durchlassen) muss man bewusst konfigurieren.
+  #
+  # GRENZE: Der Dienst bringt seine eigene Presidio-Instanz samt Tesseract-OCR
+  # mit und kennt die deutschen Custom-Recognizer aus
+  # presidio/recognizers-config.yml NICHT -- im Bild greifen nur die
+  # eingebauten Typen. Siehe _redact_image() im Guardrail.
+  presidio-image-redactor:
+    image: mcr.microsoft.com/presidio-image-redactor:latest
+    container_name: datenschleuse-image-redactor
     restart: unless-stopped
     networks:
       - datenschleuse-net

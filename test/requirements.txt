@@ -2,3 +2,10 @@
 # Installation: pip install -r test/requirements.txt
 PyYAML>=6.0
 requests>=2.31
+
+# regex: die Regex-Engine, die Presidio intern verwendet (variable
+# Lookbehinds / scoped Inline-Flags kann die stdlib `re` nicht). Wird von
+# test/test_recognizers_de.py gebraucht, um die deutschen PatternRecognizer
+# aus recognizers-config.yml exakt so zu kompilieren wie der Presidio-Analyzer
+# es selbst tut -- reine Test-Dependency, keine Laufzeit-Abhaengigkeit.
+regex>=2023.0
