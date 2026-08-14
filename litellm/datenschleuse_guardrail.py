@@ -111,14 +111,25 @@ def _image_part_url(part: Dict[str, Any]) -> str:
 def _split_data_url(url: str) -> Tuple[str, Optional[bytes]]:
     """``data:image/png;base64,XXXX`` -> ``("image/png", b"...")``.
 
-    Liefert ``(mime, None)``, wenn es keine base64-``data:``-URL ist (z.B. eine
-    externe http-URL) — der Aufrufer entscheidet dann fail-closed."""
+    Liefert ``(mime, None)``, wenn aus der URL keine Bilddaten gewonnen
+    werden konnten -- der Aufrufer entscheidet dann fail-closed. ``mime``
+    ist dabei das verlaessliche Signal FUER DEN AUFRUFER, WARUM es keine
+    Bytes gab: leer, wenn ueberhaupt kein ``data:``-Header mit
+    base64-Marker erkannt wurde (z.B. eine externe http-URL); gesetzt,
+    wenn der Header erkannt wurde, das Payload danach aber fehlt oder
+    nicht dekodierbar ist. WICHTIG: mime muss deshalb VOR der
+    Payload-Pruefung berechnet werden -- sonst geht bei einem leeren
+    Payload (``data:image/png;base64,``) das mime-Signal verloren und ein
+    Aufrufer kann eine leere eingebettete data:-URL nicht mehr von einer
+    echten externen URL unterscheiden (siehe QA-Finding zu Finding 5)."""
     if not isinstance(url, str) or not url.startswith("data:"):
         return "", None
     header, _, payload = url.partition(",")
-    if not payload or "base64" not in header:
+    if "base64" not in header:
         return "", None
     mime = header[len("data:") :].split(";")[0].strip()
+    if not payload:
+        return mime, None
     try:
         return mime, base64.b64decode(payload, validate=True)
     except Exception:
@@ -483,23 +494,36 @@ class DatenschleuseGuardrail(_GuardrailBase):
         """
         mime, raw = _split_data_url(data_url)
         if raw is None:
-            # _split_data_url liefert (mime, None) in zwei unterschiedlichen
-            # Faellen, die eine unterschiedliche Meldung verdienen (kein
-            # Bildinhalt/Base64-Fragment in der Meldung -- Gesetz 5):
-            # - mime gesetzt: der data:-Header wurde erkannt, aber das
-            #   Base64-Payload liess sich nicht dekodieren (kaputte Daten).
+            # _split_data_url liefert (mime, None) in DREI unterschiedlichen
+            # Faellen, die je eine zutreffende Meldung verdienen (kein
+            # Bildinhalt/Base64-Fragment in der Meldung -- Gesetz 5). mime
+            # allein reicht NICHT als Unterscheidungsmerkmal (nur binaer),
+            # deshalb zusaetzlich pruefen, ob nach dem Komma ueberhaupt ein
+            # Payload vorlag -- ohne dessen Inhalt in die Meldung zu uebernehmen:
             # - mime leer: es war ueberhaupt keine ``data:``-URL (z.B. eine
             #   externe http/https-URL), die das Modell serverseitig abrufen
             #   wuerde -- also am Proxy vorbei.
-            if mime:
+            # - mime gesetzt, kein Payload nach dem Komma: eine eingebettete
+            #   data:-URL ohne jeden Bildinhalt (leeres Base64-Feld).
+            # - mime gesetzt, Payload vorhanden: der data:-Header wurde
+            #   erkannt, aber das Base64-Payload liess sich nicht dekodieren
+            #   (kaputte/beschaedigte Daten).
+            if not mime:
                 raise DatenschleuseBlocked(
-                    "Bild-Part enthaelt eine data:-URL mit ungueltigem oder "
-                    "beschaedigtem Base64-Payload; der Inhalt kann nicht "
-                    "dekodiert werden (fail-closed)."
+                    "Bild-Part verweist auf eine externe URL statt auf eingebettete "
+                    "Daten; der Inhalt kann nicht geprueft werden (fail-closed)."
+                )
+            payload = data_url.partition(",")[2] if isinstance(data_url, str) else ""
+            if not payload:
+                raise DatenschleuseBlocked(
+                    "Bild-Part ist eine eingebettete data:-URL ohne Payload "
+                    "(leeres Base64-Feld); der Inhalt kann nicht geprueft "
+                    "werden (fail-closed)."
                 )
             raise DatenschleuseBlocked(
-                "Bild-Part verweist auf eine externe URL statt auf eingebettete "
-                "Daten; der Inhalt kann nicht geprueft werden (fail-closed)."
+                "Bild-Part enthaelt eine data:-URL mit ungueltigem oder "
+                "beschaedigtem Base64-Payload; der Inhalt kann nicht "
+                "dekodiert werden (fail-closed)."
             )
         try:
             files = {"image": ("upload", raw, mime or "application/octet-stream")}

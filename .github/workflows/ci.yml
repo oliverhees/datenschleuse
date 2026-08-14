@@ -19,7 +19,12 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r litellm/requirements-guardrail.txt -r test/requirements.txt
-      - run: python3 -m unittest discover -s test -p "test_*.py"
+      # -s ./test statt -s test: aus einem anderen Arbeitsverzeichnis
+      # sammelt "-s test" sonst stillschweigend die Python-Stdlib-Suite
+      # namens "test" ein (falsch-gruenes Gate, siehe DATENSCHLE-62). Mit
+      # ./test schlaegt der Aufruf fehl statt falsch gruen zu werden, wenn
+      # das Arbeitsverzeichnis mal nicht das Repo-Root ist.
+      - run: python3 -m unittest discover -s ./test -p "test_*.py"
 
   syntax-check:
     name: syntax-check

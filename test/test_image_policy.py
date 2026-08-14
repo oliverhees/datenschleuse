@@ -109,6 +109,16 @@ class TestDataUrlHelpers(unittest.TestCase):
         mime, raw = dg._split_data_url("data:image/png;base64,!!!nicht-base64!!!")
         self.assertIsNone(raw)
 
+    def test_empty_payload_keeps_mime(self):
+        """QA-Finding (Runde 2 zu Finding 5): eine data:-URL mit leerem
+        Base64-Feld ('data:image/png;base64,') muss weiterhin ihr mime
+        zurueckgeben, statt es wie eine externe URL zu behandeln. mime ist
+        das einzige Signal, mit dem der Aufrufer 'gar keine data:-URL' von
+        'data:-URL ohne Payload' unterscheiden kann."""
+        mime, raw = dg._split_data_url("data:image/png;base64,")
+        self.assertEqual(mime, "image/png", "mime darf bei leerem Payload nicht verloren gehen")
+        self.assertIsNone(raw)
+
     def test_part_url_both_shapes(self):
         self.assertEqual(dg._image_part_url({"image_url": {"url": "x"}}), "x")
         self.assertEqual(dg._image_part_url({"image_url": "y"}), "y")
@@ -297,11 +307,14 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake.calls), 2, "beide Bild-Nachrichten muessen den Redactor durchlaufen haben")
 
     async def test_broken_base64_error_message_differs_from_external_url(self):
-        """QA-Finding 5: eine data:-URL mit kaputtem Base64 und eine externe
-        http-URL landen beide fail-closed in DatenschleuseBlocked, aber mit
-        UNTERSCHIEDLICHEN, jeweils zutreffenden Meldungen -- vorher wurde
-        immer 'externe URL' gemeldet, auch bei kaputten eingebetteten Daten.
-        Keine der Meldungen darf Bildinhalt/Base64-Fragmente enthalten."""
+        """QA-Finding 5: eine data:-URL mit kaputtem Base64, eine data:-URL
+        mit leerem Base64-Feld und eine externe http-URL landen alle drei
+        fail-closed in DatenschleuseBlocked, aber mit DREI UNTERSCHIEDLICHEN,
+        jeweils zutreffenden Meldungen -- vorher wurde in allen Faellen immer
+        'externe URL' gemeldet, auch bei kaputten/leeren eingebetteten Daten
+        (Runde 2: der Leer-Payload-Fall ging urspruenglich unter, weil
+        _split_data_url dabei das mime-Signal verlor). Keine der Meldungen
+        darf Bildinhalt/Base64-Fragmente enthalten."""
         guard = dg.DatenschleuseGuardrail(image_redactor_url="http://redactor:3000")
 
         broken = "data:image/png;base64,!!!nicht-base64!!!"
@@ -311,15 +324,24 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Base64", broken_message)
         self.assertNotIn("!!!nicht-base64!!!", broken_message)
 
+        empty = "data:image/png;base64,"
+        with self.assertRaises(dg.DatenschleuseBlocked) as empty_ctx:
+            await guard._redact_image(empty)
+        empty_message = str(empty_ctx.exception)
+        self.assertIn("ohne Payload", empty_message)
+        self.assertNotIn("externe URL", empty_message)
+
         external = "https://example.org/scan.png"
         with self.assertRaises(dg.DatenschleuseBlocked) as external_ctx:
             await guard._redact_image(external)
         external_message = str(external_ctx.exception)
         self.assertIn("externe URL", external_message)
 
-        self.assertNotEqual(
-            broken_message, external_message,
-            "kaputtes Base64 und externe URL muessen unterscheidbare Meldungen liefern",
+        messages = {broken_message, empty_message, external_message}
+        self.assertEqual(
+            len(messages), 3,
+            "kaputtes Base64, leeres Payload und externe URL muessen drei "
+            "unterscheidbare Meldungen liefern",
         )
 
 
