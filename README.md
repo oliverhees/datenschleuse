@@ -147,9 +147,11 @@ Welche Felder einer **Nachricht** dabei wie behandelt werden, ist abschließend 
 
 Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Das ist die einzige Prüfung, die unabhängig davon greift, welchen Weg ein Wert genommen hat.
 
-Der Grund für diese Form: dieselbe Lücke ist dreimal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
+Der Grund für diese Form: dieselbe Lücke ist viermal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`, Felder innerhalb eines Parts). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
 
-Eine Ebene ist noch offen, und das sagen wir lieber, als es zu verschweigen: Innerhalb eines **content-Parts** greift die Liste bisher auf den Part-*Typ*; die *Feldebene* innerhalb eines Parts ist noch in Arbeit. Bis der Fix draußen ist, gilt „alles andere wird blockiert" auf dieser Ebene also nicht — verlass dich dort nicht darauf. Der Fix ist als eigenes Arbeitspaket terminiert. Die Einzelheiten halten wir bis dahin zurück: eine offene Lücke beschreiben wir im Umfang, nicht als Anleitung.
+Das gilt auch **innerhalb** eines content-Parts: Neben dem Part-*Typ* ist jetzt auch die *Feldebene* erfasst — ein Part mit erlaubtem Typ darf keine zusätzlichen, ungeprüften Felder mehr mitbringen. Damit ist die zuvor an dieser Stelle dokumentierte offene Ebene geschlossen; die Zusage „alles andere wird blockiert" gilt auf allen Ebenen einer Nachricht.
+
+Eine Grenze, die bleibt: „validiert" heißt Struktur, nicht Inhalt. Bei `DATENSCHLEUSE_IMAGE_POLICY=pass` wird die Bild-URL unverändert weitergereicht — steht in ihrem Pfad oder ihrer Query ein personenbezogener Wert, wird der nicht maskiert. Für Bild-URLs aus Nutzereingaben sind `redact` oder `block` die richtige Wahl.
 
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
