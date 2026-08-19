@@ -801,5 +801,109 @@ class TestStreamingReasoningReidentification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_collect_stream(out, "reasoning_content"), "Kein PII hier.")
 
 
+# ===========================================================================
+# 9. Content-Tail darf keine Fremdfragmente duplizieren (Security-Audit)
+# ===========================================================================
+class TestContentTailDoesNotDuplicate(unittest.IsolatedAsyncioTestCase):
+    """Der Abschluss-Chunk des TEXT-Kanals klont den letzten Content-Chunk.
+    Trug dieser gleichzeitig ein Reasoning- oder tool_call-Fragment, wanderte
+    dessen -- bereits re-identifizierter und ausgelieferter -- Inhalt
+    unveraendert in den Klon und kam ein zweites Mal beim Client an.
+
+    Warum die Tests aus Runde 3 das nicht gefangen haben: sie legten
+    Reasoning und Content in GETRENNTE Chunks. Die Duplizierung entsteht nur,
+    wenn DERSELBE Chunk beides traegt -- die Testform konnte den Fehler
+    strukturell nicht ausloesen. Genau das ist hier korrigiert."""
+
+    async def _run(self, chunks, reid_map):
+        guard = _guard()
+        request_data = {"metadata": {dg.REID_MAP_KEY: reid_map}}
+        out = []
+        async for chunk in guard.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=None, response=_async_gen(chunks), request_data=request_data
+        ):
+            out.append(chunk)
+        return out
+
+    async def test_reasoning_not_duplicated_by_content_tail(self):
+        chunks = [{
+            "choices": [{
+                "delta": {
+                    "content": "Kunde <PERSON_0> ist da.",
+                    "reasoning_content": "Ich denke ueber <PERSON_0> nach.",
+                },
+                "finish_reason": None,
+            }]
+        }]
+        out = await self._run(chunks, {"<PERSON_0>": "Max Mustermann"})
+
+        self.assertEqual(
+            _collect_stream(out, "reasoning_content"),
+            "Ich denke ueber Max Mustermann nach.",
+            "Reasoning darf genau einmal ankommen, nicht doppelt",
+        )
+        self.assertEqual(
+            _collect_stream(out, "content"), "Kunde Max Mustermann ist da."
+        )
+
+    async def test_tool_arguments_stay_valid_json_with_content_tail(self):
+        """Der deterministisch kaputte Fall: das vom Client zusammengesetzte
+        ``arguments`` ist kein gueltiges JSON mehr. Im agentischen Betrieb
+        heisst das fehlschlagende oder falsche Aktion -- in genau dem Kanal,
+        um den dieses Work Item geht."""
+        chunks = [{
+            "choices": [{
+                "delta": {
+                    "content": "Ich rufe das Tool fuer <PERSON_0> auf.",
+                    "tool_calls": [
+                        {"index": 0,
+                         "function": {"arguments": '{"kunde":"<PERSON_0>"}'}}
+                    ],
+                },
+                "finish_reason": None,
+            }]
+        }]
+        out = await self._run(chunks, {"<PERSON_0>": "Max Mustermann"})
+
+        args = ""
+        for chunk in out:
+            for call in chunk["choices"][0]["delta"].get("tool_calls") or []:
+                args += call["function"].get("arguments") or ""
+
+        self.assertEqual(
+            json.loads(args), {"kunde": "Max Mustermann"},
+            "zusammengesetzte arguments muessen gueltiges JSON bleiben",
+        )
+
+    async def test_refusal_is_reidentified_in_stream(self):
+        """S1: ``refusal`` wurde im Streaming ueberhaupt nicht behandelt --
+        weder re-identifiziert noch beim Klonen geleert, obwohl der
+        Non-Streaming-Pfad es laengst kann."""
+        chunks = [{
+            "choices": [{
+                "delta": {"content": None,
+                          "refusal": "Zu <PERSON_0> sage ich nichts."},
+                "finish_reason": None,
+            }]
+        }]
+        out = await self._run(chunks, {"<PERSON_0>": "Max Mustermann"})
+        self.assertEqual(
+            _collect_stream(out, "refusal"), "Zu Max Mustermann sage ich nichts."
+        )
+
+    async def test_refusal_not_duplicated_by_content_tail(self):
+        chunks = [{
+            "choices": [{
+                "delta": {"content": "Kurz zu <PERSON_0>:",
+                          "refusal": "Zu <PERSON_0> sage ich nichts."},
+                "finish_reason": None,
+            }]
+        }]
+        out = await self._run(chunks, {"<PERSON_0>": "Max Mustermann"})
+        self.assertEqual(
+            _collect_stream(out, "refusal"), "Zu Max Mustermann sage ich nichts."
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

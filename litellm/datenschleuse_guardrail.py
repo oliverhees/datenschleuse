@@ -201,6 +201,13 @@ KNOWN_UNSUPPORTED_MESSAGE_FIELDS = frozenset({
     "partial",
 })
 
+# Freitext-Felder eines Streaming-Deltas NEBEN ``content``. Sie brauchen
+# dieselbe Sliding-Window-Behandlung wie der Textkanal: ein Platzhalter kann
+# auch hier mitten durch einen Chunk brechen. Als Liste statt einzeln
+# behandelt, damit ein weiteres Feld eine Zeile ist und nicht wieder ein
+# vergessener Pfad (``refusal`` war genau das, Security-Audit S1).
+STREAM_TEXT_DELTA_FIELDS = ("reasoning_content", "refusal")
+
 # Betreiber-Diagnose. Blockmeldungen gehen an den Client; hier landet
 # zusaetzlich serverseitig, WAS geblockt hat -- Feldnamen bzw. Fingerprints,
 # niemals Werte.
@@ -1612,10 +1619,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Nutzer dort rohe <PERSON_0>-Tokens: kein Leck, aber AK3 verlangt,
         # dass die Re-Identifikation "ebenso greift wie beim Textkanal" --
         # und Streaming-Reasoning ist ein beworbenes Client-Kernfeature.
-        reasoning_processor = ReidStreamProcessor(
-            reid_map, margin=self.placeholder_margin
-        )
-        last_reasoning_chunk = None
+        text_processors = {
+            field: ReidStreamProcessor(reid_map, margin=self.placeholder_margin)
+            for field in STREAM_TEXT_DELTA_FIELDS
+        }
+        text_templates: Dict[str, Any] = {}
 
         last_content_chunk = None
         try:
@@ -1623,8 +1631,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 self._stream_reidentify_tool_calls(
                     chunk, tool_states, escaped_map, reid_map
                 )
-                if self._stream_reidentify_reasoning(chunk, reasoning_processor):
-                    last_reasoning_chunk = chunk
+                for field in self._stream_reidentify_text_deltas(
+                    chunk, text_processors
+                ):
+                    text_templates[field] = chunk
                 content = self._extract_delta(chunk)
                 if content is None:
                     # Chunk ohne Text-Delta (role-only, finish_reason, usage) ->
@@ -1644,6 +1654,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 # Struktur eines echten Content-Chunks klonen (versionsagnostisch,
                 # ohne LiteLLM-Typen konstruieren zu muessen) und Rest anhaengen.
                 final_chunk = copy.deepcopy(last_content_chunk)
+                # Security-Audit: ohne dieses Leeren wandert ein Reasoning-,
+                # refusal- oder tool_call-Fragment, das DERSELBE Chunk trug,
+                # unveraendert in den Klon -- und ist zu dem Zeitpunkt bereits
+                # ausgeliefert. Folge: doppelter Text und, bei tool_calls,
+                # deterministisch kaputtes JSON im zusammengesetzten
+                # ``arguments``. Der Fix aus der Vorrunde traf nur zwei der
+                # drei Tail-Pfade; dieser hier fehlte.
+                self._blank_stream_fragments(final_chunk)
                 self._set_delta(final_chunk, tail)
                 self._clear_finish_reason(final_chunk)
                 yield final_chunk
@@ -1659,11 +1677,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 yield self._build_tool_tail_chunk(state["template"], key, tails)
             # Und der Rest des Reasoning-Puffers -- ohne diesen Flush fehlt
             # dem Nutzer das Ende der Gedankenkette.
-            reasoning_tail = reasoning_processor.flush()
-            if reasoning_tail and last_reasoning_chunk is not None:
-                yield self._build_reasoning_tail_chunk(
-                    last_reasoning_chunk, reasoning_tail
-                )
+            for field, processor in text_processors.items():
+                text_tail = processor.flush()
+                template = text_templates.get(field)
+                if text_tail and template is not None:
+                    yield self._build_text_tail_chunk(template, field, text_tail)
 
     # ---- Post-Call Non-Streaming: einfacher Voll-Ersatz -------------------
     async def async_post_call_success_hook(
@@ -1832,21 +1850,23 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     self._set_field(function, field, state[field].feed(value))
             state["template"] = chunk
 
-    def _stream_reidentify_reasoning(
-        self, chunk: Any, processor: ReidStreamProcessor
-    ) -> bool:
-        """Ersetzt Platzhalter im Reasoning-Delta EINES Chunks (in-place).
-
-        Gibt True zurueck, wenn der Chunk ueberhaupt Reasoning trug -- dann
-        taugt er als Vorlage fuer den Abschluss-Chunk."""
+    def _stream_reidentify_text_deltas(
+        self, chunk: Any, processors: Dict[str, ReidStreamProcessor]
+    ) -> List[str]:
+        """Ersetzt Platzhalter in den Freitext-Deltas neben ``content``
+        (in-place) und liefert die Felder zurueck, die dieser Chunk trug --
+        die taugen dann als Vorlage fuer den jeweiligen Abschluss-Chunk."""
+        carried: List[str] = []
         delta = self._chunk_delta(chunk)
         if delta is None:
-            return False
-        value = self._field(delta, "reasoning_content")
-        if not isinstance(value, str):
-            return False
-        self._set_field(delta, "reasoning_content", processor.feed(value))
-        return True
+            return carried
+        for field, processor in processors.items():
+            value = self._field(delta, field)
+            if not isinstance(value, str):
+                continue
+            self._set_field(delta, field, processor.feed(value))
+            carried.append(field)
+        return carried
 
     def _blank_stream_fragments(self, chunk: Any) -> None:
         """Leert in einem GEKLONTEN Chunk alle Fragmente, die der Client
@@ -1854,10 +1874,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
         seiner Vorlage ein zweites Mal ausliefern."""
         self._set_delta(chunk, "")
         delta = self._chunk_delta(chunk)
-        if delta is not None and isinstance(
-            self._field(delta, "reasoning_content"), str
-        ):
-            self._set_field(delta, "reasoning_content", "")
+        if delta is not None:
+            for field in STREAM_TEXT_DELTA_FIELDS:
+                if isinstance(self._field(delta, field), str):
+                    self._set_field(delta, field, "")
         for _key, function in self._iter_stream_functions(chunk):
             if function is None:
                 continue
@@ -1885,14 +1905,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
         self._clear_finish_reason(final_chunk)
         return final_chunk
 
-    def _build_reasoning_tail_chunk(self, template: Any, tail: str) -> Any:
-        """Abschluss-Chunk fuer den Reasoning-Restpuffer -- gleiche Mechanik
-        wie beim Content- und Tool-Call-Tail."""
+    def _build_text_tail_chunk(self, template: Any, field: str, tail: str) -> Any:
+        """Abschluss-Chunk fuer den Restpuffer eines Freitext-Deltas --
+        gleiche Mechanik wie beim Content- und Tool-Call-Tail."""
         final_chunk = copy.deepcopy(template)
         self._blank_stream_fragments(final_chunk)
         delta = self._chunk_delta(final_chunk)
         if delta is not None:
-            self._set_field(delta, "reasoning_content", tail)
+            self._set_field(delta, field, tail)
         self._clear_finish_reason(final_chunk)
         return final_chunk
 
