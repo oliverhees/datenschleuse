@@ -100,6 +100,10 @@ jobs:
           "$RUNNER_TEMP/dsvenv/bin/pip" install --quiet --upgrade pip
           "$RUNNER_TEMP/dsvenv/bin/pip" install --quiet \
             -r litellm/requirements-guardrail.txt -r test/requirements.txt
+          # TEMPORAER (DATENSCHLE-59, Gate-Beweis) -- wird wieder entfernt.
+          # Bekannt verwundbar mit verfuegbarem Fix: muss das Gate rot faerben.
+          "$RUNNER_TEMP/dsvenv/bin/pip" install --quiet --no-deps \
+            "urllib3==1.24.1" "requests==2.19.1"
           mkdir -p "$RUNNER_TEMP/depscan"
           "$RUNNER_TEMP/dsvenv/bin/pip" freeze > "$RUNNER_TEMP/depscan/requirements.txt"
           echo "::group::Aufgeloeste Versionen (genau das wird gescannt)"
