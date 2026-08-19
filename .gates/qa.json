@@ -1,7 +1,7 @@
 {
   "gate": "qa",
   "verdict": "pass",
-  "commit": "1054616ed1f609983f380caabbb44fdc11f09338",
-  "branch": "feature/DATENSCHLE-57-content-part-allowlist",
-  "timestamp": "2026-08-14T19:20:36Z"
+  "commit": "4b60707db29a3ab80777d570001ee7469138677d",
+  "branch": "feature/DATENSCHLE-66-toolcalls-maskierung",
+  "timestamp": "2026-08-19T13:12:02Z"
 }

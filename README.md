@@ -130,6 +130,27 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
 
 Zwei ehrliche Grenzen: Der Image-Redactor bringt seine eigene Presidio-Instanz mit und kennt die **deutschen Custom-Recognizer nicht** — im Bild greifen nur die eingebauten Typen. Und Bilder, die als externe `http`-URL statt eingebettet ankommen, werden blockiert, weil das Modell sie serverseitig abrufen würde, also an der Schleuse vorbei.
 
+**Tool-Calls (agentische Clients):** Für Agenten ist `content` nicht der Hauptkanal — Kundendaten stehen im Normalbetrieb in `tool_calls[].function.arguments`. Die Datenschleuse maskiert diese Argumente **strukturerhaltend**: der JSON-String wird geparst, ersetzt werden nur die Werte (und Schlüssel), die Syntax bleibt intakt — sonst wäre der Tool-Aufruf beim Modell unbrauchbar. Dasselbe gilt für `function_call` (Legacy-Format), `name` und `refusal`. Auf dem Rückweg greift die Re-Identifikation ebenso in Antwort-`tool_calls` und in der Gedankenkette von Reasoning-Modellen (`reasoning_content`) — auch im Streaming, wo beide in Fragmenten ankommen und ein Platzhalter mitten durch einen Chunk brechen kann.
+
+Welche Felder einer **Nachricht** dabei wie behandelt werden, ist abschließend festgelegt — **was nicht in dieser Liste steht, wird blockiert**, statt ungeprüft durchzulaufen:
+
+| Feld | Behandlung |
+|---|---|
+| `content` | maskiert (String und Part-Liste; andere Formen blockieren) |
+| `name`, `refusal`, `reasoning_content` | maskiert |
+| `tool_calls[].function.arguments` | maskiert, JSON-strukturerhaltend |
+| `tool_calls[].function.name`, `function_call` | maskiert |
+| `role` | validiert (nur Protokoll-Rollen) |
+| `tool_call_id`, `tool_calls[].id` | validiert als opake ID — bewusst **nicht** maskiert, sonst bricht die Zuordnung von Aufruf und Ergebnis |
+| `cache_control` | validiert (Caching-Marker, kein Anwendertext) |
+| alles andere | **blockiert** (fail-closed) |
+
+Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Das ist die einzige Prüfung, die unabhängig davon greift, welchen Weg ein Wert genommen hat.
+
+Der Grund für diese Form: dieselbe Lücke ist dreimal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
+
+Eine Ebene ist noch offen, und das sagen wir lieber, als es zu verschweigen: Innerhalb eines **content-Parts** gilt die Liste bisher für den Part-*Typ*, nicht für dessen *Felder*. Ein Text-Part mit einem Zusatzfeld neben `text` läuft dort noch ungeprüft durch. Der Fix ist als eigenes Arbeitspaket terminiert.
+
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
 ## 🛡️ Sicherheitsmodell

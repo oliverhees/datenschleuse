@@ -18,6 +18,113 @@
 - Logging: keine PII, keine Tokens, keine Passwörter in Logs.
 - Dependencies: Lockfile, CVE-Scan in CI (gitleaks + npm audit / semgrep).
 
+## Allowlist-Prinzip für eingehende Nachrichten (bindend)
+
+Jede Ebene einer eingehenden Chat-Message wird nach Allowlist behandelt:
+geprüft wird, was ausdrücklich als prüfbar erfasst ist — alles Übrige
+blockiert fail-closed. Denylists ("diese bekannten Felder sind gefährlich")
+sind hier verboten: sie sind erst vollständig, wenn jemand die Lücke findet.
+
+Historie derselben Lücke — der Grund für diese Regel:
+- DATENSCHLE-57: Content-**Parts** (`file`, `input_audio`, unbekannte Typen)
+- DATENSCHLE-64: der `content`-**Container** selbst (dict statt Liste)
+- DATENSCHLE-66: alle **Felder neben `content`**, allen voran
+  `tool_calls[].function.arguments` (für agentische Clients der Normalfall)
+
+Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
+`MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
+Tabelle werden gemeinsam geändert, nie einzeln):
+
+| Ebene | maskiert | validiert (nicht maskiert) | Rest |
+|---|---|---|---|
+| Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
+| tool_call | `function` | `id`, `type`, `index` | blockiert |
+| function | `name`, `arguments` | — | blockiert |
+| content-Part | `text` | `image_url` (nach Image-Policy) | Part-**Typ** blockiert; Part-**Felder** ⚠️ siehe unten |
+
+> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Für
+> content-Parts gilt die Allowlist bisher nur für den Part-**Typ**, nicht für
+> die **Felder** eines Parts. Ein Text-Part mit einem Zusatzfeld —
+> `{"type":"text","text":"harmlos","notiz":"<PII>"}` — läuft ungeprüft durch:
+> `text` wird maskiert, das Zusatzfeld unverändert weitergereicht
+> (verifiziert). Die Zeile oben beschreibt insoweit den Soll-, nicht den
+> Ist-Zustand. Der Defekt stammt aus DATENSCHLE-57 und ist in
+> **DATENSCHLE-65** terminiert; bis dahin gilt die Zusage „Rest blockiert"
+> auf der Part-Ebene **nicht**.
+>
+> Diese Warnung bleibt stehen, bis DATENSCHLE-65 gemerged ist. Eine
+> dokumentierte Sicherheitszusage, auf die sich ein Betreiber verlässt, ist
+> selbst ein Sicherheitsmerkmal — eine zu weit gefasste Zusage ist ein Defekt,
+> auch wenn der Code darunter älter ist als sie.
+
+Regeln dazu:
+- IDs werden **validiert statt maskiert**: ihr Wert muss byte-identisch
+  bleiben, sonst findet das Modell das Tool-Ergebnis nicht zu seinem Aufruf.
+  Genau deshalb müssen sie eng geprüft werden — sonst sind sie der bequemste
+  Schmuggelkanal der Nachricht.
+- `arguments` wird strukturerhaltend maskiert (JSON parsen, Werte und
+  Schlüssel ersetzen, serialisieren). Nicht parsebares JSON wird als
+  Freitext maskiert, nie ungeprüft durchgelassen.
+- Blockmeldungen enthalten **nie** Client-Werte — auch kein Feldname, denn
+  auch der ist Client-Inhalt (Gesetz 5).
+- Ein neues Feld der OpenAI-API ist ein eigenes Work Item mit Eintrag im
+  Register, nicht ein stillschweigendes Durchreichen.
+- **Typprüfung gehört in den Validate-Pfad, nie in den Mask-Pfad.** Ein
+  `if isinstance(x, str)` vor einer Maskierung ist immer ein stiller
+  Durchlass: der Nicht-String fällt durch und geht ungeprüft raus. Ein
+  bekanntes Feld mit falschem Typ muss blocken (Security-Audit F1).
+- **Verifikationsdurchlauf auf dem Ergebnis.** Der fertig maskierte
+  `arguments`-String geht erneut durch den Analyzer; findet der dort noch
+  Entitäten, wird blockiert. Alle anderen Prüfungen sind pfadgebunden —
+  diese greift unabhängig davon, welchen Weg ein Wert genommen hat.
+- **JSON muss eindeutig sein.** Doppelte Schlüssel (`json.loads` behält still
+  den letzten Wert, der erste wird nie geprüft) und nicht standardkonforme
+  Konstanten (`NaN`, `Infinity`) werden abgelehnt, nicht interpretiert.
+- **Fehlerpfade sind fail-closed, nicht Absturz.** Zu tief verschachteltes
+  JSON blockt kontrolliert, statt einen `RecursionError` aus dem Hook zu
+  werfen.
+- **Diagnose ohne Preisgabe.** Blockmeldungen und Logs nennen Feldnamen nur
+  aus unserem eigenen konstanten Vokabular; frei gewählte Feldnamen erscheinen
+  ausschließlich als stabiler Fingerprint. Ein Feldname ist Client-Inhalt und
+  kann selbst PII sein — Werte erscheinen nie, weder im Log noch am Client.
+
+### Feld-Fingerprint — Formel
+
+Damit ein Betreiber einen Fingerprint selbst nachrechnen kann, ohne in den
+Quellcode zu sehen:
+
+```
+fingerprint(feldname) = sha256(repr(feldname).encode("utf-8")).hexdigest()[:8]
+```
+
+`repr()` (nicht `str()`), weil ein Feldname nicht zwingend ein String ist.
+Nachrechnen in der Shell:
+
+```bash
+python3 -c 'import hashlib;print(hashlib.sha256(repr("mein_feld").encode()).hexdigest()[:8])'
+```
+
+Der Fingerprint ist stabil: derselbe Name ergibt immer denselben Wert. Damit
+lässt sich ein blockendes Feld durch Vergleich eingrenzen, ohne dass der Name
+selbst das System verlässt.
+
+### Verifikationsdurchlauf — bekannte Grenzen
+
+Der Durchlauf ist bewusst streng und erhöht die Blockrate für **legitime**
+Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
+
+- **Boundary-Artefakte der Erkennung.** Derselbe Analyzer kann an derselben
+  Stelle im zweiten Durchlauf anschlagen, wo er im ersten nichts fand, weil
+  sich der umgebende Kontext durch die Ersetzung verändert hat. Gegen echtes
+  Presidio belegt: `{"projekt":"Digitalisierung Rathaus Muenchen",
+  "ansprechpartner":"Frau Schmidt"}` wird geblockt — der Knoten-Durchlauf
+  erkennt „Digitalisierung" als LOCATION und übersieht „Rathaus Muenchen",
+  der Verifikationsdurchlauf findet es dann. **Kein Code-Fehler.** Die
+  Blockmeldung nennt deshalb beide möglichen Ursachen und unterstellt keine.
+- **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String.
+- **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
+  vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
+
 ## Threat Model
 - Beim Kickoff: STRIDE-Kurzdurchlauf pro Kernfeature, Ergebnis als
   `docs/adr/` bzw. Anhang hier. Bei neuen Angriffsflächen aktualisieren.
