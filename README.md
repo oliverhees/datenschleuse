@@ -149,7 +149,7 @@ Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt al
 
 Der Grund für diese Form: dieselbe Lücke ist dreimal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
 
-Eine Ebene ist noch offen, und das sagen wir lieber, als es zu verschweigen: Innerhalb eines **content-Parts** gilt die Liste bisher für den Part-*Typ*, nicht für dessen *Felder*. Ein Text-Part mit einem Zusatzfeld neben `text` läuft dort noch ungeprüft durch. Der Fix ist als eigenes Arbeitspaket terminiert.
+Eine Ebene ist noch offen, und das sagen wir lieber, als es zu verschweigen: Innerhalb eines **content-Parts** greift die Liste bisher auf den Part-*Typ*; die *Feldebene* innerhalb eines Parts ist noch in Arbeit. Bis der Fix draußen ist, gilt „alles andere wird blockiert" auf dieser Ebene also nicht — verlass dich dort nicht darauf. Der Fix ist als eigenes Arbeitspaket terminiert. Die Einzelheiten halten wir bis dahin zurück: eine offene Lücke beschreiben wir im Umfang, nicht als Anleitung.
 
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
