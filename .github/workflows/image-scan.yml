@@ -1,0 +1,105 @@
+# Image-CVE-Scan (DATENSCHLE-59)
+#
+# WARUM eine eigene Workflow-Datei statt eines Jobs in ci.yml:
+#
+#  1. Laufzeit. Die gepinnten Basis-Images sind zusammen mehrere Gigabyte.
+#     Das bei jedem PR zu ziehen, waere Minuten Wartezeit fuer eine Aenderung,
+#     die mit den Images nichts zu tun hat.
+#  2. Ausloeser. Ein Image-CVE entsteht nicht durch unseren PR, sondern durch
+#     eine Veroeffentlichung irgendwo auf der Welt. Der richtige Takt ist
+#     deshalb "woechentlich" plus "immer, wenn wir einen Pin anfassen" --
+#     nicht "bei jedem Commit".
+#  3. Deadlock-Schutz. Dieser Workflow hat einen `paths`-Filter. Ein
+#     paths-gefilterter Job als REQUIRED Status-Check waere toedlich: bei PRs
+#     ohne passende Pfade meldet er nie ein Ergebnis, und GitHub wartet
+#     ewig -- kein PR mehr mergebar (genau die Falle, vor der
+#     docs/BRANCH-PROTECTION.md warnt). Als eigener Workflow steht er
+#     bewusst NICHT auf der Required-Liste.
+#
+# Blockierschwelle: siehe unten am `severity`-Feld. Kurz: nur CRITICAL mit
+# verfuegbarem Fix stoppt; alles andere wird berichtet.
+
+name: image-scan
+
+on:
+  schedule:
+    # Montags 05:17 UTC. Krumme Minute mit Absicht: zur vollen Stunde ist die
+    # GitHub-Scheduler-Queue am vollsten und Laeufe verzoegern sich.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "litellm/Dockerfile"
+      - "presidio/Dockerfile.analyzer"
+      - "docker-compose.yml"
+      - ".trivyignore.yaml"
+      - ".github/workflows/image-scan.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: image-scan (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Ein Image pro Runner: jedes bekommt seine eigenen ~14 GB Plattenplatz.
+      # Alle fuenf nacheinander auf einem Runner haette die Platte gefuellt.
+      fail-fast: false
+      matrix:
+        include:
+          - name: litellm
+            ref: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
+          - name: presidio-analyzer
+            ref: mcr.microsoft.com/presidio-analyzer:2.2.362@sha256:286e3fa7f3a7426e775e8564fe1870f1ba8f999d3ab8bbb8cc46a44355d9d6e9
+          - name: presidio-anonymizer
+            ref: mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483
+          - name: presidio-image-redactor
+            ref: mcr.microsoft.com/presidio-image-redactor:0.0.58@sha256:e49fd47bfc38d834f0856063b9f00cfb3c19866e8d61b061849baf6275139612
+          - name: postgres
+            ref: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Schritt 1: vollstaendiger Bericht, nie blockierend.
+      # HIGH/MEDIUM/LOW und alles ohne Fix landet hier im Log. Sichtbar, aber
+      # ohne Merge-Sperre.
+      - name: Trivy ${{ matrix.name }} -- vollstaendiger Bericht (nur Meldung)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.ref }}
+          scanners: vuln
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+          timeout: "20m"
+          cache: true
+
+      # Schritt 2: das Gate -- absichtlich enger als beim Dependency-Scan.
+      #
+      # NUR CRITICAL, und nur mit verfuegbarem Fix. Begruendung:
+      # Ein Basis-Image-CVE ist nichts, was der Autor eines beliebigen PRs
+      # verursacht hat oder in diesem PR beheben koennte. Wuerden wir hier auf
+      # HIGH blockieren, waere binnen Wochen jeder PR rot -- und der naechste
+      # Schritt waere, den Scan abzuschalten. Genau das wollen wir nicht.
+      # CRITICAL mit Fix ist dagegen schwerwiegend genug, dass "erst den
+      # Digest hochziehen" die richtige erzwungene Reihenfolge ist.
+      #
+      # Der woechentliche Lauf ist der eigentliche Wachhund: er faellt auf,
+      # ohne dass jemand einen PR aufmachen muss, und loest ein
+      # Digest-Update-Work-Item aus (supply-chain.md §1).
+      - name: Trivy ${{ matrix.name }} -- Gate (CRITICAL mit verfuegbarem Fix)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.ref }}
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+          timeout: "20m"
+          cache: true
+          skip-setup-trivy: true

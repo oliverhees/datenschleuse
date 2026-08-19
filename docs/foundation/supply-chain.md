@@ -163,9 +163,113 @@ Objekts**, nicht der des Tag-Objekts. Im Zweifel gegenprüfen mit
 
 ## 3. CVE-Scan
 
-> **Wird im selben PR (DATENSCHLE-59) nachgezogen.** Bis dahin gilt: es gibt
-> `gitleaks` für Secrets, aber nichts, das bekannte Schwachstellen in
-> Abhängigkeiten und Images findet.
+`gitleaks` findet Secrets. Es fand bis DATENSCHLE-59 **nichts**, was bekannte
+Schwachstellen in Abhängigkeiten oder Images angeht. Diese Lücke schließt Trivy.
+
+### Warum Trivy und nicht Grype
+
+Beide sind gute Scanner. Ausschlaggebend war:
+
+- **Ein Werkzeug für beides.** Trivy scannt Container-Images *und*
+  Dateisysteme/Abhängigkeiten mit demselben Binary und derselben Schwellen-
+  Syntax. Grype bräuchte für die Image-Seite zusätzlich Syft für die SBOM —
+  zwei Werkzeuge, zwei Konfigurationen, zwei Stellen, an denen Schwellen
+  auseinanderlaufen.
+- **Ausnahmen mit Verfallsdatum.** Trivys `.trivyignore.yaml` kennt
+  `expired_at`. Eine Ausnahme, die von selbst abläuft, ist der Unterschied
+  zwischen „vertagt" und „unter den Teppich gekehrt".
+- **Transitiv gepinnte Action.** `aquasecurity/trivy-action` pinnt seinerseits
+  `aquasecurity/setup-trivy` und `actions/cache` auf SHAs. Unser SHA-Pin auf
+  die äußere Action nagelt damit die ganze Kette fest — geprüft am
+  gepinnten Stand `a9c7b0f0`.
+
+Keine neue Laufzeit-Abhängigkeit: Trivy läuft nur in der CI, nichts davon
+landet im ausgelieferten Image.
+
+### Die Schwellen — und warum sie so und nicht schärfer sind
+
+Das eigentliche Risiko bei einem CVE-Scanner ist nicht, dass er zu wenig
+findet. Es ist, dass er **zu oft blockiert**. Ein Gate, das bei jedem neu
+veröffentlichten CVE in einem Basis-Image rot wird, hält irgendwann jeden PR
+auf. Was dann passiert, ist vorhersehbar: Jemand schaltet ihn ab oder
+gewöhnt sich an, rot zu ignorieren. Beides ist schlechter als kein Scanner,
+weil es zusätzlich noch ein falsches Sicherheitsgefühl erzeugt.
+
+Leitgedanke deshalb: **Blockiert wird nur, was der Autor des PRs auch
+tatsächlich beheben kann.**
+
+| Was | Wo | Blockiert | Nur Bericht |
+|-----|----|-----------|-------------|
+| Python-Abhängigkeiten | `security`-Job in `ci.yml`, bei jedem PR | CRITICAL + HIGH, **nur mit verfügbarem Fix** | alles ohne Fix, MEDIUM, LOW, UNKNOWN |
+| Container-Images | `image-scan.yml`, wöchentlich + bei Pin-Änderung | CRITICAL, **nur mit verfügbarem Fix** | HIGH, MEDIUM, alles ohne Fix |
+
+Begründung im Einzelnen:
+
+- **`ignore-unfixed` überall.** Ein CVE ohne Upstream-Fix ist im PR nicht
+  behebbar. Darauf zu blockieren heißt, den Autor für etwas zu bestrafen, das
+  er nicht ändern kann — der klassische Weg, ein Gate unglaubwürdig zu machen.
+  Diese Funde verschwinden aber nicht: Sie stehen im Bericht-Schritt (siehe
+  unten).
+- **Abhängigkeiten strenger als Images (HIGH vs. nur CRITICAL).** Unsere
+  Abhängigkeiten haben wir selbst gewählt, und die Behebung ist meist eine
+  Zeile: Version hochziehen. Ein CVE im Basis-Image dagegen kommt von
+  außen und trifft jeden gleichzeitig laufenden PR. Bei HIGH auf Images zu
+  blockieren, hätte binnen Wochen alles lahmgelegt.
+- **Jeder Scan läuft zweimal.** Erst ein Bericht-Schritt mit `exit-code: 0`
+  und weiter Schwelle (bis LOW herunter, inklusive der Funde ohne Fix), dann
+  das eigentliche Gate. So steht *alles* im Job-Log — niemand kann später
+  sagen, wir hätten es nicht gesehen —, aber nur die handhabbare Teilmenge
+  stoppt den Merge. Sichtbarkeit und Blockade sind bewusst getrennt.
+
+### Wo die Scans hängen — und warum getrennt
+
+- **`security`-Job in `ci.yml`** (bestehender Job, Name unverändert). Der Name
+  steht als required Status-Check im Ruleset-Template (DATENSCHLE-61). Hätten
+  wir einen neuen Job `vuln-scan` angelegt, hätte `.github/ruleset-main-protection.json`
+  mitgepflegt werden müssen — siehe die Pflege-Regel in `docs/BRANCH-PROTECTION.md`.
+  Stattdessen wächst die Abdeckung des vorhandenen Checks.
+- **`image-scan.yml`** (eigener Workflow): wöchentlich montags, per
+  `workflow_dispatch`, und bei jedem PR, der eine der gepinnten Dateien
+  anfasst (`paths`-Filter). Ein Image pro Matrix-Job, damit sich fünf
+  Multi-Gigabyte-Images nicht die Platte eines Runners teilen müssen.
+
+  **Dieser Workflow darf NIE auf die Required-Liste.** Er hat einen
+  `paths`-Filter; ein paths-gefilterter Job meldet bei nicht passenden PRs
+  überhaupt kein Ergebnis, und GitHub wartet dann dauerhaft auf einen Check,
+  der nie kommt — kein PR mehr mergebar. Genau davor warnt
+  `docs/BRANCH-PROTECTION.md`. Als eigener Workflow ist er davon getrennt.
+
+### Der Scan-Input bei den Abhängigkeiten
+
+`litellm/requirements-guardrail.txt` und `test/requirements.txt` enthalten
+Bereiche (`httpx>=0.27,<1.0`), keine exakten Pins. Ein Scanner kann daraus
+nicht ableiten, was installiert würde — er meldet dann nichts und wiegt uns in
+Sicherheit. Der `security`-Job löst deshalb erst auf (`pip install` +
+`pip freeze`) und scannt das Ergebnis. Die aufgelöste Liste steht im Job-Log.
+
+Das ist ein Behelf, kein Lockfile. Siehe Abschnitt 4.
+
+### Ausnahmen
+
+`.trivyignore.yaml` im Repo-Root. Die Regeln stehen als Kommentar in der Datei
+selbst und sind bindend: `id` + `statement` + `expired_at` (max. 90 Tage),
+Begründung sagt *warum es uns nicht trifft*, Verweis auf das Work Item,
+High/Critical-Ausnahmen genehmigt nur Oliver (Gesetz 5).
+
+Der Normalfall bei einem blockierenden Fund ist **nicht** ein Eintrag hier,
+sondern: Dependency hochziehen oder Digest aktualisieren (Abschnitt 1).
+
+### Drift-Schutz
+
+Die Digests stehen an zwei Orten: dort, wo das Image *benutzt* wird
+(Dockerfiles, Compose) und dort, wo es *gescannt* wird (Matrix in
+`image-scan.yml`). Doppelte Wahrheit verrottet, wenn sie niemand prüft — und
+eine vergessene Matrix-Zeile heißt: Der wöchentliche Scan prüft ein Image, das
+wir gar nicht mehr ausliefern, und meldet beruhigend grün.
+
+`test/check_image_pins.py` läuft im `security`-Job und schlägt fehl, wenn
+(a) eine Image-Referenz keinen Digest hat oder (b) die beiden Mengen
+auseinanderlaufen. Reine Stdlib, keine neue Abhängigkeit.
 
 ---
 

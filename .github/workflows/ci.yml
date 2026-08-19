@@ -51,18 +51,95 @@ jobs:
       # Syntax-Check ohne neue Dependency: prueft, dass jede Datei parst.
       - run: python3 -m compileall -q litellm test presidio
 
+  # Der `security`-Job ist bewusst EIN Job und heisst weiterhin exakt
+  # "security": das Ruleset-Template (.github/ruleset-main-protection.json,
+  # DATENSCHLE-61) listet diesen Namen als required Status-Check. Ein neuer
+  # Job-Name haette dort mitgepflegt werden muessen -- siehe die Pflege-Regel
+  # in docs/BRANCH-PROTECTION.md. So waechst die Abdeckung (Secrets + CVEs),
+  # ohne dass sich der Check-Name aendert.
   security:
     name: security
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+      # Faellt frueh und billig: kein Image ohne Digest, und keine Drift
+      # zwischen den gepinnten Images und der Scan-Matrix in image-scan.yml.
+      # Eine vergessene Matrix-Zeile heisst: der woechentliche CVE-Scan
+      # prueft ein Image, das wir gar nicht mehr ausliefern, und meldet
+      # beruhigend gruen. Das ist schlimmer als kein Scan.
+      - name: Image-Pins pruefen (Digest vorhanden + Scan-Matrix aktuell)
+        run: python3 test/check_image_pins.py
+
       - name: gitleaks (Secrets-Scan)
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- CVE-Scan der Python-Abhaengigkeiten (DATENSCHLE-59) ------------
+      #
+      # WARUM nicht direkt requirements-guardrail.txt scannen: die Datei
+      # enthaelt Bereiche (`httpx>=0.27,<1.0`), keine exakten Pins. Ein
+      # Scanner kann aus einem Bereich nicht ableiten, welche Version
+      # tatsaechlich installiert wird -- er meldet dann nichts und wiegt uns
+      # in Sicherheit. Also loesen wir erst auf (pip install + pip freeze) und
+      # scannen DAS, was wirklich installiert wuerde.
+      #
+      # Das ist ein Ersatz, kein Lockfile. Ein echtes Lockfile fehlt weiterhin
+      # (Gesetz 5) -- eigenes Work Item, siehe docs/foundation/supply-chain.md §4.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Abhaengigkeiten aufloesen (Scan-Input)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/dsvenv"
+          "$RUNNER_TEMP/dsvenv/bin/pip" install --quiet --upgrade pip
+          "$RUNNER_TEMP/dsvenv/bin/pip" install --quiet \
+            -r litellm/requirements-guardrail.txt -r test/requirements.txt
+          mkdir -p "$RUNNER_TEMP/depscan"
+          "$RUNNER_TEMP/dsvenv/bin/pip" freeze > "$RUNNER_TEMP/depscan/requirements.txt"
+          echo "::group::Aufgeloeste Versionen (genau das wird gescannt)"
+          cat "$RUNNER_TEMP/depscan/requirements.txt"
+          echo "::endgroup::"
+
+      # Schritt 1: vollstaendiger Bericht, NIE blockierend (exit-code 0).
+      # Zweck: Sichtbarkeit. Auch MEDIUM/LOW und Funde ohne Fix stehen im Log,
+      # damit niemand behaupten kann, wir haetten sie nicht gesehen.
+      - name: Trivy Dependencies -- vollstaendiger Bericht (nur Meldung)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/depscan
+          scanners: vuln
+          severity: CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN
+          exit-code: "0"
+          cache: true
+
+      # Schritt 2: das Gate. Blockiert bei CRITICAL/HIGH -- aber nur, wenn es
+      # einen Fix gibt (`ignore-unfixed`).
+      #
+      # WARUM diese Schwelle (bewusst gewaehlt, siehe supply-chain.md §3):
+      # Ein Scanner, der bei jedem neuen CVE rot wird, blockiert irgendwann
+      # jeden PR und wird abgeschaltet -- das waere schlechter als kein
+      # Scanner. Blockiert wird deshalb nur, was der PR-Autor auch beheben
+      # KANN: CRITICAL/HIGH mit verfuegbarem Fix -> Version hochziehen.
+      # Alles ohne Fix und alles unter HIGH steht in Schritt 1 im Bericht.
+      - name: Trivy Dependencies -- Gate (CRITICAL/HIGH mit verfuegbarem Fix)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/depscan
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+          cache: true
+          skip-setup-trivy: true
 
   gates:
     name: gates
