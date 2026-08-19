@@ -12,3 +12,8 @@ test/e2e/artifacts/
 # Sie gehoert NIE ins (oeffentliche) Repository. Als Vorlage dient
 # rules/custom-rules.example.yml mit erfundenen Werten.
 rules/custom-rules.yml
+# Temp-Datei des atomaren Schreibvorgangs (save_document). Bleibt nach einem
+# SIGKILL oder Container-Stop liegen und enthaelt dann den VOLLEN Regelsatz
+# inklusive echter Kundennamen -- ohne diese Zeile wandert sie bei
+# `git add -A` ins oeffentliche Repo (Security-Finding F5).
+rules/.custom-rules-*.tmp
