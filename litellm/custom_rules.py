@@ -245,6 +245,29 @@ def check_entity_does_not_leak(entity: str, value: str) -> None:
         )
 
 
+def permission_warning(path: str) -> Optional[str]:
+    """Warnt, wenn die Regeldatei fuer andere Benutzer lesbar ist.
+
+    Security-Finding F6: save_document schreibt 0600, aber der dokumentierte
+    Setup-Weg per ``cp`` erzeugt die Rechte der Umask (typisch 0664). Die
+    Datei enthaelt echte Kundennamen -- genau die Daten, die die Datenschleuse
+    schuetzen soll. Ohne Hinweis merkt das niemand.
+
+    Gibt ``None`` zurueck, wenn alles in Ordnung ist (oder die Datei fehlt).
+    """
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return None
+    if mode & 0o077:
+        return (
+            f"Regeldatei ist fuer andere Benutzer lesbar (Rechte {mode:03o}). "
+            f"Sie enthaelt echte Kundennamen und sollte wie ein Secret "
+            f"behandelt werden. Beheben mit: chmod 600 {path}"
+        )
+    return None
+
+
 def _term_to_pattern(value: str) -> str:
     """Macht aus einem Begriff ein woertliches Muster mit Wortgrenzen.
 
@@ -470,6 +493,7 @@ class RuleSet:
             "path": self.path,
             "exists": os.path.exists(self.path),
             "load_error": self.load_error,
+            "permission_warning": permission_warning(self.path),
             "active": [r.as_dict() for r in self._active],
             "quarantined": [q.as_dict() for q in self._quarantined],
         }
