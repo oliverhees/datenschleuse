@@ -170,22 +170,33 @@ def _to_data_url(raw: bytes, mime: str) -> str:
 # Klartext geht weiterhin nicht raus), aber eine falsche Antwort -- und zwar
 # eine stille (siehe docs/HEADROOM.md zur Fail-Semantik).
 #
-# Fix: die Beispiele benutzen das Platzhalter-SCHEMA mit dem Buchstaben N
-# statt einer Zahl (<PERSON_N>). Das erklaert die Form genauso gut, ist aber
-# nachweislich kollisionsfrei -- der Masker nummeriert ausschliesslich mit
-# Ziffern, ein <..._N> kann also nie ein echter Platzhalter sein. Abgesichert
-# durch TestNoticePlaceholderCollision in
-# test/test_datenschleuse_guardrail.py.
+# Erster Fix-Versuch und was er lehrte (ebenfalls DATENSCHLE-67): die
+# Beispiele wurden auf die Schablone <PERSON_N> umgestellt, mit dem Zusatz
+# "wobei N fuer eine Ziffer steht". Kollisionsfrei -- aber gemessen gegen
+# llama3.1:8b brandgefaehrlich: das Modell setzte die Ziffer PFLICHTBEWUSST
+# ein und gab <PERSON_1> zurueck, wo <PERSON_0> stand. 3 von 3 Laeufen, bei
+# temperature 0. Damit war jeder Platzhalter der Antwort unbrauchbar -- die
+# Re-Identifikation findet <PERSON_1> nicht im Mapping und laesst ihn stehen
+# (stiller Fehler) oder trifft eine ANDERE Person, falls es einen echten
+# <PERSON_1> gibt. Aus einem seltenen Kollisionsrisiko war ein systematischer
+# Totalausfall geworden.
+#
+# Die allgemeine Lehre aus beiden Befunden: Was der Hinweis dem Modell
+# hinhaelt, baut das Modell nach -- egal ob Beispielname ("Hans Mueller"),
+# echter Beispiel-Platzhalter (<PERSON_1>) oder Schablone (<PERSON_N>).
+# Deshalb enthaelt der Hinweis GAR KEINEN Token in spitzen Klammern mehr; er
+# beschreibt das Prinzip in Worten und schuetzt die Nummer ausdruecklich.
+# Gemessen: 3 von 3 Laeufen indextreu. Abgesichert durch
+# TestNoticePlaceholderCollision in test/test_datenschleuse_guardrail.py.
 ANONYMIZATION_NOTICE = (
     "Hinweis: Dieser Text wurde vor der Übermittlung automatisch pseudonymisiert. "
-    "Platzhalter nach dem Schema <TYP_NUMMER> — etwa <PERSON_N>, <ADDRESS_N>, "
-    "<EMAIL_ADDRESS_N>, <DE_AKTENZEICHEN_N>, wobei N für eine Ziffer steht — "
-    "stehen bewusst anstelle der jeweils echten Werte (z. B. steht <PERSON_N> "
-    "für einen echten Personennamen, <ADDRESS_N> für eine vollständige Adresse). Das ist "
-    "kein Tippfehler und keine fehlende Information — behandle jeden Platzhalter "
-    "als den echten Wert, den er ersetzt, und gib ihn in deiner Antwort exakt so "
-    "zurück, wie er dir übergeben wurde (nicht umformulieren, nicht durch einen "
-    "Beispielwert ersetzen, nicht danach fragen)."
+    "Angaben in spitzen Klammern sind Platzhalter und stehen bewusst anstelle "
+    "der jeweils echten Werte. Das ist kein Tippfehler und keine fehlende "
+    "Information — behandle jeden Platzhalter als den echten Wert, den er "
+    "ersetzt, und gib ihn in deiner Antwort exakt so zurück, wie er dir "
+    "übergeben wurde, mit unveränderter Nummer (nicht umformulieren, nicht "
+    "umnummerieren, nicht durch einen Beispielwert ersetzen, nicht danach "
+    "fragen)."
 )
 
 

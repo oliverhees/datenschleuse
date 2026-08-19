@@ -429,6 +429,9 @@ class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
 
     # Genau die Form, die Masker._placeholder_for() erzeugt: <TYP_ZAHL>.
     REAL_PLACEHOLDER_SHAPE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
+    # Jeder platzhalter-AEHNLICHE Token in spitzen Klammern -- also auch
+    # Schablonen wie <PERSON_N> oder <TYP_NUMMER>. Siehe zweiten Test.
+    ANY_BRACKET_TOKEN = re.compile(r"<[A-Z][A-Z0-9_]*>")
 
     def test_notice_contains_no_token_masker_could_produce(self):
         collidable = self.REAL_PLACEHOLDER_SHAPE.findall(dg.ANONYMIZATION_NOTICE)
@@ -437,6 +440,34 @@ class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
             "Der Hinweis nennt Beispiel-Platzhalter in genau der Form, die der "
             "Masker auch fuer echte Werte vergibt -- sie koennen deshalb mit "
             f"echten Platzhaltern kollidieren: {collidable}",
+        )
+
+    def test_notice_contains_no_placeholder_template_either(self):
+        """Regression zum teuersten Fehlversuch dieses Items (DATENSCHLE-67).
+
+        Ein erster Fix ersetzte die kollidierenden Beispiele durch die
+        Schablone <PERSON_N> und erklaerte dazu "wobei N fuer eine Ziffer
+        steht". Gemessen gegen llama3.1:8b: das Modell setzte daraufhin
+        PFLICHTBEWUSST eine Ziffer ein und gab <PERSON_1> zurueck, wo
+        <PERSON_0> stand -- in 3 von 3 Laeufen, bei temperature 0. Damit war
+        JEDER Platzhalter der Antwort unbrauchbar: die Re-Identifikation
+        findet <PERSON_1> nicht im Mapping und laesst ihn stehen (stiller
+        Fehler, siehe docs/HEADROOM.md) -- oder ersetzt ihn durch eine ANDERE
+        Person, falls es zufaellig einen echten <PERSON_1> gibt.
+
+        Die Lehre ist allgemeiner als der eine Token: Ein Hinweis, der dem
+        Modell irgendetwas Platzhalter-Foermiges zum Nachbauen hinhaelt, wird
+        nachgebaut. Deshalb darf der Hinweis GAR KEINEN Token in spitzen
+        Klammern enthalten -- weder echte (<PERSON_1>) noch schablonenhafte
+        (<PERSON_N>, <TYP_NUMMER>). Er beschreibt das Prinzip in Worten.
+        """
+        tokens = self.ANY_BRACKET_TOKEN.findall(dg.ANONYMIZATION_NOTICE)
+        self.assertEqual(
+            tokens, [],
+            "Der Hinweis haelt dem Modell platzhalter-foermige Tokens zum "
+            f"Nachbauen hin: {tokens}. Gemessen wurde, dass llama3.1:8b eine "
+            "Schablone wie <PERSON_N> mit einer echten Ziffer instanziiert und "
+            "damit den Index der echten Platzhalter ueberschreibt.",
         )
 
     async def test_notice_examples_never_collide_with_real_reid_map(self):
