@@ -40,7 +40,22 @@ Tabelle werden gemeinsam geändert, nie einzeln):
 | Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
 | tool_call | `function` | `id`, `type`, `index` | blockiert |
 | function | `name`, `arguments` | — | blockiert |
-| content-Part | `text` | `image_url` (nach Image-Policy) | blockiert |
+| content-Part | `text` | `image_url` (nach Image-Policy) | Part-**Typ** blockiert; Part-**Felder** ⚠️ siehe unten |
+
+> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Für
+> content-Parts gilt die Allowlist bisher nur für den Part-**Typ**, nicht für
+> die **Felder** eines Parts. Ein Text-Part mit einem Zusatzfeld —
+> `{"type":"text","text":"harmlos","notiz":"<PII>"}` — läuft ungeprüft durch:
+> `text` wird maskiert, das Zusatzfeld unverändert weitergereicht
+> (verifiziert). Die Zeile oben beschreibt insoweit den Soll-, nicht den
+> Ist-Zustand. Der Defekt stammt aus DATENSCHLE-57 und ist in
+> **DATENSCHLE-65** terminiert; bis dahin gilt die Zusage „Rest blockiert"
+> auf der Part-Ebene **nicht**.
+>
+> Diese Warnung bleibt stehen, bis DATENSCHLE-65 gemerged ist. Eine
+> dokumentierte Sicherheitszusage, auf die sich ein Betreiber verlässt, ist
+> selbst ein Sicherheitsmerkmal — eine zu weit gefasste Zusage ist ein Defekt,
+> auch wenn der Code darunter älter ist als sie.
 
 Regeln dazu:
 - IDs werden **validiert statt maskiert**: ihr Wert muss byte-identisch
