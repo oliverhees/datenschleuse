@@ -56,13 +56,56 @@ PII = {
     "iban": "DE89 3704 0044 0532 0130 00",
     "telefon": "089 12345678",
 }
+# Jedes Zeichen dieses Prompts ist gegen den echten Analyzer vermessen. Er ist
+# so formuliert, dass GENAU die vier PII-Werte maskiert werden und sonst nichts.
+# Zwei Fallen stecken darin, beide teuer bezahlt:
+#
+# 1. Umlaute ausschreiben, nicht umschreiben. Eine fruehere Fassung sagte
+#    "Aendere keinen einzigen Wert." -- Presidio hielt "Aendere" fuer einen
+#    PERSON (0.85) und maskierte es. Das Modell bekam dadurch einen
+#    grammatisch zerstoerten Satz ("<PERSON_0> keinen einzigen Wert.") und
+#    verweigerte die Antwort in zwei von drei Laeufen. Der Beweis wurde dadurch
+#    unzuverlaessig -- und ein Gate, das grundlos rot wird, ist als Gate
+#    wertlos. Mit echtem Umlaut ("Ändere") erkennt Presidio nichts.
+#
+# 2. Das Label "Strasse:" bleibt BEWUSST in ASCII. Schreibt man es "Straße:",
+#    frisst der PERSON-Span den Zeilenumbruch mit und wird zu
+#    'Maria Meier\nStraße' -- das Label verschwindet in der Maskierung. Ebenso
+#    vermessen: Bulletstriche, Leerzeilen und kleingeschriebene Labels
+#    erzeugen zusaetzlich ein LOCATION auf "DE89" (dem IBAN-Anfang).
+#
+# 3. Die Aufgabe ist als technischer Formatierungstest gerahmt, nicht als
+#    Bitte um Personendaten. Mit der frueheren Formulierung ("Gib die
+#    folgenden Angaben zurueck", Felder "Name/IBAN/Telefon") verweigerte
+#    llama3.1:8b die Antwort -- "Ich kann keine Informationen zu bestimmten
+#    Personen oder ihren Konten bereitstellen" -- und zwar auch bei
+#    temperature 0 mal so, mal so. Das Modell sieht zwar nur Platzhalter,
+#    liest die LABELS aber als Bitte um fremde Kontodaten. Der neue Rahmen
+#    wurde gegen das Modell gemessen und liefert das Echo zuverlaessig.
+#
+# Anders gesagt: nicht "ASCII ist schlecht", sondern "gemessen statt geraten".
+# Wer diesen Prompt anfasst, misst vorher gegen /analyze -- und PII_MASKED_RE
+# unten faellt sofort auf, wenn doch etwas anderes maskiert wird.
 PII_PROMPT = (
-    "Gib die folgenden Angaben unveraendert und vollstaendig als Aufzaehlung zurueck. "
-    "Aendere keinen einzigen Wert.\n"
+    "Das ist ein technischer Formatierungstest. Gib die folgenden vier Zeilen "
+    "exakt und unverändert zurück, jede Zeile mit einem Bindestrich davor.\n"
     f"Name: {PII['person']}\n"
     f"Strasse: {PII['strasse']}\n"
     f"IBAN: {PII['iban']}\n"
     f"Telefon: {PII['telefon']}\n"
+)
+
+# Struktur, die im Upstream-Payload stehen MUSS. Sie prueft zweierlei zugleich:
+# die vier Felder sind maskiert, UND der Anweisungssatz ist es NICHT. Damit
+# wird aus dem Flake von oben ein lauter, sofort diagnostizierbarer Fehler --
+# statt einer Verweigerung des Modells, die erst drei Schritte spaeter auffaellt.
+PII_MASKED_RE = re.compile(
+    r"Das ist ein technischer Formatierungstest\. Gib die folgenden vier Zeilen "
+    r"exakt und unverändert zurück, jede Zeile mit einem Bindestrich davor\.\n"
+    r"Name: (<PERSON_\d+>)\n"
+    r"Strasse: (<DE_STRASSE_\d+>)\n"
+    r"IBAN: (<IBAN_CODE_\d+>)\n"
+    r"Telefon: (<PHONE_NUMBER_\d+>)\n"
 )
 
 # AK4: dieselbe Person zweimal, eine zweite Person einmal.
@@ -79,7 +122,7 @@ STABILITY_SENTENCE = (
     "Maria Meier hat angerufen. Thomas Schneider war dabei. "
     "Maria Meier hat erneut angerufen."
 )
-STABILITY_PROMPT = f"Wiederhole diesen Text wortwoertlich:\n{STABILITY_SENTENCE}"
+STABILITY_PROMPT = f"Wiederhole diesen Text wortwörtlich:\n{STABILITY_SENTENCE}"
 
 # Struktur, die im Upstream-Payload stehen MUSS: Position 1 und 3 derselbe
 # Platzhalter (dieselbe Person), Position 2 ein anderer.
@@ -270,6 +313,32 @@ def roundtrip_ok(upstream_answer: str, client_answer: str, reid_pairs: Dict[str,
     return all_ok
 
 
+def check_masking_precondition(res: Result, label: str, upstream_user_text: str) -> bool:
+    """Vorbedingung JEDES Laufs: es wurde genau das maskiert, was maskiert
+    gehoert -- die vier PII-Felder -- und der Anweisungssatz blieb unangetastet.
+
+    Warum das eine eigene Pruefung ist: maskiert Presidio versehentlich ein
+    Wort der Anweisung mit, bekommt das Modell einen kaputten Satz und
+    verweigert womoeglich die Antwort. Der Lauf faellt dann weiter unten mit
+    'LLM hat keine Platzhalter zurueckgegeben' um -- eine Meldung, die auf die
+    falsche Faehrte fuehrt und wie ein sporadischer Fehler des Round-Trips
+    aussieht, obwohl der Round-Trip nie an die Reihe kam. Diese Pruefung nennt
+    die wahre Ursache sofort."""
+    m = PII_MASKED_RE.search(upstream_user_text)
+    if not res.check(
+        bool(m),
+        f"{label}: Vorbedingung -- genau die vier PII-Felder maskiert, Anweisung unberuehrt",
+        f"vorgefunden: {upstream_user_text!r}",
+    ):
+        return False
+    fremd = [p for p in PLACEHOLDER_RE.findall(upstream_user_text) if p not in m.groups()]
+    return res.check(
+        not fremd,
+        f"{label}: Vorbedingung -- kein zusaetzlicher, unerwarteter Platzhalter",
+        f"unerwartet maskiert: {fremd}" if fremd else "",
+    )
+
+
 def build_reid_expectation(upstream_prompt: str) -> Dict[str, str]:
     """Ordnet jeden Platzhalter aus dem UPSTREAM-Prompt dem Klartext zu, der an
     derselben Stelle im ORIGINAL-Prompt stand. Rein positionell -- wir raten
@@ -335,6 +404,7 @@ def ak1_non_streaming(res: Result) -> Optional[Dict[str, Any]]:
     prompt_seen_by_llm = upstream_prompt_text(rec)
     upstream_answer = assemble_upstream_answer(rec)
     reid = build_reid_expectation(prompt_seen_by_llm)
+    check_masking_precondition(res, "AK1", upstream_prompt_text(rec, roles=("user",)))
 
     print("\n--- Was das LLM gesehen hat (Upstream-Prompt) ---")
     print(prompt_seen_by_llm)
@@ -394,6 +464,7 @@ def ak2_streaming(res: Result, mode: str) -> Optional[Dict[str, Any]]:
 
     upstream_answer = assemble_upstream_answer(rec)
     reid = build_reid_expectation(upstream_prompt_text(rec))
+    check_masking_precondition(res, f"AK2/{mode}", upstream_prompt_text(rec, roles=("user",)))
 
     # Wurde ein Platzhalter tatsaechlich ueber eine Chunk-Grenze zerrissen?
     forwarded_deltas = []
