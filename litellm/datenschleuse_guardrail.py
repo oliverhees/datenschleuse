@@ -278,11 +278,31 @@ def _to_data_url(raw: bytes, mime: str) -> str:
 # mit UND ohne zusaetzliche eigene System-Message. Deshalb bewusst OHNE
 # konkretes Namensbeispiel formuliert -- das Prinzip laesst sich abstrakt
 # erklaeren, ohne dem Modell einen Namen zum Nachplappern anzubieten.
+#
+# E2E-Befund (2026-08-19, DATENSCHLE-67, Round-Trip-Beweis gegen den echten
+# Stack): dieselbe Fehlerklasse steckte eine Ebene tiefer noch drin. Die
+# Beispiele lauteten frueher <PERSON_1>, <ADDRESS_0>, ... -- also exakt die
+# Form <TYP_ZAHL>, die Masker._placeholder_for() auch fuer ECHTE Werte
+# vergibt. Im Beweislauf war <PERSON_1> gleichzeitig Beispiel im Hinweis UND
+# echter Platzhalter fuer "Thomas Schneider". Das Modell sieht denselben Token
+# dann in zwei voellig verschiedenen Bedeutungen; greift es das Beispiel auf,
+# macht die Re-Identifikation stillschweigend den echten Namen daraus und
+# setzt ihn an eine Stelle, an die er nie gehoerte. Kein PII-Leck (der
+# Klartext geht weiterhin nicht raus), aber eine falsche Antwort -- und zwar
+# eine stille (siehe docs/HEADROOM.md zur Fail-Semantik).
+#
+# Fix: die Beispiele benutzen das Platzhalter-SCHEMA mit dem Buchstaben N
+# statt einer Zahl (<PERSON_N>). Das erklaert die Form genauso gut, ist aber
+# nachweislich kollisionsfrei -- der Masker nummeriert ausschliesslich mit
+# Ziffern, ein <..._N> kann also nie ein echter Platzhalter sein. Abgesichert
+# durch TestNoticePlaceholderCollision in
+# test/test_datenschleuse_guardrail.py.
 ANONYMIZATION_NOTICE = (
     "Hinweis: Dieser Text wurde vor der Übermittlung automatisch pseudonymisiert. "
-    "Platzhalter wie <PERSON_1>, <ADDRESS_0>, <EMAIL_ADDRESS_0>, <DE_AKTENZEICHEN_0> "
-    "usw. stehen bewusst anstelle der jeweils echten Werte (z. B. steht <PERSON_1> "
-    "für einen echten Personennamen, <ADDRESS_0> für eine vollständige Adresse). Das ist "
+    "Platzhalter nach dem Schema <TYP_NUMMER> — etwa <PERSON_N>, <ADDRESS_N>, "
+    "<EMAIL_ADDRESS_N>, <DE_AKTENZEICHEN_N>, wobei N für eine Ziffer steht — "
+    "stehen bewusst anstelle der jeweils echten Werte (z. B. steht <PERSON_N> "
+    "für einen echten Personennamen, <ADDRESS_N> für eine vollständige Adresse). Das ist "
     "kein Tippfehler und keine fehlende Information — behandle jeden Platzhalter "
     "als den echten Wert, den er ersetzt, und gib ihn in deiner Antwort exakt so "
     "zurück, wie er dir übergeben wurde (nicht umformulieren, nicht durch einen "

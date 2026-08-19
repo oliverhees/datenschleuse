@@ -15,6 +15,7 @@ Fuer CI kann aequivalent mit pytest + pytest-asyncio gelaufen werden.
 """
 
 import os
+import re
 import sys
 import types
 import unittest
@@ -401,6 +402,121 @@ class TestSuccessHook(unittest.IsolatedAsyncioTestCase):
             data=data, user_api_key_dict=None, response=response
         )
         self.assertEqual(out.choices[0].message.content, "Hallo Max Mustermann!")
+
+
+# ===========================================================================
+# 7. Kollision zwischen Beispiel-Platzhaltern im Hinweis und ECHTEN
+#    Platzhaltern (Befund aus dem E2E-Round-Trip-Beweis, DATENSCHLE-67)
+# ===========================================================================
+class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
+    """Der Anonymisierungs-Hinweis nennt Beispiel-Platzhalter. Haben diese
+    dieselbe Form wie die ECHTEN (``<TYP_ZAHL>``), koennen sie mit ihnen
+    kollidieren.
+
+    Beobachtet im E2E-Lauf (test/e2e_roundtrip.py, AK4): der Hinweis nannte
+    ``<PERSON_1>`` als Beispiel, waehrend ``<PERSON_1>`` im selben Request der
+    echte Platzhalter fuer "Thomas Schneider" war. Das Modell sieht dann
+    denselben Token zweimal in voellig verschiedener Bedeutung -- einmal als
+    Erklaerungsbeispiel, einmal als Daten. Greift es das Beispiel auf, macht
+    die Re-Identifikation daraus stillschweigend den echten Namen und setzt
+    ihn an eine Stelle, an die er nie gehoerte.
+
+    Kein PII-Leck (der Klartext geht nach wie vor nicht raus), aber eine
+    falsche Antwort -- exakt dieselbe Fehlerklasse wie der dokumentierte
+    Live-Befund vom 2026-07-29 ("Hallo Hans Mueller!"), nur eine Ebene
+    subtiler: dort war es ein Beispiel-NAME, hier ein Beispiel-PLATZHALTER.
+    """
+
+    # Genau die Form, die Masker._placeholder_for() erzeugt: <TYP_ZAHL>.
+    REAL_PLACEHOLDER_SHAPE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
+
+    def test_notice_contains_no_token_masker_could_produce(self):
+        collidable = self.REAL_PLACEHOLDER_SHAPE.findall(dg.ANONYMIZATION_NOTICE)
+        self.assertEqual(
+            collidable, [],
+            "Der Hinweis nennt Beispiel-Platzhalter in genau der Form, die der "
+            "Masker auch fuer echte Werte vergibt -- sie koennen deshalb mit "
+            f"echten Platzhaltern kollidieren: {collidable}",
+        )
+
+    async def test_notice_examples_never_collide_with_real_reid_map(self):
+        """Verhaltensnachweis: kein platzhalterfoermiger Token aus dem Hinweis
+        darf ein Schluessel des echten reid_map sein."""
+        guard = dg.DatenschleuseGuardrail()
+
+        names = ("Maria Meier", "Thomas Schneider")
+
+        async def fake_analyze(text):
+            out = []
+            for name in names:
+                start = 0
+                while True:
+                    idx = text.find(name, start)
+                    if idx < 0:
+                        break
+                    out.append({"entity_type": "PERSON", "start": idx,
+                                "end": idx + len(name), "score": 0.99})
+                    start = idx + len(name)
+            return out
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {
+            "messages": [
+                {"role": "user",
+                 "content": "Maria Meier hat angerufen. Thomas Schneider war dabei. "
+                            "Maria Meier hat erneut angerufen."},
+            ]
+        }
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        reid_map = out["metadata"][dg.REID_MAP_KEY]
+        notice_text = out["messages"][0]["content"]
+
+        # Vorbedingung des Befunds: es gibt ueberhaupt zwei echte Personen-
+        # Platzhalter, darunter <PERSON_1>.
+        self.assertEqual(sorted(reid_map), ["<PERSON_0>", "<PERSON_1>"])
+
+        tokens_in_notice = set(self.REAL_PLACEHOLDER_SHAPE.findall(notice_text))
+        collisions = sorted(tokens_in_notice & set(reid_map))
+        self.assertEqual(
+            collisions, [],
+            "Beispiel-Platzhalter aus dem Hinweis sind gleichzeitig echte "
+            f"Platzhalter dieses Requests: {collisions}. Greift das Modell das "
+            "Beispiel auf, re-identifiziert die Datenschleuse es zu "
+            f"{[reid_map[c] for c in collisions]}.",
+        )
+
+    async def test_stable_mapping_same_value_same_placeholder(self):
+        """AK4 als schneller Unit-Test (der E2E-Lauf beweist dasselbe gegen den
+        echten Stack, braucht dafuer aber Docker)."""
+        guard = dg.DatenschleuseGuardrail()
+
+        async def fake_analyze(text):
+            out = []
+            for name in ("Maria Meier", "Thomas Schneider"):
+                start = 0
+                while True:
+                    idx = text.find(name, start)
+                    if idx < 0:
+                        break
+                    out.append({"entity_type": "PERSON", "start": idx,
+                                "end": idx + len(name), "score": 0.99})
+                    start = idx + len(name)
+            return out
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {"messages": [{"role": "user",
+                              "content": "Maria Meier und Thomas Schneider und Maria Meier."}]}
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        masked = out["messages"][-1]["content"]
+        self.assertEqual(masked, "<PERSON_0> und <PERSON_1> und <PERSON_0>.")
+        self.assertEqual(out["metadata"][dg.REID_MAP_KEY],
+                         {"<PERSON_0>": "Maria Meier", "<PERSON_1>": "Thomas Schneider"})
 
 
 if __name__ == "__main__":
