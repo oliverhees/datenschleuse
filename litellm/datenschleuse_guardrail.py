@@ -218,6 +218,116 @@ _LOG = logging.getLogger("datenschleuse")
 _ALLOWED_FIELDS_HINT = ", ".join(sorted(ALLOWED_MESSAGE_FIELDS))
 
 
+# ===========================================================================
+# PART-FELD-REGISTER (DATENSCHLE-65)
+# ===========================================================================
+# Vierte Wiederholung derselben Bauart, jetzt eine Ebene unter dem
+# Message-Register: DATENSCHLE-57 hat den Part-TYP auf eine Allowlist
+# gestellt, die FELDER eines Parts blieben ungeprueft. Ein Text-Part durfte
+# beliebige Zusatzschluessel tragen, und die gingen unveraendert ans Modell
+# (verifizierter PoC: ``{"type":"text","text":"hi","zusatz":"<PII>"}``).
+#
+# Akut statt akademisch macht das ``cache_control``: DATENSCHLE-66
+# legitimiert den Marker auf MESSAGE-Ebene, Anthropic-Clients haengen ihn
+# aber an CONTENT-PARTS. "Part mit Zusatzfeld" ist damit kein exotischer
+# Angriff, sondern Normalbetrieb -- der Marker MUSS durchgehen, waehrend
+# alles Unbekannte blockt. Genau dafuer braucht es ein Register statt eines
+# weiteren if-Zweiges.
+#
+# Aufbau bewusst identisch zum Message-Register (gleiche Namen, gleiche
+# Zweiteilung), nur pro Part-Typ geschluesselt: jedes Feld eines Parts steht
+# in genau einer der beiden Listen. Was in keiner steht, blockt fail-closed.
+
+# 1) MASKIERT: freier Text, der ans Zielmodell geht -> Presidio + Masker.
+PART_FIELDS_MASKED = {
+    "text": ("text",),
+    # Bild-Parts tragen keinen Text. Ihre Nutzlast laeuft ueber die
+    # Bild-Policy (redact/block/pass), nicht ueber den Masker.
+    "image_url": (),
+}
+
+# 2) VALIDIERT: kein Freitext, muss den Provider unveraendert erreichen --
+#    und wird deshalb gegen ein enges Format geprueft, sonst waere es der
+#    bequemste Schmuggelkanal des Parts.
+PART_FIELDS_VALIDATED = {
+    "text": ("type", "cache_control"),
+    # ``cache_control`` auch hier: Anthropic erlaubt den Marker auf JEDEM
+    # Content-Block, Bilder eingeschlossen. Er ist vollstaendig validiert
+    # (Objekt mit hoechstens ``type``/``ttl`` aus geschlossenen Wertemengen),
+    # traegt also keinerlei Freitext -- ihn nur auf Text-Parts zuzulassen
+    # waere reine Client-Breakage ohne Sicherheitsgewinn.
+    "image_url": ("type", "image_url", "cache_control"),
+}
+
+ALLOWED_PART_FIELDS = {
+    part_type: frozenset(PART_FIELDS_MASKED[part_type] + PART_FIELDS_VALIDATED[part_type])
+    for part_type in PART_FIELDS_MASKED
+}
+
+# Der Part-TYP-Allowlist aus DATENSCHLE-57 -- jetzt aus dem Register
+# abgeleitet statt als zweite Wahrheit danebenstehend.
+ALLOWED_PART_TYPES = frozenset(ALLOWED_PART_FIELDS)
+
+# Felder des ``image_url``-Containers (eine Ebene unter dem Part). Auch der
+# ist client-kontrolliert, und ``_handle_image_part`` ersetzt ausschliesslich
+# ``url`` -- jedes weitere Feld ueberlebte die Bild-Policy unveraendert.
+# ``detail`` ist der einzige weitere Schluessel, den die OpenAI-API kennt.
+IMAGE_URL_ALLOWED_FIELDS = frozenset({"url", "detail"})
+IMAGE_URL_DETAILS = frozenset({"auto", "low", "high"})
+
+# Part-Felder, die es bei realen Providern gibt, die die Datenschleuse aber
+# (noch) NICHT behandelt. Sie blocken wie jedes unbekannte Feld -- werden in
+# der Meldung aber beim Namen genannt, damit ein Betreiber nicht per
+# Trial-and-Error gegen die Allowlist raten muss. Die Namen stammen aus
+# dieser konstanten Liste, nie aus dem Request (Gesetz 5).
+#
+# Bewusst EINMAL vollstaendig erfasst statt Feld fuer Feld entdeckt:
+#   OpenAI      -- input_audio, file, refusal (Assistant-Output-Part)
+#   Anthropic   -- source, citations, title, context, thinking, signature,
+#                  data, id, name, input, content, is_error, tool_use_id
+#   Google/Vertex (ueber LiteLLM) -- inline_data, file_data, function_call,
+#                  function_response, thought, video_metadata
+#   LiteLLM     -- provider_specific_fields, index, partial
+# Sie alle sind entweder eigene Part-TYPEN (blocken bereits ueber den Typ)
+# oder Nutzlast-Felder, fuer die es keinen geprueften Pfad gibt. Ein
+# kuenftiges Feld hier einzutragen ist eine bewusste Entscheidung mit Work
+# Item -- kein stillschweigendes Durchreichen.
+KNOWN_UNSUPPORTED_PART_FIELDS = frozenset({
+    "input_audio",
+    "file",
+    "refusal",
+    "source",
+    "citations",
+    "title",
+    "context",
+    "thinking",
+    "signature",
+    "data",
+    "id",
+    "name",
+    "input",
+    "content",
+    "is_error",
+    "tool_use_id",
+    "inline_data",
+    "file_data",
+    "function_call",
+    "function_response",
+    "thought",
+    "video_metadata",
+    "provider_specific_fields",
+    "index",
+    "partial",
+})
+
+# Konstante Hinweistexte pro Part-Typ (nie Client-Werte, Gesetz 5).
+_ALLOWED_PART_FIELDS_HINT = {
+    part_type: ", ".join(sorted(fields))
+    for part_type, fields in ALLOWED_PART_FIELDS.items()
+}
+_ALLOWED_PART_TYPES_HINT = ", ".join(sorted(ALLOWED_PART_TYPES))
+
+
 def _image_part_url(part: Dict[str, Any]) -> str:
     """Liest die URL aus einem ``image_url``-Part. Das OpenAI-Format ist
     ``{"type": "image_url", "image_url": {"url": "..."}}``, manche Clients
@@ -884,11 +994,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # Uebrige blockt fail-closed, auch ein Part-Typ, den die
                     # OpenAI-API erst morgen einfuehrt.
                     for part in content:
-                        part_type = part.get("type") if isinstance(part, dict) else None
+                        # DATENSCHLE-65: Typ UND Felder in EINEM Schritt, im
+                        # Validate-Pfad, fail-closed -- bevor irgendein Wert
+                        # dieses Parts verarbeitet oder weitergereicht wird.
+                        # Danach ist garantiert: Typ ist erlaubt, jedes Feld
+                        # steht im Register, jedes Feld hat den richtigen Typ.
+                        part_type = self._validate_part_shape(part)
                         if part_type == "image_url":
                             await self._handle_image_part(part)
                             continue
-                        if part_type == "text" and isinstance(part.get("text"), str):
+                        if part_type == "text":
+                            # Nach _validate_part_shape garantiert ein String
+                            # -- KEIN isinstance-Guard mehr an dieser Stelle,
+                            # der waere wieder ein stiller Durchlass (F1).
                             original = part["text"]
                             entities = await self._analyze(original)
 
@@ -906,27 +1024,18 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             turn_qi.extend(self._extract_qi_values(original, qi))
                             text_slots.append((part, "text"))
                             continue
-                        # Nicht auf der Allowlist -> nicht pruefbar -> blocken.
-                        # KORREKTUR (Security-Review, DATENSCHLE-64 zweites
-                        # Finding): part_type ist NICHT unbedenklich -- es ist
-                        # ``part.get("type")``, also ein Wert, den der Client
-                        # voll kontrolliert: beliebiger Inhalt, beliebiger Typ
-                        # (auch dict/list), beliebige Laenge. Der Auditor hat
-                        # belegt, dass eine IBAN, eine Diagnose oder 5000
-                        # Flooding-Zeichen ueber genau dieses Feld in die
-                        # Meldung durchschlagen -- und DatenschleuseBlocked
-                        # wird von LiteLLM geloggt/an den Client zurueckgegeben,
-                        # laeuft also potenziell in Logging-Callbacks (Gesetz
-                        # 5). Deshalb wird NIE der Wert selbst ausgegeben,
-                        # sondern ausschliesslich sein Python-Typname (z.B.
-                        # "str", "dict", "NoneType") -- kurz, konstant lang,
-                        # ohne jeden Client-Inhalt.
-                        raise DatenschleuseBlocked(
-                            "Content-Part mit nicht erlaubtem Typ "
-                            f"({type(part_type).__name__}) wird von der "
-                            "Datenschleuse nicht geprueft und ist deshalb "
-                            "blockiert (fail-closed). Erlaubt sind nur "
-                            "'text' (mit String-Inhalt) und 'image_url'."
+                        # Unerreichbar, solange Register und Verarbeitung
+                        # zusammenpassen: _validate_part_shape hat jeden
+                        # anderen Typ bereits geblockt. Der Zweig bleibt als
+                        # fail-closed-Netz fuer den Fall, dass jemand einen
+                        # Typ ins Register eintraegt, ohne ihn hier zu
+                        # behandeln -- dann blockt er, statt ungeprueft
+                        # durchzulaufen. Genau diese Sorte Luecke ist die
+                        # Geschichte dieses Guardrails (DATENSCHLE-57/64/65/66).
+                        raise DatenschleuseBlocked(  # pragma: no cover
+                            "Content-Part-Typ ist im Register erfasst, hat "
+                            "aber keinen Verarbeitungspfad -- blockiert "
+                            "(fail-closed)."
                         )
                 elif content is not None:
                     # DATENSCHLE-64 (QA-Folgefund zu DATENSCHLE-57): dieselbe
@@ -1087,6 +1196,137 @@ class DatenschleuseGuardrail(_GuardrailBase):
         function_call = msg.get("function_call")
         if function_call is not None:
             DatenschleuseGuardrail._validate_function_payload(function_call, "function_call")
+
+    # ---- Content-Parts: Typ UND Felder (DATENSCHLE-65) --------------------
+    @staticmethod
+    def _validate_part_shape(part: Any) -> str:
+        """Prueft die FORM eines Content-Parts gegen das Part-Feld-Register
+        und liefert den geprueften Part-Typ zurueck.
+
+        Bis DATENSCHLE-65 endete die Pruefung beim Part-TYP: ein Part mit
+        erlaubtem Typ durfte beliebige Zusatzfelder tragen, und die gingen
+        unveraendert ans Modell. Dieselbe Bauart wie auf Message-Ebene, eine
+        Ebene tiefer -- deshalb hier dieselbe Konsequenz: Allowlist, alles
+        Uebrige blockt fail-closed.
+
+        Wichtig (Kriterium 4, Lehre aus Security-Audit F1 auf Message-Ebene):
+        die Typpruefung der Felder gehoert HIERHER und muss blocken. Ein
+        ``if isinstance(part.get("text"), str)`` im Verarbeitungspfad ist
+        immer ein stiller Durchlass -- der Nicht-String faellt einfach durch.
+
+        Gesetz 5: keine Meldung enthaelt Client-Werte -- auch ein FELDNAME
+        ist Client-Inhalt (eine IBAN als Schluessel ist trivial). Ausgegeben
+        werden nur Anzahl, Python-Typname, Fingerprint und konstante Listen.
+        """
+        if not isinstance(part, dict):
+            raise DatenschleuseBlocked(
+                f"Content-Part vom Typ {type(part).__name__!r} ist nicht "
+                "pruefbar und deshalb blockiert (fail-closed). Erlaubt sind "
+                "nur Part-Objekte."
+            )
+
+        part_type = part.get("type")
+        if not isinstance(part_type, str) or part_type not in ALLOWED_PART_TYPES:
+            # part_type ist voll client-kontrolliert (beliebiger Inhalt,
+            # beliebiger Typ, beliebige Laenge) und darf deshalb NIE roh in
+            # die Meldung -- nur sein Python-Typname (DATENSCHLE-64,
+            # zweites Security-Finding).
+            raise DatenschleuseBlocked(
+                "Content-Part mit nicht erlaubtem Typ "
+                f"({type(part_type).__name__}) wird von der Datenschleuse "
+                "nicht geprueft und ist deshalb blockiert (fail-closed). "
+                f"Erlaubt sind nur: {_ALLOWED_PART_TYPES_HINT}."
+            )
+
+        allowed = ALLOWED_PART_FIELDS[part_type]
+        unknown = [key for key in part if key not in allowed]
+        if unknown:
+            benannt = sorted(
+                key for key in unknown
+                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_PART_FIELDS
+            )
+            fremd = [key for key in unknown if key not in benannt]
+            teile = []
+            if benannt:
+                teile.append("bekannt, aber nicht im Register: " + ", ".join(benannt))
+            if fremd:
+                teile.append(
+                    "unbekannt (Fingerprint): "
+                    + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                )
+            diagnose = "; ".join(teile)
+            _LOG.warning(
+                "Content-Part blockiert -- ungepruefte Felder [%s]. "
+                "Werte werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+            )
+            raise DatenschleuseBlocked(
+                f"Content-Part enthaelt {len(unknown)} Feld(er), die die "
+                f"Datenschleuse nicht prueft ({diagnose}) -- deshalb blockiert "
+                f"(fail-closed). Geprueft werden ausschliesslich: "
+                f"{_ALLOWED_PART_FIELDS_HINT[part_type]}."
+            )
+
+        DatenschleuseGuardrail._validate_cache_control(part.get("cache_control"))
+
+        if part_type == "text":
+            text = part.get("text")
+            # Kein ``_validate_text_field`` allein: das laesst None zu. Ein
+            # Text-Part OHNE ``text`` hat keine pruefbare Nutzlast und ist
+            # nicht spezifikationskonform -- fail-closed statt Leerlauf.
+            DatenschleuseGuardrail._validate_text_field(text, "content-part.text")
+            if text is None:
+                raise DatenschleuseBlocked(
+                    "Content-Part vom Typ 'text' ohne text-Feld hat keine "
+                    "pruefbare Nutzlast und ist deshalb blockiert "
+                    "(fail-closed)."
+                )
+        else:
+            DatenschleuseGuardrail._validate_image_url_container(part.get("image_url"))
+
+        return part_type
+
+    @staticmethod
+    def _validate_image_url_container(value: Any) -> None:
+        """Der ``image_url``-Container ist client-kontrolliert wie der Part
+        selbst -- und ``_handle_image_part`` ersetzt ausschliesslich ``url``.
+        Jedes weitere Feld ueberlebte die Bild-Policy bisher unveraendert
+        (bei ``image_policy='pass'`` ohnehin). Deshalb dieselbe Allowlist
+        eine Ebene tiefer.
+
+        Die Bild-POLICY bleibt davon unberuehrt: was mit einem gueltigen Bild
+        passiert (redact/block/pass), entscheidet weiterhin allein
+        ``_handle_image_part``.
+        """
+        if value is None:
+            # Ein Bild-Part ohne URL blockt weiter unten in _handle_image_part
+            # mit der praeziseren Meldung -- hier nicht doppelt behandeln.
+            return
+        if isinstance(value, str):
+            # Manche Clients schicken die URL direkt statt im Container.
+            return
+        if not isinstance(value, dict):
+            raise DatenschleuseBlocked(
+                f"image_url vom Typ {type(value).__name__!r} ist kein "
+                "Bild-Verweis -- blockiert (fail-closed). Erlaubt ist ein "
+                "String oder ein Objekt wie {'url': '...'}."
+            )
+        unknown = sum(1 for key in value if key not in IMAGE_URL_ALLOWED_FIELDS)
+        if unknown:
+            raise DatenschleuseBlocked(
+                f"image_url enthaelt {unknown} ungepruefte(s) Feld(er) -- "
+                "blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(IMAGE_URL_ALLOWED_FIELDS))}."
+            )
+        DatenschleuseGuardrail._validate_text_field(value.get("url"), "image_url.url")
+        detail = value.get("detail")
+        if detail is not None and (
+            not isinstance(detail, str) or detail not in IMAGE_URL_DETAILS
+        ):
+            raise DatenschleuseBlocked(
+                f"image_url.detail (Typ {type(detail).__name__!r}) ist kein "
+                "bekannter Wert -- als Freitext-Kanal blockiert (fail-closed). "
+                f"Erlaubt: {', '.join(sorted(IMAGE_URL_DETAILS))}."
+            )
 
     @staticmethod
     def _validate_text_field(value: Any, field: str) -> None:
