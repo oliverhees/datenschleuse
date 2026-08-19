@@ -37,6 +37,7 @@ Ausfuehren (aus dem Repo-Root):
     python3 -m unittest discover -s ./test -p "test_calltype_allowlist.py" -v
 """
 
+import copy
 import os
 import sys
 import unittest
@@ -155,7 +156,19 @@ def _flatten(value):
 
 
 def _leaks_plaintext(payload):
-    """True, wenn der Klartext-Wert IRGENDWO im ausgehenden Payload steht."""
+    """True, wenn der Klartext-Wert IRGENDWO im ausgehenden Payload steht.
+
+    Ausgenommen ist genau EIN Ort: das eigene Platzhalter->Klartext-Mapping
+    unter ``metadata[REID_MAP_KEY]``. Dort MUSS der Klartext stehen -- das ist
+    der Speicher, aus dem die Re-Identifikation auf dem Rueckweg den Wert
+    zurueckholt. Er ist ein LiteLLM-interner Metadaten-Key und geht nicht an
+    den Provider. Wuerde der Test ihn mitzaehlen, waere jede erfolgreiche
+    Maskierung als Leck markiert und der Test wertlos."""
+    payload = copy.deepcopy(payload)
+    if isinstance(payload, dict):
+        meta = payload.get("metadata")
+        if isinstance(meta, dict):
+            meta.pop(dg.REID_MAP_KEY, None)
     return any(_IBAN in text for text in _flatten(payload))
 
 

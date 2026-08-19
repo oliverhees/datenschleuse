@@ -102,6 +102,144 @@ IMAGE_POLICIES = ("redact", "block", "pass")
 
 
 # ===========================================================================
+# CALL-TYPE-REGISTER (DATENSCHLE-69) -- die OBERSTE Ebene: die Route
+# ===========================================================================
+# Dieselbe Bauart-Luecke gab es inzwischen viermal, jedes Mal eine Ebene
+# tiefer entdeckt: Part-Ebene (DATENSCHLE-57), content-Container
+# (DATENSCHLE-64), Part-Felder (DATENSCHLE-65), Message-Felder
+# (DATENSCHLE-66). Ursache jedes Mal dieselbe: gelesen wurde, was man kannte,
+# alles Uebrige lief still durch. Hier ist die letzte, oberste Ebene -- die
+# ROUTE selbst. Vorher stand die Entscheidung als anonymes Tupel im
+# Funktionsrumpf und lieferte bei Nicht-Treffer ``data`` UNVERAENDERT zurueck:
+# kein Maskieren, kein Block, kein Fehler. Wer die Datenschleuse ueber eine
+# nicht gelistete Route ansprach, war komplett ungeschuetzt und merkte es
+# nicht -- "Schutz abwesend bei zugesichertem Schutz".
+#
+# Ab hier gilt dasselbe Prinzip wie beim Message-Feld-Register: jeder
+# call_type steht in genau einer Liste. Was in keiner steht, ist unbekannt
+# und blockt fail-closed. Eine neue litellm-Route zwingt damit zu einer
+# BEWUSSTEN Entscheidung (Eintrag ins Register) statt lautlos ein Leck zu
+# oeffnen.
+#
+# WICHTIG -- warum eine Route nicht allein am Namen haengt: der call_type sagt
+# nur, WELCHE Route spricht, nicht WIE ihr Payload aussieht. Eine Route als
+# "unterstuetzt" zu markieren, ohne ihre Struktur tatsaechlich zu maskieren,
+# waere derselbe Fehler noch einmal, nur dokumentiert falsch. Deshalb prueft
+# jeder unterstuetzte Pfad zusaetzlich die FORM seines Payloads und blockt,
+# wenn sie nicht passt (_validate_call_type / _mask_text_prompt).
+#
+# Empirisch gegen litellm 1.97.0 nachgelesen (nicht geraten), Quellen:
+#   proxy/common_request_processing.py:1432  pre_call_hook(call_type=route_type)
+#   proxy/proxy_server.py:9353               route_type="acompletion"
+#   proxy/proxy_server.py:9509               route_type="atext_completion"
+#   proxy/anthropic_endpoints/endpoints.py:101      "anthropic_messages"
+#   proxy/response_api_endpoints/endpoints.py:341   "aresponses"
+#   integrations/custom_guardrail.py:670     "completion"/"acompletion"
+#   proxy/pass_through_endpoints/...py:227   "text_completion"
+#
+# 1) CHAT-MESSAGES: Payload ist eine OpenAI-Chat-Completion, der Anwendertext
+#    steht in ``messages[]``. Das ist der Pfad, den die Guardrail seit jeher
+#    vollstaendig beherrscht (Message-Feld-Register, Part-Register, QI-Layer,
+#    Re-Identifikation auf dem Rueckweg).
+#    - ``acompletion``: /v1/chat/completions am Proxy.
+#    - ``completion``:  synchroner Pfad ueber
+#      ``CustomGuardrail.async_pre_call_deployment_hook`` -- dort werden
+#      OpenAI-Chat-kwargs (mit ``messages``) uebergeben. KEIN toter Eintrag.
+CALL_TYPES_CHAT_MESSAGES = (
+    "acompletion",
+    "completion",
+)
+
+# 2) TEXT-PROMPT: Payload traegt den Anwendertext in EINEM Feld, ``prompt``.
+#    - ``atext_completion``: /v1/completions am Proxy (Legacy Completions).
+#      Die alte Liste enthielt ``"text_completion"`` -- das trifft diese Route
+#      NICHT, der Proxy uebergibt hier ``atext_completion``. Genau daran lief
+#      /v1/completions bislang komplett an der Maskierung vorbei.
+CALL_TYPES_TEXT_PROMPT = ("atext_completion",)
+
+ALLOWED_CALL_TYPES = frozenset(CALL_TYPES_CHAT_MESSAGES + CALL_TYPES_TEXT_PROMPT)
+
+# 3) BEKANNT, ABER NICHT GEPRUEFT. Diese call_types kommen in litellm 1.97.0
+#    real vor -- wir behandeln sie (noch) nicht. Sie blocken wie jeder
+#    unbekannte call_type, werden in der Meldung aber beim Namen genannt,
+#    damit ein Betreiber sofort weiss, woran er ist. Die Namen stammen aus
+#    dieser konstanten Liste, NIE aus dem Request (Gesetz 5).
+#
+#    Bewusst geblockt statt halb unterstuetzt (Begruendung je Gruppe):
+#    - ``anthropic_messages``/``aanthropic_messages`` (/v1/messages): eigenes
+#      Schema mit ``system`` als Top-Level-Feld und eigenen Content-Block-
+#      Typen. Braucht ein eigenes Block-Register UND einen eigenen Rueckweg
+#      (Antwort-``content``-Bloecke statt ``choices[].message``). Beides ist
+#      ein eigenes Work Item; bis dahin blocken statt falsch versprechen.
+#    - ``aresponses``/``responses`` (/v1/responses): nutzt ``input`` statt
+#      ``messages``, dazu ``instructions`` als eigenes Feld und eigene
+#      Item-Typen. Gleiche Begruendung.
+#    - ``text_completion``: NICHT /v1/completions, sondern der Adapter-
+#      Passthrough (pass_through_endpoints.py:227). Der Body ist dort
+#      betreiber-/adapterdefiniert, also von unbekannter Form -> nicht
+#      pruefbar. Der Eintrag ist damit belegt real, aber nicht unterstuetzt.
+#    - Embeddings, Bild-, Audio-, Moderations-, Rerank-, Batch-, File-,
+#      Vector-Store-, MCP-, A2A-, Google-GenAI- und Passthrough-Routen tragen
+#      genauso Anwendertext nach draussen, haben aber jeweils eigene Payload-
+#      Formen.
+KNOWN_UNSUPPORTED_CALL_TYPES = frozenset({
+    # Anthropic Messages / OpenAI Responses -- die agentischen Formate.
+    "anthropic_messages",
+    "aanthropic_messages",
+    "aresponses",
+    "responses",
+    "_aresponses_websocket",
+    "aget_responses",
+    "alist_input_items",
+    # Legacy-/Adapter-Passthrough mit betreiberdefiniertem Body.
+    "text_completion",
+    "pass_through_endpoint",
+    "llm_passthrough_route",
+    "allm_passthrough_route",
+    # Google GenAI nativ.
+    "generate_content",
+    "agenerate_content",
+    "generate_content_stream",
+    "agenerate_content_stream",
+    # Uebrige LLM-Routen mit eigenem Payload-Schema.
+    "embedding",
+    "aembedding",
+    "image_generation",
+    "aimage_generation",
+    "image_edit",
+    "aimage_edit",
+    "moderation",
+    "amoderation",
+    "transcription",
+    "atranscription",
+    "speech",
+    "aspeech",
+    "rerank",
+    "arerank",
+    "search",
+    "asearch",
+    "ocr",
+    "aocr",
+    "_arealtime",
+    "create_batch",
+    "acreate_batch",
+    "retrieve_batch",
+    "aretrieve_batch",
+    "vector_store_search",
+    "avector_store_search",
+    "call_mcp_tool",
+    "list_mcp_tools",
+    "send_message",
+    "asend_message",
+    "apply_guardrail",
+})
+
+# Erlaubte call_types nennen wir in der Blockmeldung NIE mit Client-Werten,
+# sondern nur mit dieser konstanten, unveraenderlichen Liste (Gesetz 5).
+_ALLOWED_CALL_TYPES_HINT = ", ".join(sorted(ALLOWED_CALL_TYPES))
+
+
+# ===========================================================================
 # MESSAGE-FELD-REGISTER (DATENSCHLE-66)
 # ===========================================================================
 # Warum ein Register statt einzelner if-Zweige: der Guardrail hat dieselbe
@@ -829,8 +967,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
     ) -> dict:
         """Maskiert PII in allen Chat-Messages und legt das Re-Id-Mapping in
         den Metadaten ab. Nur fuer Chat-/Text-Completions relevant."""
-        if call_type not in ("completion", "text_completion", "acompletion", None):
-            return data
+        # Route-Pruefung VOR allem anderen (DATENSCHLE-69). Frueher stand hier
+        # ein ``return data`` fuer alles Unbekannte -- also unmaskiertes
+        # Durchreichen. Jetzt blockt jede Route, die die Guardrail nicht
+        # nachweislich beherrscht.
+        self._validate_call_type(call_type)
 
         messages = data.get("messages")
         masker = Masker()
@@ -849,6 +990,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # (Typ, Rohwert) + die Text-Slots, in denen sie ggf. generalisiert werden.
         turn_qi: List[Tuple[str, str]] = []
         text_slots: List[Tuple[Any, Any]] = []  # (container, key) auf maskierten Text
+
+        # --- Route /v1/completions: der Text steht in ``prompt`` -----------
+        # Eigener Payload, eigener Pfad (DATENSCHLE-69). Danach faellt die
+        # Verarbeitung in denselben gemeinsamen Abschluss wie der Chat-Pfad
+        # (Mapping in die Metadaten, QI-Layer) -- die messages-Schleife unten
+        # laeuft nicht, weil ein /v1/completions-Payload kein ``messages``
+        # hat (und ein trotzdem mitgeschicktes ``messages`` blockt, siehe
+        # _mask_text_prompt).
+        if call_type in CALL_TYPES_TEXT_PROMPT:
+            await self._mask_text_prompt(
+                data, masker, requested_level, approved, qi_types,
+                turn_qi, text_slots,
+            )
 
         # Der messages-Container selbst (DATENSCHLE-66): ist ``messages``
         # vorhanden, aber keine Liste, lief der Request bisher komplett
@@ -1031,6 +1185,163 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 )
 
         return data
+
+    # ---- Route-Register (DATENSCHLE-69) -----------------------------------
+    @staticmethod
+    def _validate_call_type(call_type: Any) -> None:
+        """Prueft die ROUTE gegen das Call-Type-Register.
+
+        Konsequente Allowlist wie eine Ebene tiefer beim Message-Feld-Register:
+        was hier nicht steht, ist ein Payload-Schema, dessen Inhalt niemand
+        geprueft hat -- und damit ein Durchlass. Vorher endete dieser Pfad in
+        einem ``return data``: unmaskiert weiter ans Modell.
+
+        Die Typpruefung steht bewusst HIER im Validate-Pfad und nicht als
+        ``isinstance``-Guard im Verarbeitungspfad. Ein Guard, der bei
+        unerwartetem Typ still ueberspringt, ist immer ein Durchlass -- das
+        war das schwerste Audit-Finding von DATENSCHLE-66 und wird hier nicht
+        eine Ebene hoeher wiederholt.
+
+        In der Meldung erscheint NIE der Wert selbst (er ist client-
+        kontrolliert: beliebiger Inhalt, beliebiger Typ, beliebige Laenge und
+        Blockmeldungen laufen durch LiteLLMs Logging, Gesetz 5), sondern nur
+        sein Python-Typname bzw. ein Name aus der konstanten Liste
+        KNOWN_UNSUPPORTED_CALL_TYPES."""
+        # Typpruefung ZUERST, nicht erst beim Nachschlagen: ein ``list``- oder
+        # ``dict``-call_type ist nicht hashbar und wuerde ``in frozenset``
+        # mit einem TypeError sprengen. Ein unkontrollierter Fehlerpfad ist
+        # kein fail-closed (gleiche Klasse Befund wie MAX_JSON_DEPTH,
+        # Security-Audit F7).
+        #
+        # ``None`` stand frueher explizit auf der Liste und lief damit
+        # ungeprueft durch. litellm 1.97.0 uebergibt nie None -- die Signatur
+        # von CustomLogger.async_pre_call_hook ist ``CallTypesLiteral``, nicht
+        # optional. Ein None ist also ein fremder Aufrufer oder ein Fehler;
+        # beides ist nicht pruefbar.
+        if not isinstance(call_type, str):
+            raise DatenschleuseBlocked(
+                f"Aufruf ohne lesbaren call_type (Typ "
+                f"{type(call_type).__name__!r}) wird von der Datenschleuse "
+                "nicht geprueft und ist deshalb blockiert (fail-closed). "
+                f"Geprueft werden: {_ALLOWED_CALL_TYPES_HINT}."
+            )
+
+        if call_type in ALLOWED_CALL_TYPES:
+            return
+
+        if call_type in KNOWN_UNSUPPORTED_CALL_TYPES:
+            # Nur hier darf der Name genannt werden -- er stammt aus unserer
+            # eigenen konstanten Liste, nicht aus dem Request.
+            raise DatenschleuseBlocked(
+                f"Die Route {call_type!r} wird von der Datenschleuse noch "
+                "nicht geprueft und ist deshalb blockiert (fail-closed). Ihr "
+                "Payload hat ein eigenes Schema, das die Maskierung nicht "
+                "abdeckt -- ungeprueftes Durchreichen waere ein PII-Leck bei "
+                "zugesichertem Schutz. Geprueft werden: "
+                f"{_ALLOWED_CALL_TYPES_HINT}."
+            )
+
+        raise DatenschleuseBlocked(
+            "Aufruf ueber eine der Datenschleuse unbekannte Route wird nicht "
+            "geprueft und ist deshalb blockiert (fail-closed). Geprueft "
+            f"werden: {_ALLOWED_CALL_TYPES_HINT}."
+        )
+
+    # ---- Route /v1/completions: Payload mit ``prompt`` (DATENSCHLE-69) ----
+    async def _mask_text_prompt(
+        self,
+        data: Dict[str, Any],
+        masker: Masker,
+        requested_level: Any,
+        approved: bool,
+        qi_types: Any,
+        turn_qi: List[Tuple[str, str]],
+        text_slots: List[Tuple[Any, Any]],
+    ) -> None:
+        """Maskiert den Anwendertext von /v1/completions.
+
+        Gleiche Behandlung wie ein ``content``-String im Chat-Pfad: derselbe
+        Masker (also DASSELBE reid_map -- Voraussetzung dafuer, dass die
+        Re-Identifikation auf dem Rueckweg greift), dasselbe Schutzklassen-
+        Gate, dieselbe QI-Aufteilung.
+
+        Der Payload wird zusaetzlich auf seine FORM geprueft. Der call_type
+        sagt nur, welche Route spricht -- nicht, wie ihr Body aussieht. Was
+        hier nicht als pruefbar erkannt wird, blockt."""
+        # Ein /v1/completions-Request hat kein ``messages``. Kommt es trotzdem
+        # mit, ist der Payload mehrdeutig: die Route wertet ihn als
+        # Text-Completion, im Body steht aber zusaetzlich ein Chat-Kanal, den
+        # dieser Pfad nicht verarbeitet. Genau so entsteht ein ungeprueftes
+        # Feld -> blocken statt eines der beiden stillschweigend ignorieren.
+        if data.get("messages") is not None:
+            raise DatenschleuseBlocked(
+                "Text-Completion-Request mit zusaetzlichem messages-Feld ist "
+                "mehrdeutig und wird deshalb blockiert (fail-closed). "
+                "Erlaubt ist entweder prompt (/v1/completions) oder messages "
+                "(/v1/chat/completions), nicht beides."
+            )
+
+        if "prompt" not in data:
+            raise DatenschleuseBlocked(
+                "Text-Completion-Request ohne prompt-Feld ist nicht pruefbar "
+                "und deshalb blockiert (fail-closed)."
+            )
+
+        prompt = data["prompt"]
+
+        if isinstance(prompt, str):
+            data["prompt"] = await self._mask_prompt_text(
+                prompt, masker, requested_level, approved, qi_types, turn_qi
+            )
+            text_slots.append((data, "prompt"))
+            return
+
+        # Die OpenAI-API erlaubt auch eine Liste von Prompts (Batch). Jeder
+        # Eintrag muss ein String sein -- eine Liste von Token-IDs ist zwar
+        # ebenfalls spezifiziert, aber kein analysierbarer Text: Presidio
+        # kann darin nichts finden, und die IDs tragen den Klartext trotzdem
+        # (sie sind nur eine andere Kodierung desselben Satzes). Deshalb
+        # blockt sie, statt "geprueft" zu heissen, ohne geprueft worden zu
+        # sein. Kein still ueberspringender isinstance-Guard.
+        if isinstance(prompt, list):
+            for index, item in enumerate(prompt):
+                if not isinstance(item, str):
+                    raise DatenschleuseBlocked(
+                        f"prompt-Eintrag vom Typ {type(item).__name__!r} wird "
+                        "von der Datenschleuse nicht geprueft und ist deshalb "
+                        "blockiert (fail-closed). Erlaubt sind nur Strings -- "
+                        "Token-ID-Listen sind kein analysierbarer Text."
+                    )
+                prompt[index] = await self._mask_prompt_text(
+                    item, masker, requested_level, approved, qi_types, turn_qi
+                )
+                text_slots.append((prompt, index))
+            return
+
+        raise DatenschleuseBlocked(
+            f"prompt vom Typ {type(prompt).__name__!r} wird von der "
+            "Datenschleuse nicht geprueft und ist deshalb blockiert "
+            "(fail-closed). Erlaubt sind nur String- oder Listen-prompts."
+        )
+
+    async def _mask_prompt_text(
+        self,
+        text: str,
+        masker: Masker,
+        requested_level: Any,
+        approved: bool,
+        qi_types: Any,
+        turn_qi: List[Tuple[str, str]],
+    ) -> str:
+        """Ein einzelner Prompt-String -- exakt die Schrittfolge des
+        content-Pfads: analysieren, klassifizieren (Stufe 3 blockt hart,
+        Stufe 2 ohne Freigabe ebenfalls), QI abspalten, maskieren."""
+        entities = await self._analyze(text)
+        self._enforce_sensitivity(text, entities, requested_level, approved)
+        direct, qi = self._split_entities(entities, qi_types)
+        masked = masker.mask(text, direct)
+        turn_qi.extend(self._extract_qi_values(text, qi))
+        return masked
 
     # ---- Message-Felder jenseits von content (DATENSCHLE-66) --------------
     @staticmethod
