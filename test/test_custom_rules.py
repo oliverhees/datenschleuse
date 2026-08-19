@@ -709,3 +709,37 @@ class TestGuardrailSurfacesRuleFileError(_RuleFileTestCase,
         with contextlib.redirect_stderr(fehler):
             dg.DatenschleuseGuardrail(custom_rules_path=self.path)
         self.assertEqual(fehler.getvalue(), "")
+
+
+# ===========================================================================
+# 11. F5 (Security-Audit) — die Temp-Datei des atomaren Schreibens
+#
+# save_document schreibt ueber eine Temp-Datei und os.replace. Wird der Prozess
+# dazwischen hart beendet (SIGKILL, Container-Stop), bleibt sie liegen -- mit
+# dem VOLLEN Regelsatz inklusive echter Kundennamen. Das Repo ist oeffentlich.
+# ===========================================================================
+class TestTempFileIsNotLeaked(unittest.TestCase):
+    _REPO = os.path.normpath(os.path.join(_HERE, ".."))
+
+    def test_gitignore_covers_the_temp_file_pattern(self):
+        pfad = os.path.join(self._REPO, ".gitignore")
+        with open(pfad, encoding="utf-8") as fh:
+            inhalt = fh.read()
+        self.assertIn("rules/.custom-rules-*.tmp", inhalt)
+        self.assertIn("rules/custom-rules.yml", inhalt)
+
+    def test_temp_file_prefix_matches_the_ignored_pattern(self):
+        """Der Praefix im Code und das Muster in .gitignore muessen
+        zusammenpassen -- sonst schuetzt die Zeile nichts."""
+        with open(os.path.join(self._REPO, "litellm", "custom_rules.py"),
+                  encoding="utf-8") as fh:
+            quelle = fh.read()
+        self.assertIn('prefix=".custom-rules-"', quelle)
+        self.assertIn('suffix=".tmp"', quelle)
+
+    def test_written_rules_file_is_owner_only(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        pfad = os.path.join(d.name, "custom-rules.yml")
+        cr.add_rule(pfad, rule("k", value="Adlerflug"))
+        self.assertEqual(os.stat(pfad).st_mode & 0o777, 0o600)
