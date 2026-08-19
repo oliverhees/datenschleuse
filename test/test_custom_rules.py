@@ -743,3 +743,73 @@ class TestTempFileIsNotLeaked(unittest.TestCase):
         pfad = os.path.join(d.name, "custom-rules.yml")
         cr.add_rule(pfad, rule("k", value="Adlerflug"))
         self.assertEqual(os.stat(pfad).st_mode & 0o777, 0o600)
+
+
+# ===========================================================================
+# 12. F7 (Security-Audit) — der Kategoriename reist zum Anbieter mit
+#
+# Der Entitaetsname landet WOERTLICH im Platzhalter (<CUSTOM_<ENTITY>_0>) und
+# geht damit an den LLM-Anbieter. Wer seine Kategorie nach dem Kunden benennt
+# -- die naheliegendste Sache der Welt -- maskiert den Wert und verschickt den
+# Namen trotzdem. Der eigene Schutz ist damit aufgehoben.
+# ===========================================================================
+class TestEntityNameDoesNotLeakTheSecret(_RuleFileTestCase):
+    def test_entity_named_after_the_customer_is_rejected(self):
+        with self.assertRaises(cr.RuleError):
+            cr.build_rule(rule("kunde", entity="Nordwind Logistik GmbH",
+                               value="Nordwind Logistik GmbH",
+                               examples=["Vertrag mit Nordwind Logistik GmbH"]))
+
+    def test_entity_sharing_any_token_with_the_value_is_rejected(self):
+        with self.assertRaises(cr.RuleError):
+            cr.build_rule(rule("kunde", entity="Projekt Adlerflug",
+                               value="Adlerflug",
+                               examples=["Projekt Adlerflug laeuft"]))
+
+    def test_rejection_message_names_the_risk_without_echoing_the_value(self):
+        try:
+            cr.build_rule(rule("kunde", entity="Nordwind",
+                               value="Nordwind Logistik",
+                               examples=["Kunde Nordwind Logistik"]))
+        except cr.RuleError as exc:
+            self.assertNotIn("Nordwind Logistik", str(exc))
+        else:
+            self.fail("Regel haette abgelehnt werden muessen")
+
+    def test_generic_category_names_still_work(self):
+        """Die Validierung darf die normale Benutzung nicht behindern."""
+        for entity, value in [
+            ("Kundenname", "Nordwind Logistik"),
+            ("Projektname", "Adlerflug"),
+            ("Projektnummer", "PRJ-1234"),
+            ("Mandant", "KD-ABC"),
+            ("Produktname", "Windrose Classic"),
+        ]:
+            regel = cr.build_rule(rule("r", entity=entity, value=value,
+                                       examples=[f"Text mit {value} drin"]))
+            self.assertEqual(regel.entity, entity)
+
+    def test_overly_long_entity_name_is_rejected(self):
+        """Ein Kategoriename ist ein Wort, kein Satz -- alles andere ist ein
+        Hinweis darauf, dass hier Inhalt statt Kategorie steht."""
+        with self.assertRaises(cr.RuleError):
+            cr.build_rule(rule("r", entity="Der grosse Kunde aus dem Norden mit "
+                                           "dem langen Namen", value="Adlerflug"))
+
+    def test_rule_with_leaking_entity_is_quarantined_not_active(self):
+        """Auch von Hand eingetragen darf so eine Regel nicht live gehen."""
+        self.write_rules([rule("leaky", entity="Adlerflug", value="Adlerflug")])
+        rs = cr.RuleSet(self.path)
+        self.assertEqual(rs.active_rules, [])
+        self.assertEqual([q.name for q in rs.quarantined], ["leaky"])
+
+    def test_placeholder_of_a_valid_rule_carries_no_secret(self):
+        self.write_rules([rule("kunde", entity="Kundenname",
+                               value="Nordwind Logistik",
+                               examples=["Kunde Nordwind Logistik meldet sich"])])
+        rs = cr.RuleSet(self.path)
+        text = "Vertrag mit Nordwind Logistik unterschrieben"
+        maskiert = dg.Masker().mask(text, rs.find(text))
+        self.assertNotIn("Nordwind", maskiert)
+        self.assertNotIn("Logistik", maskiert)
+        self.assertIn("<CUSTOM_KUNDENNAME_0>", maskiert)
