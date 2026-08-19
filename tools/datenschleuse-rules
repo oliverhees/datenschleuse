@@ -101,6 +101,8 @@ def cmd_list(args) -> int:
           f"{'' if info['exists'] else farbe('  (noch nicht angelegt)', GRAU)}")
     if info["load_error"]:
         print(farbe(f"! {info['load_error']}", ROT))
+    if info.get("permission_warning"):
+        print(farbe(f"! {info['permission_warning']}", GELB))
 
     print(f"\n{farbe('AKTIVE EIGENE REGELN', GRUEN)} ({len(info['active'])})")
     if not info["active"]:
