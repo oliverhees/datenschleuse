@@ -33,6 +33,7 @@
   - [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen)
   - [Quasi-Identifier](#quasi-identifier-session-übergreifende-akkumulation)
 - [Was erkannt wird](#-was-erkannt-wird)
+- [Eigene Begriffe und Muster](docs/EIGENE-MUSTER.md)
 - [Ehrliche DSGVO-Einordnung](#️-ehrliche-dsgvo-einordnung-bitte-lesen)
 - [Lizenz](#-lizenz)
 - [Status](#-status)
@@ -200,6 +201,23 @@ Standard (über Presidio, deutsch): Namen, Orte, E-Mail, Telefon, Kreditkarte, I
 Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregisternummer, KFZ-Kennzeichen.**
 
 Gemessen gegen einen eigenen deutschen Testkorpus (`test/corpus/`): **Recall 100 %, Precision 100 %** über alle Pflicht-Entitäten (Ziel war ≥95 %/≥90 %). Lauf jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py`.
+
+### Und was sie nicht kennt: eure eigenen Begriffe
+
+Kundennamen, Projektnamen, interne Kürzel, Produkt- und Mandantenbezeichnungen
+kann keine generische Erkennung kennen — die heißen bei euch anders als überall
+sonst. Dafür hinterlegt ihr **eigene Begriffe und Regex-Muster**:
+
+```bash
+./tools/datenschleuse-rules add kunde-nordwind \
+    --entity Kundenname --term "Nordwind Logistik" \
+    --example "Angebot fuer Nordwind Logistik rausgeschickt"
+```
+
+Sofort wirksam — kein Rebuild, kein Neustart. Deterministisch, **kein
+ML-Training**: gespeichert werden nur eure Muster, nie Trefferdaten. Jede Regel
+trägt ihren eigenen Testfall und geht ohne grünen Test gar nicht erst live.
+Anleitung: [`docs/EIGENE-MUSTER.md`](docs/EIGENE-MUSTER.md).
 
 ## 🔁 Der Round-Trip, bewiesen
 

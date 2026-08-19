@@ -73,6 +73,12 @@ import qi_generalization as qig
 # keine LiteLLM-/Presidio-Laufzeitabhaengigkeit (nur PyYAML zum Config-Laden).
 import sensitivity_classifier as sc
 
+# Eigene Deny-Listen und Regex-Muster des Anwenders (DATENSCHLE-7). Reine
+# Logik + PyYAML + das `regex`-Modul, keine LiteLLM-/Presidio-Abhaengigkeit.
+# Was der Anwender hier hinterlegt (Kundennamen, Projektnamen, interne
+# Kuerzel), findet die generische Erkennung prinzipbedingt nicht.
+import custom_rules as cur
+
 
 # ---------------------------------------------------------------------------
 # Basisklasse: in Produktion die echte LiteLLM-CustomGuardrail, im Test-/
@@ -608,6 +614,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_db: Optional[str] = None,
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
+        custom_rules_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -666,6 +673,27 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # starten. Siehe docs/SENSITIVITY-INTEGRATION.md.
         self.classifier = sc.SensitivityClassifier()
 
+        # --- Eigene Begriffe und Muster (DATENSCHLE-7) ----------------------
+        # Anders als der Klassifizierer daneben startet dieser Layer NIE
+        # fail-closed: fehlt die Regeldatei, nutzt der Anwender das Feature
+        # schlicht nicht, und eine kaputte Regel legt laut Anti-Kriterium
+        # ISC-26 ausdruecklich nur sich selbst still (nicht die Pipeline).
+        # Die Regeln werden im laufenden Betrieb per mtime-Pruefung neu
+        # eingelesen -- ein neues Muster wirkt ohne Rebuild und ohne Neustart.
+        try:
+            self.custom_rules = cur.RuleSet(
+                custom_rules_path
+                or kwargs.pop("custom_rules_path", None)
+                or cur.default_rules_path()
+            )
+        except Exception as exc:  # pragma: no cover - defensiv
+            print(
+                f"[datenschleuse] Eigene Regeln konnten nicht geladen werden "
+                f"({type(exc).__name__}); Presidio-Maskierung laeuft normal weiter.",
+                flush=True,
+            )
+            self.custom_rules = None
+
         # --- Quasi-Identifier-Layer (opt-in) --------------------------------
         # Aktiv, sobald ein Risiko-Preset gesetzt ist (Config: qi_risk_preset).
         # Ist es None/"off", bleibt der QI-Layer komplett aus -> Verhalten exakt
@@ -703,6 +731,33 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
     # ---- Presidio Analyzer (echte externe Abhaengigkeit) ------------------
     async def _analyze(self, text: str) -> List[Dict[str, Any]]:
+        """Erkennung fuer EINEN Text: Presidio plus die eigenen Regeln.
+
+        Die eigenen Begriffe/Muster (custom_rules.py, DATENSCHLE-7) werden hier
+        -- und nur hier -- eingemischt. Das ist die einzige Stelle, durch die
+        jeder zu pruefende Text laeuft; die Treffer kommen im selben Format wie
+        die von Presidio und laufen deshalb ohne Sonderweg durch denselben
+        Masker und dasselbe reid_map.
+
+        ISC-26: ein Fehler in der Regel-Schicht darf die Presidio-Maskierung
+        NICHT mitreissen. Die Regel-Schicht isoliert bereits pro Regel; das
+        ``try`` hier ist die zweite Sicherung fuer den Fall, dass die Schicht
+        als Ganzes stolpert (z.B. unlesbare Regeldatei).
+        """
+        entities = await self._presidio_analyze(text)
+        if self.custom_rules is None:
+            return entities
+        try:
+            entities = entities + self.custom_rules.find(text)
+        except Exception as exc:  # pragma: no cover - defensiv
+            print(
+                f"[datenschleuse] Eigene Regeln uebersprungen "
+                f"({type(exc).__name__}); Presidio-Maskierung bleibt aktiv.",
+                flush=True,
+            )
+        return entities
+
+    async def _presidio_analyze(self, text: str) -> List[Dict[str, Any]]:
         """Ruft Presidio Analyzer ``/analyze`` auf. Fail-closed: jeder Fehler
         (Netzwerk, HTTP >= 400, ungueltige Antwort) wird zu DatenschleuseBlocked
         eskaliert, damit KEIN unmaskierter Text durchgeht."""
