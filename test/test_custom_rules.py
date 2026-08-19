@@ -1101,15 +1101,23 @@ class TestVerificationPassInteraction(_RuleFileTestCase,
         with self.assertRaises(dg.DatenschleuseBlocked):
             await guard._verify_no_pii_left(maskiert, masker)
 
-    async def test_eigene_treffer_werden_gefiltert_praefix_belegt(self):
-        """Der Filter haengt am ENTITY_PREFIX -- wenn der wandert, muss das
-        hier auffallen und nicht still den Schutz aendern."""
-        self.assertEqual(cr.ENTITY_PREFIX, "CUSTOM_")
+    async def test_filter_haengt_an_der_herkunft_nicht_am_typ(self):
+        """Regressionsschutz fuer Finding F10.
+
+        Der Filter MUSS an der Fueller-Herkunft haengen, nicht am
+        entity_type. Ein Praefix-Filter sieht einfacher aus, nimmt aber auch
+        ECHTE Funde aus der Pruefung -- und zwar ausgerechnet die eigenen,
+        fuer die dieses Netz allein zustaendig ist. Wer hier zurueckbaut,
+        soll an diesem Test scheitern und nicht erst am naechsten Audit.
+        """
         with open(os.path.join(_HERE, "..", "litellm",
                                "datenschleuse_guardrail.py"),
                   encoding="utf-8") as fh:
             quelle = fh.read()
-        self.assertIn("startswith(cur.ENTITY_PREFIX)", quelle)
+        start = quelle.index("async def _verify_no_pii_left")
+        koerper = quelle[start:start + 6000]
+        self.assertIn("_is_filler_artifact", koerper)
+        self.assertNotIn("startswith(cur.ENTITY_PREFIX)", koerper)
 
     async def test_verifikation_wertet_typen_aus_nicht_zaehlungen(self):
         """Punkt 3 des Leads: meine F1-Union verschmilzt zwei Entitaeten zu
@@ -1124,3 +1132,169 @@ class TestVerificationPassInteraction(_RuleFileTestCase,
         koerper = quelle[start:start + 6000]
         self.assertIn("{str(e.get(\"entity_type\")) for e in leftovers}", koerper)
         self.assertNotIn("len(leftovers)", koerper)
+
+
+# ===========================================================================
+# 17. F10/F13 (Security-Audit) — das Sicherheitsnetz darf nicht durchloechert
+#     werden
+#
+# Der erste F9-Fix filterte nach entity_type-Praefix CUSTOM_. Das schloss den
+# Fehlalarm-Raum, blendete den Verifikationsdurchlauf aber VOLLSTAENDIG fuer
+# eigene Entitaeten aus -- ausgerechnet fuer die Werte, die sonst gar nichts
+# erkennt. Der Docstring nennt die Pruefung "die einzige, die unabhaengig vom
+# Pfad greift"; fuer Custom-Entitaeten war sie das nicht mehr.
+#
+# Richtig ist, nach der HERKUNFT zu filtern statt nach dem Typ: Treffer, deren
+# Span einen Fuellerbereich schneidet, sind Artefakte der Neutralisierung.
+# Die Fuellerpositionen kennen wir -- wir setzen sie selbst.
+# ===========================================================================
+class TestVerificationNetStaysSharpForCustom(_RuleFileTestCase,
+                                             unittest.IsolatedAsyncioTestCase):
+    async def _guard(self, presidio=None):
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine(text, payload=None):
+            return []
+
+        guard._presidio_analyze = presidio or keine
+        return guard
+
+    async def test_unmasked_custom_value_still_blocks(self):
+        """Der Kern von F10: ein NICHT maskierter eigener Wert im Ergebnis
+        muss auffallen -- sonst schuetzt das Netz genau dort nicht, wo es
+        allein zustaendig ist."""
+        self.write_rules([rule("kunde", entity="Kundenname",
+                               value="Nordwind Logistik",
+                               examples=["Kunde Nordwind Logistik meldet sich"])])
+        guard = await self._guard()
+
+        masker = dg.Masker()
+        masker.reid_map["<CUSTOM_KUNDENNAME_0>"] = "Nordwind Logistik"
+        maskiert = "<CUSTOM_KUNDENNAME_0> und Nordwind Logistik"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(maskiert, masker)
+
+    async def test_filler_artifact_still_does_not_block(self):
+        """Gegenprobe 1: der dokumentierte Fehlalarm bleibt weg."""
+        self.write_rules([rule("verklebt", entity="Firmenname", kind="regex",
+                               value=r"Nord\s*wind",
+                               examples=["Die Nord wind Gruppe"])])
+        guard = await self._guard()
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        await guard._verify_no_pii_left("Nord<PERSON_0>wind", masker)
+
+    async def test_filler_chain_artifact_still_does_not_block(self):
+        """Gegenprobe 2: Leerzeichenkette aus angrenzenden Platzhaltern."""
+        self.write_rules([rule("ws", entity="Formatierung", kind="regex",
+                               value=r"\s{3,}", examples=["a   b"])])
+        guard = await self._guard()
+        masker = dg.Masker()
+        for i, name in enumerate(("Max", "Erika", "Anna")):
+            masker.reid_map[f"<PERSON_{i}>"] = name
+        await guard._verify_no_pii_left("<PERSON_0><PERSON_1><PERSON_2>", masker)
+
+    async def test_presidio_leftover_still_blocks(self):
+        """Gegenprobe 3: die Presidio-Seite bleibt unveraendert scharf."""
+        async def presidio(text, payload=None):
+            i = text.find("Max Mustermann")
+            return ([] if i < 0 else
+                    [{"entity_type": "PERSON", "start": i,
+                      "end": i + 14, "score": 0.9}])
+
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard(presidio)
+        masker = dg.Masker()
+        masker.reid_map["<CUSTOM_KUNDENNAME_0>"] = "Adlerflug"
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "<CUSTOM_KUNDENNAME_0> und Max Mustermann", masker)
+
+    async def test_f13_presidio_recognizer_named_custom_is_not_skipped(self):
+        """F13: Ein Presidio-Recognizer mit dem Namen CUSTOM_* fiel beim
+        Praefix-Filter still aus der Pruefung. Der Namensraum ist geteilt --
+        die Herkunft darf nicht am Namen haengen."""
+        async def presidio(text, payload=None):
+            i = text.find("GEHEIM")
+            return ([] if i < 0 else
+                    [{"entity_type": "CUSTOM_LEGACY_ID", "start": i,
+                      "end": i + 6, "score": 0.9}])
+
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard(presidio)
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("<PERSON_0> hat GEHEIM genannt",
+                                            masker)
+
+    async def test_leftover_adjacent_to_filler_still_blocks(self):
+        """Grenzfall: ein echter Fund direkt NEBEN einem Fueller ueberlappt
+        ihn nicht und muss erhalten bleiben."""
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug",
+                               examples=["Projekt Adlerflug laeuft"])])
+        guard = await self._guard()
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("<PERSON_0>Adlerflug", masker)
+
+
+# ===========================================================================
+# 18. F11 (Security-Audit) — dieselbe Klasse wie F8
+#
+# Wirft finditer mitten im Scan einen NICHT-Timeout-Fehler, wurde die Regel
+# still uebersprungen und der Request ging raus. Die Abdeckung ist dabei
+# genauso unbekannt wie beim Timeout -- drei Zeilen ueber der fail-closed-
+# Behandlung stand die fail-open-Behandlung derselben Frage.
+# ===========================================================================
+class TestScanErrorIsFailClosed(_RuleFileTestCase):
+    class _Boom:
+        def finditer(self, text, timeout=None):
+            raise ValueError("Scan mittendrin abgebrochen")
+
+    def test_non_timeout_scan_error_blocks(self):
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug")])
+        rs = cr.RuleSet(self.path)
+        rs.active_rules  # Laden erzwingen
+        rs._active[0].pattern = self._Boom()
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find("Projekt Adlerflug laeuft")
+
+    def test_scan_error_does_not_silently_drop_the_rule(self):
+        """Auch mit einer gesunden Regel daneben: kein Teilergebnis."""
+        self.write_rules([
+            rule("kaputt", entity="Kundenname", value="Adlerflug"),
+            rule("heil", entity="Sonstiges", value="Seewind",
+                 examples=["Kunde Seewind meldet sich"]),
+        ])
+        rs = cr.RuleSet(self.path)
+        rs.active_rules
+        rs._active[0].pattern = self._Boom()
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find("Projekt Adlerflug mit Seewind")
+
+
+# ===========================================================================
+# 19. F12 — ehrliche Meldung bei sehr grossen Texten
+# ===========================================================================
+class TestBudgetMessageIsHonest(_RuleFileTestCase):
+    def test_message_does_not_only_blame_a_pathological_pattern(self):
+        """Ab einigen MB Text reisst schon die erste harmlose Regel das
+        Budget. Die Meldung darf den Betreiber dann nicht auf die Suche nach
+        einem Muster schicken, das es nicht gibt."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        rs = cr.RuleSet(self.path)
+        rs.match_timeout = 0.0000001
+        try:
+            rs.find("Projekt Adlerflug " * 200)
+        except cr.RuleMatchingIncomplete as exc:
+            meldung = str(exc).lower()
+            self.assertIn("grosser text", meldung,
+                          f"Meldung nennt die Textgroesse nicht als moegliche "
+                          f"Ursache: {exc}")
+            self.assertIn("zeichen", meldung,
+                          f"Meldung nennt die konkrete Textgroesse nicht: {exc}")
+        else:
+            self.fail("kein fail-closed ausgeloest")

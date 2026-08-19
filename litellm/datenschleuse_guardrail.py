@@ -297,6 +297,88 @@ ANONYMIZATION_NOTICE = (
 )
 
 
+def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, int]]]:
+    """Baut den Probe-String und merkt sich, WO die Fueller stehen.
+
+    Der Verifikationsdurchlauf ersetzt bekannte Platzhalter durch ein
+    neutrales Zeichen, damit die Erkennung nicht den Platzhalter selbst als
+    Namen liest. Genau diese Ersetzung kann aber neue, kuenstliche Treffer
+    erzeugen -- etwa wenn ein Muster ueber das eingefuegte Leerzeichen hinweg
+    greift. Um solche Artefakte spaeter erkennen zu koennen, reicht der
+    fertige String nicht: man braucht die Positionen der Fueller.
+
+    Deshalb wird hier einmal linear durchgelaufen statt mehrfach ``replace``
+    aufzurufen -- nur so sind die Positionen im ERGEBNIS bekannt. Laengste
+    Platzhalter zuerst, damit ``<PERSON_1>`` nicht innerhalb von
+    ``<PERSON_10>`` matcht.
+    """
+    if not reid_map:
+        return text, []
+    keys = sorted(reid_map, key=len, reverse=True)
+    # Alle Platzhalter beginnen mit demselben Zeichen; die Vorpruefung darauf
+    # macht den Durchlauf linear statt quadratisch.
+    starts = {k[0] for k in keys if k}
+
+    teile: List[str] = []
+    fueller: List[Tuple[int, int]] = []
+    laenge = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        treffer = None
+        if text[i] in starts:
+            for k in keys:
+                if text.startswith(k, i):
+                    treffer = k
+                    break
+        if treffer is not None:
+            teile.append(_PLACEHOLDER_PROBE_FILLER)
+            fueller.append((laenge, laenge + len(_PLACEHOLDER_PROBE_FILLER)))
+            laenge += len(_PLACEHOLDER_PROBE_FILLER)
+            i += len(treffer)
+        else:
+            teile.append(text[i])
+            laenge += 1
+            i += 1
+    return "".join(teile), fueller
+
+
+def _is_filler_artifact(probe: str, entity: Dict[str, Any],
+                        filler_spans: List[Tuple[int, int]]) -> bool:
+    r"""Ist dieser Treffer erst durch die Neutralisierung entstanden?
+
+    Ja genau dann, wenn sein Kern einen Fuellerbereich beruehrt. "Kern" heisst:
+    ohne umgebenden Whitespace. Das ist wichtig fuer beide Richtungen --
+
+    - Ein Muster wie ``Nord\s*wind`` greift auf ``Nord<PERSON_0>wind`` erst,
+      nachdem der Platzhalter zum Leerzeichen wurde. Sein Kern enthaelt den
+      Fueller, also Artefakt: verwerfen.
+    - Ein Muster wie ``\s*Nordwind`` wuerde einen davor liegenden Fueller nur
+      als Randzeichen mitnehmen. Sein Kern (``Nordwind``) liegt daneben, also
+      ein ECHTER Rest: behalten und blocken.
+
+    Ein Treffer, der nach dem Trimmen leer ist, bestand nur aus Whitespace --
+    den kann es ohne Fueller nicht gegeben haben.
+    """
+    if not filler_spans:
+        return False
+    try:
+        start = int(entity["start"])
+        end = int(entity["end"])
+    except (KeyError, TypeError, ValueError):
+        # Unlesbarer Treffer: NICHT als Artefakt abtun -- im Zweifel blocken.
+        return False
+    start = max(0, start)
+    end = min(len(probe), end)
+    while start < end and probe[start].isspace():
+        start += 1
+    while end > start and probe[end - 1].isspace():
+        end -= 1
+    if start >= end:
+        return True  # reiner Whitespace-Treffer
+    return any(fs < end and start < fe for fs, fe in filler_spans)
+
+
 class DatenschleuseBlocked(Exception):
     """Wird geworfen, wenn fail-closed greift. LiteLLM behandelt eine im
     pre_call-Hook geworfene Exception als Guardrail-Block -> Request wird
@@ -1447,7 +1529,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         return node
 
     async def _verify_no_pii_left(self, text: Any, masker: Masker) -> None:
-        """Verifikationsdurchlauf auf dem ERGEBNIS (Security-Audit F1).
+        r"""Verifikationsdurchlauf auf dem ERGEBNIS (Security-Audit F1).
 
         Alle Einzelpruefungen oben sind Pfad-gebunden: sie greifen nur, wenn
         ein Wert den Weg nimmt, den jemand vorhergesehen hat. Diese Pruefung
@@ -1461,8 +1543,23 @@ class DatenschleuseGuardrail(_GuardrailBase):
         (``<PERSON_0>``) als Namen lesen und jeden korrekt maskierten
         Tool-Aufruf blocken.
 
-        Aus dem Ergebnis werden die Treffer der EIGENEN Regeln des Anwenders
-        (DATENSCHLE-7, Praefix ``CUSTOM_``) herausgefiltert. Zwei Gruende:
+        Verworfen werden anschliessend genau die Treffer, deren Span einen
+        FUELLERBEREICH schneidet -- also die, die es ohne die Neutralisierung
+        gar nicht gaebe. Die Fuellerpositionen sind bekannt, weil wir sie
+        selbst setzen. Gefiltert wird damit nach HERKUNFT, nicht nach Typ.
+
+        Vorgeschichte, damit niemand zum einfacheren Filter zurueckbaut: Hier
+        stand zuerst ein Filter auf das Praefix ``CUSTOM_``. Der schloss
+        denselben Fehlalarm-Raum, blendete das Sicherheitsnetz aber
+        VOLLSTAENDIG fuer eigene Entitaeten aus -- ausgerechnet fuer
+        Kundennamen und interne Kuerzel, die sonst gar nichts erkennt
+        (Finding F10). Ein unmaskiert durchgerutschter Kundenname loeste
+        keinen Block mehr aus. Zusaetzlich haette ein Presidio-Recognizer, den
+        jemand ``CUSTOM_*`` nennt, still aus der Pruefung fallen koennen --
+        der Typ-Namensraum ist geteilt (Finding F13). Beides erledigt die
+        Span-Pruefung.
+
+        Warum ueberhaupt gefiltert wird -- zwei Gruende:
 
         1. Sie haetten hier nichts mehr zu finden. Eigene Regeln sind
            deterministische Literale bzw. Regexe, die im ersten Durchlauf
@@ -1489,28 +1586,26 @@ class DatenschleuseGuardrail(_GuardrailBase):
         unauffaellig -- das faengt die Neutralisierung bereits ab. Der Filter
         schliesst den Suchraum aber grundsaetzlich statt fillerabhaengig.
 
-        WARUM FILTERN UND NICHT ``_presidio_analyze`` AUFRUFEN: Beides schliesst
-        denselben Suchraum, und der direkte Aufruf waere die elegantere Form.
-        ``_analyze`` ist hier aber die Naht, an der die Tests dieses Moduls
-        die Erkennung ersetzen (test_toolcall_masking.py setzt
-        ``guard._analyze``). Ein Wechsel des Aufrufs -- oder auch nur ein
-        zusaetzlicher Parameter -- laesst diese Mocks ins Leere laufen und
-        schickt zehn Tests gegen das echte Netzwerk. Der Filter erreicht
-        dasselbe Ergebnis, ohne fremde Testnaehte zu zerschneiden.
+        WARUM NICHT ``_presidio_analyze`` AUFRUFEN: Das waere die elegantere
+        Form, wuerde die eigenen Regeln aber ebenfalls komplett aus der
+        Pruefung nehmen -- also denselben blinden Fleck erzeugen wie der alte
+        Praefix-Filter. Ausserdem ist ``_analyze`` die Naht, an der die Tests
+        dieses Moduls die Erkennung ersetzen (test_toolcall_masking.py setzt
+        ``guard._analyze``); ein Wechsel des Aufrufs -- oder auch nur ein
+        zusaetzlicher Parameter -- laesst zehn dieser Mocks ins Leere laufen.
 
-        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Diesen Filter zu entfernen
-        bringt den Defekt zurueck. Er ist nicht kosmetisch und nicht
-        defensiv -- er ist die Bedingung dafuer, dass ein Anwender ein breites
-        eigenes Muster anlegen kann, ohne seine eigenen Anfragen lahmzulegen.
+        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Diese Span-Pruefung durch einen
+        Typ- oder Praefix-Filter zu ersetzen sieht einfacher aus und bringt
+        Finding F10 zurueck. Der Unterschied ist nicht kosmetisch: Ein Filter
+        nach Typ entfernt auch ECHTE Funde, ein Filter nach Fueller-Herkunft
+        nur die Artefakte.
         """
         if not isinstance(text, str) or not text.strip():
             return
-        probe = text
-        for placeholder in sorted(masker.reid_map, key=len, reverse=True):
-            probe = probe.replace(placeholder, _PLACEHOLDER_PROBE_FILLER)
+        probe, filler_spans = _build_probe(text, masker.reid_map)
         leftovers = [
             e for e in await self._analyze(probe)
-            if not str(e.get("entity_type", "")).startswith(cur.ENTITY_PREFIX)
+            if not _is_filler_artifact(probe, e, filler_spans)
         ]
         if leftovers:
             types = sorted({str(e.get("entity_type")) for e in leftovers})
