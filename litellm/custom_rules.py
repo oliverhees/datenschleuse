@@ -670,14 +670,17 @@ class RuleSet:
                 # sauber (Finding F8).
                 self._report(
                     f"Zeitbudget fuer die eigenen Regeln erschoepft, "
-                    f"{offen} Regel(n) ungeprueft. Der Request wird blockiert "
-                    f"(fail-closed) statt teilweise maskiert ausgeliefert. "
-                    f"Muster pruefen mit: datenschleuse-rules list",
+                    f"{offen} Regel(n) ungeprueft (Textgroesse: {len(text)} "
+                    f"Zeichen). Der Request wird blockiert (fail-closed) statt "
+                    f"teilweise maskiert ausgeliefert. Ursache ist entweder "
+                    f"ein sehr grosser Text oder ein zu teures Muster; bei "
+                    f"normal grossen Texten pruefen mit: datenschleuse-rules list",
                     level="FEHLER",
                 )
                 raise RuleMatchingIncomplete(
                     f"{offen} eigene Regel(n) konnten fuer diesen Text nicht "
-                    f"mehr geprueft werden (Zeitbudget erschoepft)."
+                    f"mehr geprueft werden (sehr grosser Text oder zu teures "
+                    f"Muster; Textgroesse {len(text)} Zeichen)."
                 )
             # FAIRER ANTEIL statt "wer zuerst kommt, frisst alles": jede Regel
             # bekoemmt den gleichen Bruchteil des VERBLEIBENDEN Budgets. Ein
@@ -706,26 +709,53 @@ class RuleSet:
                 # NICHT, wie viele Vorkommen noch gekommen waeren -- die
                 # bereits gefundenen als vollstaendig zu behandeln hiesse,
                 # den Rest im Klartext hinauszulassen (Finding F8, HIGH).
+                # Finding F12: Die Meldung nannte frueher nur das
+                # pathologische Muster als Ursache. Bei sehr grossen Texten
+                # reisst aber schon eine voellig harmlose Regel das Budget --
+                # dann schickt so eine Meldung den Betreiber auf die Suche
+                # nach einem Problem, das es nicht gibt. Beide Ursachen
+                # nennen, in der Reihenfolge ihrer Wahrscheinlichkeit.
                 self._report(
-                    f"Regel {regel.name!r} ueberschritt ihr Zeitbudget. Die "
-                    f"Vollstaendigkeit der Maskierung ist damit fuer diesen "
-                    f"Text nicht gesichert -- der Request wird blockiert "
-                    f"(fail-closed) statt halb maskiert ausgeliefert. "
-                    f"Muster pruefen mit: datenschleuse-rules list",
+                    f"Regel {regel.name!r} ueberschritt ihr Zeitbudget "
+                    f"(Textgroesse: {len(text)} Zeichen). Die Vollstaendigkeit "
+                    f"der Maskierung ist fuer diesen Text nicht gesichert -- "
+                    f"der Request wird blockiert (fail-closed) statt halb "
+                    f"maskiert ausgeliefert. Ursache ist entweder ein sehr "
+                    f"grosser Text oder ein zu teures Muster; bei normal "
+                    f"grossen Texten pruefen mit: datenschleuse-rules list",
                     level="FEHLER",
                 )
                 raise RuleMatchingIncomplete(
                     f"Regel {regel.name!r} konnte fuer diesen Text nicht "
-                    f"vollstaendig geprueft werden."
+                    f"vollstaendig geprueft werden (sehr grosser Text oder zu "
+                    f"teures Muster; Textgroesse {len(text)} Zeichen)."
                 ) from exc
-            except Exception as exc:  # pragma: no cover - defensiv
-                # Andere Fehler bleiben regel-lokal (ISC-26): sie betreffen
-                # das Muster selbst, nicht die Vollstaendigkeit des Ergebnisses.
+            except Exception as exc:
+                # Security-Finding F11: Hier stand die fail-OPEN-Behandlung
+                # derselben Frage, die drei Zeilen darueber fail-closed
+                # behandelt wird. Der Kommentar behauptete, solche Fehler
+                # betraefen "nicht die Vollstaendigkeit des Ergebnisses" --
+                # das ist falsch. Bricht der Scan mittendrin ab, wissen wir
+                # genauso wenig wie beim Timeout, wie viele Vorkommen noch
+                # gekommen waeren. Die Regel still zu ueberspringen liefert
+                # ein Teilergebnis aus, das von einem vollstaendigen nicht zu
+                # unterscheiden ist.
+                #
+                # Abgrenzung zu ISC-26: Ein fehlerhaftes MUSTER wird beim
+                # LADEN erkannt und einzeln in Quarantaene gestellt -- dort
+                # ist die Abdeckung bekannt (die Regel greift eben nie). Ein
+                # Fehler mitten im SCAN ist etwas anderes.
                 self._report(
-                    f"Regel {regel.name!r} fehlgeschlagen "
-                    f"({type(exc).__name__}); alle anderen Regeln greifen weiter.",
-                    level="WARNUNG",
+                    f"Regel {regel.name!r} ist mitten im Scan fehlgeschlagen "
+                    f"({type(exc).__name__}). Die Vollstaendigkeit der "
+                    f"Maskierung ist damit fuer diesen Text nicht gesichert -- "
+                    f"der Request wird blockiert (fail-closed).",
+                    level="FEHLER",
                 )
+                raise RuleMatchingIncomplete(
+                    f"Regel {regel.name!r} konnte fuer diesen Text nicht "
+                    f"vollstaendig geprueft werden ({type(exc).__name__})."
+                ) from exc
             else:
                 # Ergebnis-Dicts BEWUSST hier, ausserhalb des Zeitbudgets.
                 for start, end in spans:
