@@ -164,6 +164,32 @@ Die Datenschleuse sitzt inline im Anfrageweg. Fällt Presidio aus, hat das zwei 
 
 Wir wählen **fail-closed**, weil ein verlorener Request ärgerlich, aber ein PII-Leck nicht rückgängig zu machen ist. Anpassbar in `litellm/datenschleuse_guardrail.py` (`_analyze()`), aber das ist eine bewusste Abweichung vom Standard, keine Konfigurationsoption.
 
+### Welche API-Routen geschützt sind
+
+Die Datenschleuse schützt eine Route erst dann, wenn sie deren Payload
+**tatsächlich** maskiert und die Antwort wieder zurückübersetzt. Alles andere
+wird **geblockt** — nicht durchgereicht. Eine Route stillschweigend passieren
+zu lassen wäre der schlimmste Fehler, den ein Anonymisierungs-Proxy machen
+kann: du hältst deinen Verkehr für geschützt, und er war es nie.
+
+| Route | Status |
+|---|---|
+| `/v1/chat/completions` | ✅ geschützt (inkl. Tool-Calls, Multimodal, Streaming) |
+| `/v1/completions` | ✅ geschützt |
+| `/v1/messages` (Anthropic-Format) | ⛔ blockiert — noch nicht unterstützt |
+| `/v1/responses` (OpenAI Responses) | ⛔ blockiert — noch nicht unterstützt |
+| Embeddings, Bilder, Audio, Moderation, Rerank, Passthrough … | ⛔ blockiert |
+| jede künftige LiteLLM-Route | ⛔ blockiert, bis sie bewusst aufgenommen wird |
+
+**Was das praktisch heißt:** Clients, die das Anthropic-Format (`/v1/messages`)
+oder die Responses-API sprechen, bekommen aktuell eine klare Fehlermeldung
+statt einer Antwort. Das ist Absicht. Beide Formate bringen ein eigenes
+Payload-Schema mit — sie als „unterstützt" zu führen, ohne ihre Struktur
+wirklich zu maskieren, wäre eine falsche Zusage. Lieber ein sichtbarer Block
+als ein unsichtbares Leck. Beide Routen sind als eigene Arbeitspakete
+eingeplant; nutze bis dahin den OpenAI-kompatiblen Endpunkt
+`/v1/chat/completions`, den fast jeder Client sprechen kann.
+
 ### Schutzklassen-Modell: drei Sensitivitätsstufen
 
 Nicht jede Anfrage ist gleich heikel. Bevor überhaupt maskiert wird, ordnet die Datenschleuse jede Nachricht einer von drei Schutzklassen zu:

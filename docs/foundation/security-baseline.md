@@ -18,6 +18,56 @@
 - Logging: keine PII, keine Tokens, keine Passwörter in Logs.
 - Dependencies: Lockfile, CVE-Scan in CI (gitleaks + npm audit / semgrep).
 
+## Allowlist-Prinzip für Routen (bindend)
+
+Die äußerste Ebene ist nicht das Feld und nicht die Nachricht, sondern die
+**Route**. LiteLLM übergibt jedem Guardrail einen `call_type`, und jede Route
+bringt ihr eigenes Payload-Schema mit. Eine Route, deren Schema die Maskierung
+nicht abdeckt, wird **geblockt** — nie ungeprüft durchgereicht.
+
+Warum das eine eigene Regel ist: eine Route stillschweigend durchzulassen ist
+der schwerste Defektfall, den dieses Produkt haben kann. Nicht „Schutz
+schwach", sondern *Schutz abwesend bei zugesichertem Schutz* — der Betreiber
+hält seinen Verkehr für anonymisiert, während er es nie war. Genau das war
+**DATENSCHLE-69** (behoben).
+
+Verbindliches Routen-Register (Quelle: `CALL_TYPES_CHAT_MESSAGES` /
+`CALL_TYPES_TEXT_PROMPT` / `KNOWN_UNSUPPORTED_CALL_TYPES` in
+`litellm/datenschleuse_guardrail.py` — Code und Tabelle werden gemeinsam
+geändert, nie einzeln):
+
+| Route | `call_type` | Payload | Verhalten |
+|---|---|---|---|
+| `/v1/chat/completions` | `acompletion`, `completion` | `messages[]` | vollständig geprüft (Feld-Register unten) |
+| `/v1/completions` | `atext_completion` | `prompt` | vollständig geprüft, Rückweg über `choices[].text` |
+| `/v1/messages` (Anthropic) | `anthropic_messages` | eigenes Schema | **blockiert** |
+| `/v1/responses` | `aresponses` | eigenes Schema | **blockiert** |
+| Embeddings, Bild, Audio, Moderation, Rerank, Batch, Vector Store, MCP, Passthrough, Google GenAI | siehe Register | jeweils eigenes Schema | **blockiert** |
+| jede künftige/unbekannte Route | — | — | **blockiert** |
+
+Regeln dazu:
+- Eine Route gilt erst als unterstützt, wenn **beide Richtungen** belegt sind:
+  Maskierung des ausgehenden Payloads *und* Re-Identifikation der Antwort,
+  jeweils mit eigenem Test. „Unterstützt" ohne Rückweg ist eine falsche
+  Zusage, kein halber Fortschritt.
+- Der `call_type` sagt nur, **welche** Route spricht — nicht, **wie** ihr
+  Payload aussieht. Jeder unterstützte Pfad prüft deshalb zusätzlich die Form
+  seines Payloads und blockt bei Abweichung. Ein Payload, der zu zwei Routen
+  gleichzeitig passt, ist mehrdeutig und blockt.
+- Die Typprüfung des `call_type` steht im **Validate-Pfad**, nicht als
+  `isinstance`-Guard im Verarbeitungspfad. Ein Guard, der bei unerwartetem Typ
+  still überspringt, ist immer ein Durchlass.
+- **Blocken ist eine gültige Antwort.** Eine Route bewusst zu blocken und das
+  zu dokumentieren ist erlaubt; sie stillschweigend durchzulassen nie.
+- Eine neue LiteLLM-Route ist ein eigenes Work Item mit Eintrag im Register —
+  nie eine stillschweigende Erweiterung im Code.
+
+`/v1/messages` und `/v1/responses` sind bewusst geblockt, nicht vergessen:
+beide brauchen ein eigenes Block-Register **und** einen eigenen Rückweg. Sie
+als unterstützt zu führen, ohne ihre Struktur tatsächlich zu maskieren, wäre
+derselbe Defekt noch einmal — nur dokumentiert falsch. Aufnahme jeweils als
+eigenes Work Item.
+
 ## Allowlist-Prinzip für eingehende Nachrichten (bindend)
 
 Jede Ebene einer eingehenden Chat-Message wird nach Allowlist behandelt:
@@ -30,6 +80,12 @@ Historie derselben Lücke — der Grund für diese Regel:
 - DATENSCHLE-64: der `content`-**Container** selbst (dict statt Liste)
 - DATENSCHLE-66: alle **Felder neben `content`**, allen voran
   `tool_calls[].function.arguments` (für agentische Clients der Normalfall)
+- DATENSCHLE-65: die **Feldebene innerhalb eines Parts**
+- DATENSCHLE-69: die **Route** selbst — siehe „Allowlist-Prinzip für Routen"
+
+Fünfmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
+still durch. Deshalb wird auf jeder Ebene **einmal vollständig erfasst** statt
+Fall für Fall entdeckt.
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
 `MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
