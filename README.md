@@ -137,12 +137,15 @@ Welche Felder einer Nachricht dabei wie behandelt werden, ist abschließend fest
 | Feld | Behandlung |
 |---|---|
 | `content` | maskiert (String und Part-Liste; andere Formen blockieren) |
-| `name`, `refusal` | maskiert |
+| `name`, `refusal`, `reasoning_content` | maskiert |
 | `tool_calls[].function.arguments` | maskiert, JSON-strukturerhaltend |
 | `tool_calls[].function.name`, `function_call` | maskiert |
 | `role` | validiert (nur Protokoll-Rollen) |
 | `tool_call_id`, `tool_calls[].id` | validiert als opake ID — bewusst **nicht** maskiert, sonst bricht die Zuordnung von Aufruf und Ergebnis |
+| `cache_control` | validiert (Caching-Marker, kein Anwendertext) |
 | alles andere | **blockiert** (fail-closed) |
+
+Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Das ist die einzige Prüfung, die unabhängig davon greift, welchen Weg ein Wert genommen hat.
 
 Der Grund für diese Form: dieselbe Lücke ist dreimal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
 

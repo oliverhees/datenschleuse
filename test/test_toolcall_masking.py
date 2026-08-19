@@ -447,5 +447,280 @@ class TestStreamingToolCallReidentification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(collected)["kunde"], "Max Mustermann")
 
 
+# ===========================================================================
+# 6. Audit-Findings zu a136670 (Security-Audit, DATENSCHLE-66)
+# ===========================================================================
+class TestTypeConfusion(unittest.IsolatedAsyncioTestCase):
+    """F1 (HIGH): Das Register blockte unbekannte FELDER, aber nicht den
+    falschen TYP in einem bekannten Feld.
+
+    Alle Masker-Pfade waren ``if isinstance(..., str)`` bzw. ``if not
+    isinstance(raw, str): return raw`` -- ein Nicht-String fiel still durch.
+    LiteLLM typprueft das Feld nicht, der Body geht verbatim raus. Dass der
+    Upstream danach vielleicht 400 antwortet, ist irrelevant: die PII hat den
+    Perimeter verlassen.
+
+    Lehre: ein isinstance-Guard im MASK-Pfad ist immer ein stiller Durchlass.
+    Die Typpruefung gehoert in den VALIDATE-Pfad und muss blocken.
+    """
+
+    _PII = "Max Mustermann, IBAN DE02120300000000202051"
+
+    async def test_arguments_as_dict_is_blocked(self):
+        guard = _guard()
+        msg = _assistant_with_tool_call(json.dumps({"a": 1}))
+        msg["tool_calls"][0]["function"]["arguments"] = {"kunde": self._PII}
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [msg])
+
+    async def test_arguments_as_list_is_blocked(self):
+        guard = _guard()
+        msg = _assistant_with_tool_call(json.dumps({"a": 1}))
+        msg["tool_calls"][0]["function"]["arguments"] = [self._PII]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [msg])
+
+    async def test_function_name_as_dict_is_blocked(self):
+        guard = _guard()
+        msg = _assistant_with_tool_call(json.dumps({"a": 1}))
+        msg["tool_calls"][0]["function"]["name"] = {"kunde": self._PII}
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [msg])
+
+    async def test_message_name_as_dict_is_blocked(self):
+        guard = _guard()
+        messages = [{"role": "user", "content": "Hallo", "name": {"kunde": self._PII}}]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    async def test_refusal_as_list_is_blocked(self):
+        guard = _guard()
+        messages = [{"role": "assistant", "content": None, "refusal": [self._PII]}]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    async def test_legacy_function_call_arguments_as_dict_is_blocked(self):
+        guard = _guard()
+        messages = [
+            {"role": "assistant", "content": None,
+             "function_call": {"name": "lookup", "arguments": {"kunde": self._PII}}}
+        ]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    async def test_verification_pass_blocks_leftover_pii(self):
+        """Das Sicherheitsnetz hinter allen Einzelpruefungen: der FERTIG
+        maskierte arguments-String wird erneut analysiert. Findet der
+        Analyzer dort noch Entitaeten, geht nichts raus -- unabhaengig
+        davon, welchen Weg ein Wert genommen hat.
+
+        Simuliert wird eine kuenftige Luecke im Maskierungspfad: die
+        Maskierung gibt die Struktur unveraendert zurueck."""
+        guard = _guard()
+
+        async def broken_masking(node, masker, collected, depth=0):
+            return node  # Luecke: maskiert nichts
+
+        guard._mask_json_node = broken_masking  # type: ignore[method-assign]
+        args = json.dumps({"kunde": "Max Mustermann"})
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [_assistant_with_tool_call(args)])
+
+
+class TestJsonRobustness(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_json_keys_are_blocked(self):
+        """F2 (HIGH): ``json.loads`` behaelt bei doppelten Keys den letzten
+        Wert -- der erste wird nie geparst, nie analysiert. War der Rest
+        sauber, griff die ``masked == parsed``-Abkuerzung und der ROHSTRING
+        ging byte-identisch raus, PII inklusive."""
+        guard = _guard()
+        raw = ('{"a":"Max Mustermann, IBAN DE02120300000000202051",'
+               '"a":"harmlos"}')
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [_assistant_with_tool_call(raw)])
+
+    async def test_deeply_nested_arguments_block_instead_of_recursionerror(self):
+        """F7 (LOW): tief verschachteltes JSON warf einen RecursionError aus
+        dem Hook heraus -- ein unkontrollierter Fehlerpfad statt fail-closed."""
+        guard = _guard()
+        raw = "[" * 5000 + "]" * 5000
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [_assistant_with_tool_call(raw)])
+
+    async def test_nan_in_arguments_is_blocked(self):
+        """F8 (LOW): ``NaN``/``Infinity`` sind kein striktes JSON. Sie wurden
+        klaglos geparst und wieder emittiert."""
+        guard = _guard()
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(
+                guard, [_assistant_with_tool_call('{"wert": NaN}')]
+            )
+
+    async def test_moderately_nested_arguments_still_work(self):
+        """Gegenprobe zur Tiefenbegrenzung: normal verschachtelte Tool-
+        Argumente muessen weiterhin durchlaufen."""
+        guard = _guard()
+        raw = json.dumps({"a": {"b": {"c": {"d": ["Max Mustermann"]}}}})
+        out = await _run_pre_call(guard, [_assistant_with_tool_call(raw)])
+        masked = _tool_arguments(out)
+        self.assertNotIn("Mustermann", masked)
+        self.assertEqual(json.loads(masked)["a"]["b"]["c"]["d"][0], "<PERSON_0>")
+
+
+class TestOpaqueIdPattern(unittest.IsolatedAsyncioTestCase):
+    async def test_trailing_newline_in_id_is_blocked(self):
+        """F6 (LOW): ``$`` matcht auch VOR einem abschliessenden Newline --
+        ``"call_1\n"`` galt damit als gueltiger Identifier."""
+        guard = _guard()
+        msg = _assistant_with_tool_call(json.dumps({"a": 1}))
+        msg["tool_calls"][0]["id"] = "call_1\n"
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, [msg])
+
+
+# ===========================================================================
+# 7. Provider-Felder im Register (QA-Audit: Hermes-Kompatibilitaet)
+# ===========================================================================
+class TestProviderFields(unittest.IsolatedAsyncioTestCase):
+    """Festschreibung, nicht Abdeckung: diese Felder werden BEWUSST
+    behandelt. Genau daran ist das QA-Gate gescheitert -- nicht am
+    Buchstaben von AK5, sondern am Geist: was nicht geprueft wird, muss
+    benannt und bewusst entschieden sein."""
+
+    async def test_hermes_cache_control_passes(self):
+        """Hermes injiziert ``cache_control`` auf Top-Level einer Message,
+        sobald Provider-ID oder Hostname den Token ``litellm`` enthaelt. Ein
+        Selbsthoster, der seine Subdomain ``litellm.seine-domain.de`` nennt --
+        fuer unsere Zielgruppe naheliegend --, wuerde sonst ab der ersten
+        Folge-Nachricht hart geblockt."""
+        guard = _guard()
+        messages = [
+            {"role": "user", "content": "Hallo",
+             "cache_control": {"type": "ephemeral"}}
+        ]
+        out = await _run_pre_call(guard, messages)
+        user_msg = _msg_with(out, "cache_control")
+        self.assertEqual(user_msg["cache_control"], {"type": "ephemeral"},
+                         "cache_control muss unveraendert durchgereicht werden")
+
+    async def test_cache_control_with_ttl_passes(self):
+        guard = _guard()
+        messages = [
+            {"role": "user", "content": "Hallo",
+             "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+        ]
+        out = await _run_pre_call(guard, messages)
+        self.assertEqual(_msg_with(out, "cache_control")["cache_control"]["ttl"], "1h")
+
+    async def test_cache_control_wrong_type_is_blocked(self):
+        """Die isinstance-Guard-Falle aus F1 darf hier nicht neu entstehen:
+        ein unerwarteter Typ muss BLOCKEN, nicht durchrutschen."""
+        guard = _guard()
+        for wert in ("ephemeral", ["ephemeral"], 1):
+            with self.subTest(wert=wert):
+                messages = [{"role": "user", "content": "Hallo", "cache_control": wert}]
+                with self.assertRaises(dg.DatenschleuseBlocked):
+                    await _run_pre_call(guard, messages)
+
+    async def test_cache_control_smuggling_is_blocked(self):
+        """cache_control ist ein Marker, kein Freitext-Kanal."""
+        guard = _guard()
+        messages = [
+            {"role": "user", "content": "Hallo",
+             "cache_control": {"type": "ephemeral", "notiz": "Max Mustermann"}}
+        ]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    async def test_cache_control_unknown_marker_is_blocked(self):
+        guard = _guard()
+        messages = [
+            {"role": "user", "content": "Hallo",
+             "cache_control": {"type": "Max Mustermann"}}
+        ]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    async def test_reasoning_content_is_masked(self):
+        """Ein Assistant-Turn mit zurueckgespieltem ``reasoning_content``
+        muss durchgehen -- und die PII darin maskiert werden."""
+        guard = _guard()
+        messages = [
+            {"role": "assistant", "content": "Ich pruefe das.",
+             "reasoning_content": "Der Kunde Max Mustermann hat IBAN "
+                                  "DE02120300000000202051 genannt."}
+        ]
+        out = await _run_pre_call(guard, messages)
+        reasoning = _msg_with(out, "reasoning_content")["reasoning_content"]
+        self.assertNotIn("Mustermann", reasoning)
+        self.assertNotIn("DE02120300000000202051", reasoning)
+        self.assertIn("<PERSON_0>", reasoning)
+
+    async def test_reasoning_content_wrong_type_is_blocked(self):
+        guard = _guard()
+        messages = [
+            {"role": "assistant", "content": None,
+             "reasoning_content": {"text": "Max Mustermann"}}
+        ]
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run_pre_call(guard, messages)
+
+    async def test_reasoning_content_is_reidentified(self):
+        guard = _guard()
+        data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": "Max Mustermann"}}}
+        response = {"choices": [{"message": {
+            "role": "assistant", "content": "Fertig.",
+            "reasoning_content": "Ich habe <PERSON_0> geprueft."}}]}
+        out = await guard.async_post_call_success_hook(
+            data=data, user_api_key_dict=None, response=response
+        )
+        self.assertIn(
+            "Max Mustermann", out["choices"][0]["message"]["reasoning_content"]
+        )
+
+
+class TestBlockDiagnostics(unittest.IsolatedAsyncioTestCase):
+    """QA-Audit: ein Betreiber, dessen Session blockt, sah bisher nur eine
+    Feld-ANZAHL und hatte keine Chance herauszufinden, was ihn blockiert --
+    ausser Trial-and-Error gegen die Allowlist."""
+
+    async def test_known_unsupported_field_is_named(self):
+        """Bekannte Provider-Felder werden beim Namen genannt. Der Name
+        stammt aus unserem eigenen, konstanten Vokabular -- nie vom
+        Client."""
+        guard = _guard()
+        messages = [{"role": "user", "content": "Hallo", "audio": {"id": "x"}}]
+        try:
+            await _run_pre_call(guard, messages)
+            self.fail("haette blocken muessen")
+        except dg.DatenschleuseBlocked as exc:
+            self.assertIn("audio", str(exc))
+
+    async def test_unknown_field_gets_stable_fingerprint_not_name(self):
+        """Ein frei erfundener Feldname kann selbst PII sein. Statt des
+        Namens gibt es einen stabilen Fingerprint: derselbe Name ergibt
+        denselben Wert (damit Trial-and-Error moeglich ist), der Name selbst
+        bleibt aber draussen."""
+        guard = _guard()
+
+        async def block_for(feldname):
+            try:
+                await _run_pre_call(
+                    guard, [{"role": "user", "content": "Hi", feldname: "x"}]
+                )
+                self.fail("haette blocken muessen")
+            except dg.DatenschleuseBlocked as exc:
+                return str(exc)
+
+        eins = await block_for("Max Mustermann")
+        zwei = await block_for("Max Mustermann")
+        drei = await block_for("Erika Musterfrau")
+
+        self.assertNotIn("Mustermann", eins)
+        self.assertNotIn("Musterfrau", drei)
+        self.assertEqual(eins, zwei, "gleicher Feldname -> gleicher Fingerprint")
+        self.assertNotEqual(eins, drei, "anderer Feldname -> anderer Fingerprint")
+
+
 if __name__ == "__main__":
     unittest.main()

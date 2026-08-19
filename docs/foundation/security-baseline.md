@@ -37,7 +37,7 @@ Tabelle werden gemeinsam geändert, nie einzeln):
 
 | Ebene | maskiert | validiert (nicht maskiert) | Rest |
 |---|---|---|---|
-| Message | `content`, `name`, `refusal`, `tool_calls`, `function_call` | `role`, `tool_call_id` | blockiert |
+| Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
 | tool_call | `function` | `id`, `type`, `index` | blockiert |
 | function | `name`, `arguments` | — | blockiert |
 | content-Part | `text` | `image_url` (nach Image-Policy) | blockiert |
@@ -54,6 +54,24 @@ Regeln dazu:
   auch der ist Client-Inhalt (Gesetz 5).
 - Ein neues Feld der OpenAI-API ist ein eigenes Work Item mit Eintrag im
   Register, nicht ein stillschweigendes Durchreichen.
+- **Typprüfung gehört in den Validate-Pfad, nie in den Mask-Pfad.** Ein
+  `if isinstance(x, str)` vor einer Maskierung ist immer ein stiller
+  Durchlass: der Nicht-String fällt durch und geht ungeprüft raus. Ein
+  bekanntes Feld mit falschem Typ muss blocken (Security-Audit F1).
+- **Verifikationsdurchlauf auf dem Ergebnis.** Der fertig maskierte
+  `arguments`-String geht erneut durch den Analyzer; findet der dort noch
+  Entitäten, wird blockiert. Alle anderen Prüfungen sind pfadgebunden —
+  diese greift unabhängig davon, welchen Weg ein Wert genommen hat.
+- **JSON muss eindeutig sein.** Doppelte Schlüssel (`json.loads` behält still
+  den letzten Wert, der erste wird nie geprüft) und nicht standardkonforme
+  Konstanten (`NaN`, `Infinity`) werden abgelehnt, nicht interpretiert.
+- **Fehlerpfade sind fail-closed, nicht Absturz.** Zu tief verschachteltes
+  JSON blockt kontrolliert, statt einen `RecursionError` aus dem Hook zu
+  werfen.
+- **Diagnose ohne Preisgabe.** Blockmeldungen und Logs nennen Feldnamen nur
+  aus unserem eigenen konstanten Vokabular; frei gewählte Feldnamen erscheinen
+  ausschließlich als stabiler Fingerprint. Ein Feldname ist Client-Inhalt und
+  kann selbst PII sein — Werte erscheinen nie, weder im Log noch am Client.
 
 ## Threat Model
 - Beim Kickoff: STRIDE-Kurzdurchlauf pro Kernfeature, Ergebnis als

@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
+import logging
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -116,13 +118,33 @@ IMAGE_POLICIES = ("redact", "block", "pass")
 #
 # 1) MASKIERT: freier Text, der ans Zielmodell geht -> durch Presidio +
 #    Masker (dasselbe reid_map wie content, kein zweites Mapping).
-MESSAGE_FIELDS_MASKED = ("content", "name", "refusal", "tool_calls", "function_call")
+MESSAGE_FIELDS_MASKED = (
+    "content",
+    "name",
+    "refusal",
+    "tool_calls",
+    "function_call",
+    # Reasoning-Modelle spielen ihren Gedankengang im naechsten Turn zurueck.
+    # Das ist Freitext und enthaelt regelmaessig genau die Werte, um die es im
+    # Gespraech geht -> maskieren wie jeden anderen Text.
+    "reasoning_content",
+)
 
 # 2) VALIDIERT: Protokoll-Felder, die KEIN Freitext sind. Sie werden nicht
 #    maskiert (ihr Wert muss byte-identisch erhalten bleiben, sonst bricht die
 #    Zuordnung von tool_call zu Tool-Ergebnis), aber sie werden gegen ein
 #    enges Format geprueft -- sonst waeren sie ein bequemer Schmuggelkanal.
-MESSAGE_FIELDS_VALIDATED = ("role", "tool_call_id")
+MESSAGE_FIELDS_VALIDATED = (
+    "role",
+    "tool_call_id",
+    # Caching-Marker (Anthropic-Stil, von LiteLLM/Hermes injiziert). Traegt
+    # keinen Anwendertext, nur einen Schalter -> validieren statt maskieren.
+    # Wichtig: Hermes setzt das Feld automatisch, sobald Provider-ID oder
+    # Hostname den Token "litellm" enthaelt. Ein Selbsthoster mit der
+    # Subdomain litellm.seine-domain.de wuerde ohne diesen Eintrag ab der
+    # ersten Folge-Nachricht hart geblockt (QA-Audit).
+    "cache_control",
+)
 
 ALLOWED_MESSAGE_FIELDS = frozenset(MESSAGE_FIELDS_MASKED + MESSAGE_FIELDS_VALIDATED)
 
@@ -135,13 +157,54 @@ ALLOWED_ROLES = frozenset(
 # Opake Korrelations-IDs (tool_call_id, tool_calls[].id): vom Modell bzw. der
 # API vergeben, nie Freitext. Bewusst eng: alles, was hier nicht passt, ist
 # kein legitimer Identifier.
-OPAQUE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+# ACHTUNG: wird mit ``fullmatch`` benutzt, NICHT mit ``match``. ``$`` matcht
+# in Python auch VOR einem abschliessenden Newline -- mit ``^...$`` und
+# ``match`` waere "call_1\n" ein gueltiger Identifier gewesen und der
+# Zeilenumbruch ein kleiner, aber echter Schmuggelkanal (Security-Audit F6).
+OPAQUE_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+# Maximale Verschachtelungstiefe in ``arguments``. Echte Tool-Argumente sind
+# flach; alles darueber ist entweder kaputt oder ein Versuch, die Guardrail in
+# einen RecursionError laufen zu lassen (unkontrollierter Fehlerpfad statt
+# fail-closed, Security-Audit F7).
+MAX_JSON_DEPTH = 64
+
+# Fuellzeichen, das im Verifikationsdurchlauf an die Stelle bekannter
+# Platzhalter tritt (siehe _verify_no_pii_left).
+_PLACEHOLDER_PROBE_FILLER = " "
 
 # Felder eines einzelnen tool_call-Eintrags (gleiche Logik eine Ebene tiefer).
 TOOL_CALL_ALLOWED_FIELDS = frozenset({"id", "type", "index", "function"})
 TOOL_CALL_FUNCTION_ALLOWED_FIELDS = frozenset({"name", "arguments"})
 # ``type`` fehlt bei manchen Clients ganz (historisch impliziert "function").
 ALLOWED_TOOL_CALL_TYPES = frozenset({"function"})
+
+# Erlaubte Struktur von ``cache_control``. Bewusst eng: ein Marker hat genau
+# diese zwei Felder und diese Werte -- alles andere ist kein Caching-Hinweis,
+# sondern ein Kanal, den niemand geprueft hat.
+CACHE_CONTROL_ALLOWED_FIELDS = frozenset({"type", "ttl"})
+CACHE_CONTROL_TYPES = frozenset({"ephemeral"})
+CACHE_CONTROL_TTLS = frozenset({"5m", "1h"})
+
+# Felder, die es in der Praxis gibt, die wir aber (noch) NICHT behandeln.
+# Sie blocken wie jedes unbekannte Feld -- werden in der Meldung aber beim
+# Namen genannt, damit ein Betreiber weiss, woran er ist. Die Namen stammen
+# aus dieser konstanten Liste, nie aus dem Request (Gesetz 5).
+KNOWN_UNSUPPORTED_MESSAGE_FIELDS = frozenset({
+    "audio",
+    "annotations",
+    "thinking_blocks",
+    "reasoning",
+    "redacted_thinking_blocks",
+    "provider_specific_fields",
+    "prefix",
+    "partial",
+})
+
+# Betreiber-Diagnose. Blockmeldungen gehen an den Client; hier landet
+# zusaetzlich serverseitig, WAS geblockt hat -- Feldnamen bzw. Fingerprints,
+# niemals Werte.
+_LOG = logging.getLogger("datenschleuse")
 
 # Erlaubte Felder in der Blockmeldung nennen wir NIE mit Client-Werten,
 # sondern nur mit dieser konstanten, unveraenderlichen Liste (Gesetz 5).
@@ -243,6 +306,50 @@ def reidentify_full(text: str, mapping: Dict[str, str]) -> str:
         if placeholder in text:
             text = text.replace(placeholder, mapping[placeholder])
     return text
+
+
+def _field_fingerprint(name: Any) -> str:
+    """Stabiler, wertfreier Kurz-Fingerprint eines Feldnamens.
+
+    Warum nicht einfach den Namen ausgeben: ein FELDNAME ist Client-Inhalt.
+    ``{"Max Mustermann": ...}`` oder eine IBAN als Schluessel sind trivial
+    konstruierbar -- und die Blockmeldung wird geloggt und an den Client
+    zurueckgegeben. Der Fingerprint gibt dem Betreiber trotzdem eine
+    Handhabe: derselbe Feldname ergibt denselben Wert, damit laesst sich ein
+    blockendes Feld eingrenzen, ohne dass sein Inhalt das System verlaesst.
+    """
+    return hashlib.sha256(repr(name).encode("utf-8")).hexdigest()[:8]
+
+
+class _UnsafeJson(Exception):
+    """JSON, das zwar parst, aber nicht eindeutig ist -- und deshalb nicht
+    zuverlaessig geprueft werden kann. Bewusst KEIN ValueError-Subtyp, damit
+    es nicht versehentlich im Parser-Fallback landet."""
+
+
+def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """object_pairs_hook: lehnt doppelte JSON-Schluessel ab.
+
+    ``json.loads`` behaelt bei doppelten Keys still den LETZTEN Wert. Der
+    erste wird nie geparst, nie analysiert -- und wenn der Rest der Struktur
+    sauber ist, ging der unveraenderte Rohstring hinaus, PII inklusive
+    (Security-Audit F2). Doppelte Keys sind in echten Tool-Argumenten
+    bedeutungslos und als Umgehung trivial zu konstruieren: blocken.
+    """
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            # Gesetz 5: der Schluessel selbst ist Client-Inhalt -> nie ausgeben.
+            raise _UnsafeJson("doppelter Schluessel in arguments")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _reject_json_constant(name: str) -> Any:
+    """parse_constant: ``NaN``/``Infinity``/``-Infinity`` sind kein striktes
+    JSON. Python parst sie klaglos und emittiert sie wieder -- Empfaenger mit
+    striktem Parser bekommen dann kaputte Argumente (Security-Audit F8)."""
+    raise _UnsafeJson("nicht-standardkonforme JSON-Konstante in arguments")
 
 
 def json_escaped_mapping(mapping: Dict[str, str]) -> Dict[str, str]:
@@ -903,12 +1010,38 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Ausgegeben werden nur Anzahl, Python-Typname und die konstante Liste
         der erlaubten Felder.
         """
-        unknown = sum(1 for key in msg if key not in ALLOWED_MESSAGE_FIELDS)
+        unknown = [key for key in msg if key not in ALLOWED_MESSAGE_FIELDS]
         if unknown:
+            # QA-Audit: ein Betreiber sah bisher nur eine ANZAHL und hatte
+            # keine Chance herauszufinden, was ihn blockiert -- ausser
+            # Trial-and-Error gegen die Allowlist. Jetzt: bekannte
+            # Provider-Felder beim Namen (konstantes Vokabular aus DIESER
+            # Datei, nie aus dem Request), alles Uebrige als Fingerprint.
+            benannt = sorted(
+                key for key in unknown
+                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_MESSAGE_FIELDS
+            )
+            fremd = [key for key in unknown if key not in benannt]
+            teile = []
+            if benannt:
+                teile.append(
+                    "bekannt, aber nicht im Register: " + ", ".join(benannt)
+                )
+            if fremd:
+                teile.append(
+                    "unbekannt (Fingerprint): "
+                    + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                )
+            diagnose = "; ".join(teile)
+            _LOG.warning(
+                "Nachricht blockiert -- ungepruefte Felder [%s]. "
+                "Werte werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+            )
             raise DatenschleuseBlocked(
-                f"Nachricht enthaelt {unknown} Feld(er), die die Datenschleuse "
-                "nicht prueft -- deshalb blockiert (fail-closed). Geprueft "
-                f"werden ausschliesslich: {_ALLOWED_FIELDS_HINT}."
+                f"Nachricht enthaelt {len(unknown)} Feld(er), die die "
+                f"Datenschleuse nicht prueft ({diagnose}) -- deshalb blockiert "
+                f"(fail-closed). Geprueft werden ausschliesslich: "
+                f"{_ALLOWED_FIELDS_HINT}."
             )
 
         role = msg.get("role")
@@ -918,6 +1051,18 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
                 f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_ROLES))}."
             )
+
+        # F1 (Security-Audit): das Register blockte bisher unbekannte FELDER,
+        # aber nicht den falschen TYP in einem bekannten Feld. Die Masker-Pfade
+        # waren durchweg ``if isinstance(..., str)`` -- ein dict in ``name``
+        # oder ``refusal`` fiel damit STILL durch und ging verbatim ans
+        # Zielmodell. Genau das Muster, das dieses Register beenden soll.
+        # Lehre: ein isinstance-Guard im Mask-Pfad ist immer ein stiller
+        # Durchlass. Die Typpruefung gehoert hierher und muss blocken.
+        for field in ("name", "refusal", "reasoning_content"):
+            DatenschleuseGuardrail._validate_text_field(msg.get(field), field)
+
+        DatenschleuseGuardrail._validate_cache_control(msg.get("cache_control"))
 
         DatenschleuseGuardrail._validate_opaque_id(msg.get("tool_call_id"), "tool_call_id")
 
@@ -937,6 +1082,57 @@ class DatenschleuseGuardrail(_GuardrailBase):
             DatenschleuseGuardrail._validate_function_payload(function_call, "function_call")
 
     @staticmethod
+    def _validate_text_field(value: Any, field: str) -> None:
+        """Ein Textfeld ist ein String oder gar nicht da. Alles andere ist
+        nicht maskierbar -> blocken statt still durchreichen."""
+        if value is None or isinstance(value, str):
+            return
+        raise DatenschleuseBlocked(
+            f"{field} vom Typ {type(value).__name__!r} ist kein Text und damit "
+            "nicht maskierbar -- blockiert (fail-closed). Erlaubt ist nur ein "
+            "String (oder das Feld ganz weglassen)."
+        )
+
+    @staticmethod
+    def _validate_cache_control(value: Any) -> None:
+        """``cache_control`` ist ein Schalter, kein Freitext-Kanal.
+
+        Deshalb validiert statt maskiert -- der Marker muss den Provider
+        unveraendert erreichen, sonst greift das Prompt-Caching nicht. Und
+        deshalb ENG validiert: waere hier ein ``isinstance``-Guard im
+        Verarbeitungspfad statt einer Pruefung, die blockt, waere das exakt
+        die Type-Confusion-Luecke (F1) an neuer Stelle."""
+        if value is None:
+            return
+        if not isinstance(value, dict):
+            raise DatenschleuseBlocked(
+                f"cache_control vom Typ {type(value).__name__!r} ist kein "
+                "Caching-Marker -- blockiert (fail-closed). Erlaubt ist nur "
+                "ein Objekt wie {'type': 'ephemeral'}."
+            )
+        unknown = sum(1 for key in value if key not in CACHE_CONTROL_ALLOWED_FIELDS)
+        if unknown:
+            raise DatenschleuseBlocked(
+                f"cache_control enthaelt {unknown} ungepruefte(s) Feld(er) -- "
+                "blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(CACHE_CONTROL_ALLOWED_FIELDS))}."
+            )
+        marker = value.get("type")
+        if not isinstance(marker, str) or marker not in CACHE_CONTROL_TYPES:
+            raise DatenschleuseBlocked(
+                f"cache_control.type (Typ {type(marker).__name__!r}) ist kein "
+                "bekannter Caching-Marker -- blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(CACHE_CONTROL_TYPES))}."
+            )
+        ttl = value.get("ttl")
+        if ttl is not None and (not isinstance(ttl, str) or ttl not in CACHE_CONTROL_TTLS):
+            raise DatenschleuseBlocked(
+                f"cache_control.ttl (Typ {type(ttl).__name__!r}) ist kein "
+                "bekannter Wert -- blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(CACHE_CONTROL_TTLS))}."
+            )
+
+    @staticmethod
     def _validate_opaque_id(value: Any, field: str) -> None:
         """IDs (``tool_call_id``, ``tool_calls[].id``) sind opake Korrelations-
         Tokens, kein Freitext. Sie werden bewusst NICHT maskiert -- ihr Wert
@@ -946,7 +1142,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Schmuggelkanal, den die Nachricht zu bieten hat."""
         if value is None:
             return
-        if not isinstance(value, str) or not OPAQUE_ID_PATTERN.match(value):
+        if not isinstance(value, str) or not OPAQUE_ID_PATTERN.fullmatch(value):
             raise DatenschleuseBlocked(
                 f"{field} ist kein zulaessiger Identifier (Typ "
                 f"{type(value).__name__!r}) -- als Freitext-Kanal blockiert "
@@ -1008,6 +1204,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"(fail-closed). Erlaubt: "
                 f"{', '.join(sorted(TOOL_CALL_FUNCTION_ALLOWED_FIELDS))}."
             )
+        # F1: ``arguments`` als dict/Liste statt als JSON-String lief bisher
+        # ungeprueft durch -- verifizierter PoC des Security-Audits.
+        for name in ("name", "arguments"):
+            DatenschleuseGuardrail._validate_text_field(
+                function.get(name), f"{field}.{name}"
+            )
 
     def _enforce_sensitivity(
         self,
@@ -1052,6 +1254,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         node: Any,
         masker: Masker,
         collected: List[Dict[str, Any]],
+        depth: int = 0,
     ) -> Any:
         """Maskiert rekursiv alle Textwerte eines geparsten JSON-Baums und
         laesst die STRUKTUR unangetastet (Akzeptanzkriterium: der Tool-Aufruf
@@ -1066,6 +1269,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
         einen Platzhalter ersetzt, wenn tatsaechlich etwas erkannt wurde. Der
         damit einhergehende Typwechsel (Zahl -> String) ist bewusst in Kauf
         genommen: ein gebrochenes Tool-Schema ist sichtbar, ein Leck nicht."""
+        if depth > MAX_JSON_DEPTH:
+            # Ohne Grenze lief hier ein RecursionError aus dem Hook heraus --
+            # ein unkontrollierter Fehlerpfad statt fail-closed (F7).
+            raise DatenschleuseBlocked(
+                f"arguments ueberschreitet die zulaessige Verschachtelungstiefe "
+                f"({MAX_JSON_DEPTH}) und wird nicht geprueft -- blockiert "
+                "(fail-closed)."
+            )
         if isinstance(node, str):
             if not node.strip():
                 return node
@@ -1073,12 +1284,17 @@ class DatenschleuseGuardrail(_GuardrailBase):
             collected.extend(entities)
             return masker.mask(node, entities)
         if isinstance(node, list):
-            return [await self._mask_json_node(item, masker, collected) for item in node]
+            return [
+                await self._mask_json_node(item, masker, collected, depth + 1)
+                for item in node
+            ]
         if isinstance(node, dict):
             masked: Dict[Any, Any] = {}
             for key, value in node.items():
-                new_key = await self._mask_json_node(key, masker, collected)
-                masked[new_key] = await self._mask_json_node(value, masker, collected)
+                new_key = await self._mask_json_node(key, masker, collected, depth + 1)
+                masked[new_key] = await self._mask_json_node(
+                    value, masker, collected, depth + 1
+                )
             return masked
         if node is None or isinstance(node, bool):
             # Tragen keinen Text -> nichts zu maskieren (bewusste Entscheidung).
@@ -1092,6 +1308,37 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return masker.mask(as_text, entities)
         return node
 
+    async def _verify_no_pii_left(self, text: Any, masker: Masker) -> None:
+        """Verifikationsdurchlauf auf dem ERGEBNIS (Security-Audit F1).
+
+        Alle Einzelpruefungen oben sind Pfad-gebunden: sie greifen nur, wenn
+        ein Wert den Weg nimmt, den jemand vorhergesehen hat. Diese Pruefung
+        ist die einzige, die unabhaengig davon greift -- der fertig maskierte
+        String geht noch einmal durch den Analyzer. Findet der dort noch
+        Entitaeten, ist irgendwo etwas durchgerutscht und der Request wird
+        blockiert, statt die PII rauszulassen.
+
+        Die bekannten Platzhalter werden vorher durch ein neutrales Zeichen
+        ersetzt: sonst wuerde die Erkennung womoeglich den Platzhalter selbst
+        (``<PERSON_0>``) als Namen lesen und jeden korrekt maskierten
+        Tool-Aufruf blocken."""
+        if not isinstance(text, str) or not text.strip():
+            return
+        probe = text
+        for placeholder in sorted(masker.reid_map, key=len, reverse=True):
+            probe = probe.replace(placeholder, _PLACEHOLDER_PROBE_FILLER)
+        leftovers = await self._analyze(probe)
+        if leftovers:
+            types = sorted({str(e.get("entity_type")) for e in leftovers})
+            # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
+            # Client-Inhalt) -- nie den Fundtext selbst (Gesetz 5).
+            raise DatenschleuseBlocked(
+                "Nach der Maskierung wurden weiterhin personenbezogene Daten "
+                f"erkannt ({', '.join(types)}) -- Request blockiert "
+                "(fail-closed). Das ist ein Fehler in der Maskierung, kein "
+                "Konfigurationsproblem."
+            )
+
     async def _mask_arguments(
         self, raw: Any, masker: Masker, requested_level: Any, approved: bool
     ) -> Any:
@@ -1099,13 +1346,33 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if not isinstance(raw, str) or not raw.strip():
             return raw
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(
+                raw,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_json_constant,
+            )
+        except _UnsafeJson as exc:
+            # Mehrdeutiges bzw. nicht standardkonformes JSON: nicht zuverlaessig
+            # pruefbar -> blocken. Die Meldung traegt bewusst keinen Fundwert.
+            raise DatenschleuseBlocked(
+                f"arguments ist nicht eindeutig pruefbar ({exc}) -- blockiert "
+                "(fail-closed)."
+            ) from exc
+        except RecursionError as exc:
+            raise DatenschleuseBlocked(
+                "arguments ist zu tief verschachtelt, um geprueft zu werden -- "
+                "blockiert (fail-closed)."
+            ) from exc
         except (ValueError, TypeError):
             # Modelle liefern gelegentlich kaputte ``arguments``. Nicht
             # parsebar heisst NICHT ungeprueft -- dann wird der Rohstring als
             # Freitext maskiert. (Maskieren ist nie ein Leck; ein Block waere
             # hier die haertere, aber unnoetige Reaktion.)
-            return await self._mask_text_value(raw, masker, requested_level, approved)
+            result = await self._mask_text_value(
+                raw, masker, requested_level, approved
+            )
+            await self._verify_no_pii_left(result, masker)
+            return result
 
         collected: List[Dict[str, Any]] = []
         masked = await self._mask_json_node(parsed, masker, collected)
@@ -1126,8 +1393,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if masked == parsed:
             # Nichts erkannt -> Original unveraendert weiterreichen (keine
             # kosmetische Re-Serialisierung eines fremden JSON-Strings).
-            return raw
-        return json.dumps(masked, ensure_ascii=False)
+            # ACHTUNG: auch dieser Pfad muss durch die Verifikation -- genau
+            # hier ging beim Duplicate-Key-Fund der Rohstring mit PII hinaus.
+            result = raw
+        else:
+            try:
+                result = json.dumps(masked, ensure_ascii=False, allow_nan=False)
+            except ValueError as exc:
+                raise DatenschleuseBlocked(
+                    "arguments liess sich nicht als striktes JSON serialisieren "
+                    "-- blockiert (fail-closed)."
+                ) from exc
+        await self._verify_no_pii_left(result, masker)
+        return result
 
     async def _mask_function_payload(
         self, function: Any, masker: Masker, requested_level: Any, approved: bool
@@ -1150,7 +1428,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         """Maskiert alle Textfelder einer Message AUSSER ``content`` (das
         erledigt der bestehende Pfad im Hook). Reihenfolge der Felder ist
         stabil, damit die Platzhalter-Nummerierung deterministisch bleibt."""
-        for field in ("name", "refusal"):
+        for field in ("name", "refusal", "reasoning_content"):
             value = msg.get(field)
             if isinstance(value, str):
                 msg[field] = await self._mask_text_value(
@@ -1450,9 +1728,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
     def _reidentify_message_fields(self, message: Any, reid_map: Dict[str, str]) -> None:
         """Re-Identification fuer alle Antwort-Felder neben ``content``."""
-        refusal = self._field(message, "refusal")
-        if isinstance(refusal, str):
-            self._set_field(message, "refusal", reidentify_full(refusal, reid_map))
+        for field in ("refusal", "reasoning_content"):
+            value = self._field(message, field)
+            if isinstance(value, str):
+                self._set_field(message, field, reidentify_full(value, reid_map))
 
         tool_calls = self._field(message, "tool_calls")
         if isinstance(tool_calls, list):
