@@ -1,7 +1,7 @@
 {
   "gate": "security",
   "verdict": "pass",
-  "commit": "4e92766fb60abce54614b349a3c9eda6ccb5bc9b",
-  "branch": "feature/DATENSCHLE-66-toolcalls-maskierung",
-  "timestamp": "2026-08-19T13:12:02Z"
+  "commit": "b906e1fd0693eb808bc3b804c814b24b947bcf51",
+  "branch": "feature/DATENSCHLE-67-roundtrip-e2e-rebased",
+  "timestamp": "2026-08-19T14:09:08Z"
 }
