@@ -94,24 +94,63 @@ der Tokenizer des Modells — also Zufall. Der Beweis läuft deshalb **zweimal**
 In beiden Fällen liest der Client sauberen Klartext. Determinismus schlägt
 Handarbeit (Methode #12).
 
+## Stabilität ist Teil des Beweises
+
+Ein Gate, das grundlos rot wird, ist als Gate wertlos — und ein Beweis, der bei
+Wiederholung ein anderes Ergebnis liefert, ist keiner. Der Lauf wird deshalb
+nicht einmal, sondern **in Serie** verifiziert:
+
+| Lauf | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Exit-Code | 0 | 0 | 0 | 0 | 0 |
+| Prüfungen | 51 | 51 | 51 | 51 | 51 |
+| Fehlschläge | 0 | 0 | 0 | 0 | 0 |
+
+Dass diese Serie nötig war, ist selbst ein Befund: eine frühere Fassung war
+einmal grün und beim nächsten Lauf rot. Wer den Beweis ändert, wiederholt die
+Serie.
+
+### Die Vorbedingung, die Flakes in Diagnosen verwandelt
+
+`PII_MASKED_RE` prüft vor jeder inhaltlichen Bewertung: sind **genau** die vier
+PII-Felder maskiert, und ist der Anweisungssatz **unberührt** geblieben?
+
+Der Grund ist eine Lektion aus dem Fehlschlag. Maskiert Presidio versehentlich
+ein Wort der Anweisung mit, bekommt das Modell einen zerstörten Satz und
+verweigert womöglich die Antwort. Der Lauf fällt dann drei Schritte später mit
+„LLM hat keine Platzhalter zurückgegeben" um — einer Meldung, die auf die
+falsche Fährte führt und wie ein sporadischer Fehler des Round-Trips aussieht,
+obwohl der Round-Trip nie an die Reihe kam. Die Vorbedingung nennt stattdessen
+sofort die wahre Ursache.
+
 ## Befunde aus dem Beweislauf
 
-### 1. Behoben: kollidierende Beispiel-Platzhalter im Hinweistext
+### 1. Behoben: der Hinweistext hielt dem Modell etwas zum Nachbauen hin
 
-Der Anonymisierungs-Hinweis nannte `<PERSON_1>`, `<ADDRESS_0>` usw. als
-Beispiele — also exakt die Form `<TYP_ZAHL>`, die der `Masker` auch für **echte**
-Werte vergibt. Im Beweislauf war `<PERSON_1>` gleichzeitig Beispiel im Hinweis
-**und** echter Platzhalter für „Thomas Schneider". Greift das Modell das
-Beispiel auf, macht die Re-Identifikation stillschweigend den echten Namen
-daraus und setzt ihn an eine Stelle, an die er nie gehörte.
+Zwei Runden, und die zweite war lehrreicher als die erste.
 
-Kein PII-Leck — der Klartext geht weiterhin nicht raus. Aber eine **stille
-falsche Antwort**, dieselbe Fehlerklasse wie der dokumentierte Live-Befund vom
-2026-07-29 („Hallo Hans Müller!"), nur eine Ebene subtiler.
+**Runde 1 — Kollision.** Der Anonymisierungs-Hinweis nannte `<PERSON_1>`,
+`<ADDRESS_0>` usw. als Beispiele — also exakt die Form `<TYP_ZAHL>`, die der
+`Masker` auch für **echte** Werte vergibt. Im Beweislauf war `<PERSON_1>`
+gleichzeitig Beispiel im Hinweis **und** echter Platzhalter für „Thomas
+Schneider". Greift das Modell das Beispiel auf, macht die Re-Identifikation
+stillschweigend den echten Namen daraus.
 
-Behoben: die Beispiele nutzen jetzt `<PERSON_N>`. Der Masker nummeriert
-ausschließlich mit Ziffern, ein `<..._N>` kann deshalb nie kollidieren.
-Abgesichert durch `TestNoticePlaceholderCollision`.
+**Runde 2 — die Schablone war schlimmer.** Der erste Fix stellte die Beispiele
+auf `<PERSON_N>` um, mit dem Zusatz „wobei N für eine Ziffer steht".
+Kollisionsfrei — und gemessen gegen llama3.1:8b brandgefährlich: das Modell
+setzte die Ziffer **pflichtbewusst ein** und gab `<PERSON_1>` zurück, wo
+`<PERSON_0>` stand. In 3 von 3 Läufen, bei `temperature 0`. Damit war jeder
+Platzhalter der Antwort unbrauchbar. Aus einem seltenen Kollisionsrisiko war
+ein systematischer Totalausfall geworden.
+
+**Die allgemeine Lehre:** Was der Hinweis dem Modell hinhält, baut das Modell
+nach — ob Beispielname („Hans Müller", Live-Befund 2026-07-29), echter
+Beispiel-Platzhalter (`<PERSON_1>`) oder Schablone (`<PERSON_N>`). Der Hinweis
+enthält deshalb **gar keinen Token in spitzen Klammern** mehr. Er beschreibt
+das Prinzip in Worten und schützt die Nummer ausdrücklich („mit unveränderter
+Nummer … nicht umnummerieren"). Gemessen: 3 von 3 Läufen indextreu.
+Abgesichert durch zwei Tests in `TestNoticePlaceholderCollision`.
 
 ### 2. Offen: PERSON-False-Positives bei ASCII-Umschrift
 
@@ -128,17 +167,38 @@ Satzanfang für Personennamen. Gemessen gegen den laufenden Analyzer:
 
 Das Muster ist schärfer als „großgeschriebenes Verb am Satzanfang": es trifft
 vor allem **ASCII-umschriebene Umlautwörter** (`Aendere`, `Spaeter`) — mit
-korrektem Umlaut (`Ändere`) verschwindet der Treffer. Plausible Erklärung:
-solche Tokens sind für das Modell out-of-vocabulary, und es rät PERSON.
+korrektem Umlaut verschwindet der Treffer. Plausibel: solche Tokens sind
+out-of-vocabulary, und das Modell rät PERSON. Relevant, weil ASCII-Umschrift in
+Formularen, CLIs und Altsystemen verbreitet ist.
 
-**Einordnung:** Overmasking, kein Leck. Der Anwender bekommt seinen Text durch
-die Rückübersetzung korrekt zurück. Ärgerlich wird es, wenn dadurch die Anfrage
-für das Modell unverständlich wird — im Beweislauf wurde aus „Ändere keinen
-einzigen Wert." ein „`<PERSON_0>` keinen einzigen Wert.", was die
-Antwortqualität sichtbar gedrückt hat.
+**Einordnung:** Overmasking, kein Leck. Gehört zur Präzisionsarbeit an der
+deutschen Erkennung, nicht in den Round-Trip.
 
-Gehört zur Präzisionsarbeit an der deutschen Erkennung (Recall/Precision-Ziel),
-**nicht** in den Round-Trip. Dort mit Testkorpus und Benchmark behandeln.
+**Aber:** dieser Befund hat den Beweis selbst instabil gemacht — `Aendere` im
+eigenen Testprompt wurde maskiert und zerstörte die Anfrage. Ein Befund, der
+die eigene Messmethode betrifft, ist nie „außerhalb des Scopes". Deshalb ist
+der Prompt korrigiert **und** durch `PII_MASKED_RE` dauerhaft abgesichert.
+
+### 3. Offen: das Modell hält sich nicht zuverlässig an Platzhalter
+
+Der Round-Trip setzt voraus, dass das Modell Platzhalter **byte-genau**
+zurückgibt. Gemessen gegen llama3.1:8b ist das keine Selbstverständlichkeit:
+
+- **Umnummerierung.** Bei einer Schablone im Hinweis schrieb das Modell
+  systematisch `<PERSON_1>` statt `<PERSON_0>` (siehe Befund 1). Behoben, aber
+  das Muster bleibt modellabhängig.
+- **Verweigerung.** Als Bitte um „Name / IBAN / Telefon" formuliert, antwortete
+  das Modell „Ich kann keine Informationen zu bestimmten Personen oder ihren
+  Konten bereitstellen" — obwohl es ausschließlich Platzhalter sah. Es liest
+  die **Labels**. Bei `temperature 0` mal so, mal so.
+
+Beides ist keine Eigenschaft der Datenschleuse, sondern des Zielmodells. Für
+den Beweis ist der Prompt deshalb als technischer Formatierungstest gerahmt und
+gegen das Modell vermessen. Für das **Produkt** ist es die konkrete Messung zu
+einem längst notierten Risiko (`docs/HEADROOM.md`): verändert ein Modell einen
+Platzhalter, schlägt die Re-Identifikation **still** fehl — der Nutzer sieht
+einen stehengebliebenen Platzhalter oder, im schlimmsten Fall, den falschen
+Namen. Kleine Modelle brauchen hier mehr Aufmerksamkeit als große.
 
 ## Voraussetzungen
 
