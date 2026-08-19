@@ -51,6 +51,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -597,10 +598,35 @@ class RuleSet:
         if not text or not self._active:
             return []
 
+        # Security-Finding F2: das Zeitbudget gilt fuer den GESAMTEN Aufruf,
+        # nicht pro Regel. Vorher summierte es sich -- 20 pathologische Muster
+        # ergaben 20 x 0,25 s = 5 s fuer EINEN Text. Und weil das synchrone
+        # CPU-Arbeit ist, blockierte sie so lange den asyncio-Event-Loop und
+        # damit auch fremde, parallel laufende Requests.
+        frist = time.monotonic() + self.match_timeout
         treffer: List[Dict[str, Any]] = []
+        offen = len(self._active)
         for regel in self._active:
+            rest = frist - time.monotonic()
+            if rest <= 0:
+                self._report(
+                    f"Zeitbudget fuer die eigenen Regeln erschoepft; "
+                    f"{offen} Regel(n) wurden fuer diesen Text uebersprungen. "
+                    f"Das deutet auf ein pathologisches Muster hin -- pruefen "
+                    f"mit: datenschleuse-rules list",
+                    level="WARNUNG",
+                )
+                break
+            # FAIRER ANTEIL statt "wer zuerst kommt, frisst alles": jede Regel
+            # bekoemmt den gleichen Bruchteil des VERBLEIBENDEN Budgets. Ein
+            # pathologisches Muster verbrennt so nur seinen eigenen Anteil und
+            # kann die gesunden Regeln dahinter nicht aushungern -- genau das
+            # passierte mit einer simplen gemeinsamen Frist. Gesunde Regeln
+            # brauchen Mikrosekunden und vererben ihren Rest an die naechsten.
+            anteil = rest / offen
+            offen -= 1
             try:
-                for m in regel.pattern.finditer(text, timeout=self.match_timeout):
+                for m in regel.pattern.finditer(text, timeout=anteil):
                     start, end = m.span()
                     if end > start:
                         treffer.append({
