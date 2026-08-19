@@ -1,0 +1,186 @@
+# Supply-Chain-Härtung
+
+> Bindend per Gesetz 5 (Security & Secrets) und Gesetz 12 (Grundbuch).
+> Ergänzt `security-baseline.md` um die konkrete Umsetzung.
+> Eingeführt mit DATENSCHLE-59.
+
+Die Datenschleuse ist ein Sicherheitsprodukt. Wer sie betreibt, vertraut uns
+personenbezogene Daten an. Also muss nachträglich feststellbar sein, **welche
+Software** wir ausgeliefert haben — und zwar bis auf das Byte.
+
+Dieses Dokument regelt drei Dinge:
+
+1. wie Container-Images gepinnt werden und wie ein Update abläuft,
+2. wie GitHub-Actions gepinnt werden und wie ein Update abläuft,
+3. (Abschnitt 3, siehe unten) wie der CVE-Scan blockiert und wie mit Funden
+   umgegangen wird, die wir nicht beheben können.
+
+---
+
+## 1. Container-Images: Tag **und** Digest
+
+### Regel
+
+Jede Image-Referenz im Repo trägt einen **Versions-Tag UND einen Digest**:
+
+```
+ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f3...
+```
+
+- Der **Digest** ist die Garantie. Er ist der Hash des Manifests; er kann sich
+  nicht ändern, ohne ein anderes Image zu werden. Docker zieht bei dieser
+  Schreibweise ausschließlich nach Digest — der Tag wird beim Auflösen ignoriert.
+- Der **Tag** ist die Lesehilfe. Er sagt einem Menschen (und dem nächsten Agent),
+  *was* da eigentlich drin steckt. Ein nackter Digest ohne Tag ist reproduzierbar,
+  aber unlesbar; niemand sieht ihm an, ob er drei Tage oder drei Jahre alt ist.
+
+**Verboten sind** `:latest`, `:main-latest` und jeder andere rollende Tag ohne
+Digest. Begründung am konkreten Fall: `ghcr.io/berriai/litellm:main-latest` trug
+am 2026-08-19 das Label `org.opencontainers.image.revision=007bd43c` — ein
+BerriAI-Commit von **demselben Tag, 03:31 UTC**. Der Tag rollt also mit jedem
+Merge auf `main`. Zwei `docker compose up` am selben Nachmittag konnten
+unterschiedliche Software starten, und im Nachhinein war nicht mehr feststellbar,
+welche.
+
+### Aktueller Stand (2026-08-19)
+
+| Datei | Service | Referenz |
+|-------|---------|----------|
+| `litellm/Dockerfile` | LiteLLM-Basis | `ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834` |
+| `presidio/Dockerfile.analyzer` | Analyzer-Basis | `mcr.microsoft.com/presidio-analyzer:2.2.362@sha256:286e3fa7f3a7426e775e8564fe1870f1ba8f999d3ab8bbb8cc46a44355d9d6e9` |
+| `docker-compose.yml` | Postgres | `postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685` |
+| `docker-compose.yml` | Anonymizer | `mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483` |
+| `docker-compose.yml` | Image-Redactor | `mcr.microsoft.com/presidio-image-redactor:0.0.58@sha256:e49fd47bfc38d834f0856063b9f00cfb3c19866e8d61b061849baf6275139612` |
+
+Beachten: Der Image-Redactor hat eine **eigene Versionsreihe (0.0.x)**, nicht die
+2.2.x der übrigen Presidio-Dienste. Wer blind „alle Presidio-Images auf dieselbe
+Version" setzt, baut einen Fehler ein.
+
+### Update-Verfahren (Digest-Update)
+
+Pinning ohne Update-Verfahren ist kein Sicherheitsgewinn, sondern eine Zeitbombe:
+Die Software friert ein, beim ersten ernsten CVE umgeht jemand das Pinning, und
+danach ist es wertlos. Deshalb ist der Update-Weg hier festgeschrieben.
+
+**Wer:** derjenige Teammate, der das Update-Work-Item zugewiesen bekommt. Ein
+Digest-Update ist **immer ein eigenes Work Item** — nie eine Beifügung zu einem
+fachlichen PR. Sonst vermischen sich „das Feature ist kaputt" und „das neue
+Basis-Image ist kaputt" in einem Diff.
+
+**Auslöser** (einer genügt):
+
+- Der wöchentliche Image-CVE-Scan meldet einen blockierenden Fund (Abschnitt 3).
+- Upstream veröffentlicht ein Security-Release.
+- Routine: spätestens **quartalsweise** prüfen, auch ohne Fund. Ein Pin, den ein
+  Jahr niemand angefasst hat, ist kein Pin mehr, sondern ein Fossil.
+
+**Wie:**
+
+```bash
+# 1. Welchen Tag wollen wir? Immer ein veroeffentlichtes Release,
+#    NIE ein -dev/-rc/-latest.
+gh api "repos/BerriAI/litellm/releases?per_page=20" \
+  --jq '.[] | select(.prerelease==false) | .tag_name'
+
+# 2. Digest aufloesen -- niemals abschreiben, immer aufloesen lassen.
+docker buildx imagetools inspect ghcr.io/berriai/litellm:<NEUER-TAG>
+#    -> "Digest: sha256:..."
+
+# 3. Tag UND Digest in die Datei eintragen (beides, nicht nur eins).
+
+# 4. Lokal bauen und gegenpruefen, dass der Custom-Code im neuen Basis-Image
+#    ueberhaupt noch importierbar ist:
+docker build -t datenschleuse-litellm:verify ./litellm
+docker run --rm --entrypoint python datenschleuse-litellm:verify -c \
+  "import importlib.metadata as md, datenschleuse_guardrail, qi_state, \
+   qi_generalization, sensitivity_classifier; print(md.version('litellm'))"
+
+# 5. Testsuite gruen (Gesetz 2), dann PR. Der Image-CVE-Scan laeuft auf diesem
+#    PR automatisch mit, weil die gepinnten Dateien im Diff sind.
+```
+
+**Was ins Work Item gehört** (Gesetz 1): alter Digest, neuer Digest, Grund für
+das Update, und der Output von Schritt 4. Damit ist später beantwortbar, warum
+genau dieser Stand ausgeliefert wurde.
+
+### Was NICHT gepinnt ist — und warum
+
+- `runs-on: ubuntu-latest` in der CI. Das ist kein Image, das wir ausliefern,
+  sondern die Wegwerf-VM von GitHub. Ein Pin auf `ubuntu-24.04` würde nur den
+  Zeitpunkt verschieben, an dem GitHub das Label abkündigt.
+- `deploy/coolify/docker-compose.yaml` — **offen**, siehe Abschnitt 4.
+
+---
+
+## 2. GitHub-Actions: SHA statt Tag
+
+### Regel
+
+Jede `uses:`-Zeile in `.github/workflows/` zeigt auf einen **Commit-SHA**, mit
+dem Versions-Tag als Kommentar dahinter:
+
+```yaml
+- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+```
+
+Warum: Ein Action-Tag wie `@v4` ist ein bewegliches Git-Ref im *fremden* Repo.
+Wer es verschiebt, führt beliebigen Code in unserer CI aus — mit unserem
+`GITHUB_TOKEN` und Zugriff auf den Checkout. Das ist der klassische
+Action-Hijack (tj-actions/changed-files, März 2025) und kein theoretisches Risiko.
+
+Der Kommentar `# v4.4.0` ist **nur Lesehilfe**. Verbindlich ist der SHA. Deshalb
+gilt: Der Kommentar wird beim Update mitgezogen, und ein Reviewer, der ihm nicht
+traut, löst ihn selbst auf (Befehl unten).
+
+### Aktueller Stand (2026-08-19)
+
+| Action | SHA | Tag |
+|--------|-----|-----|
+| `actions/checkout` | `11d5960a326750d5838078e36cf38b85af677262` | v4.4.0 |
+| `actions/setup-python` | `a26af69be951a213d495a4c3e4e4022e16d87065` | v5.6.0 |
+| `gitleaks/gitleaks-action` | `ff98106e4c7b2bc287b24eaf42907196329070c7` | v2.3.9 |
+
+Bewusst **nicht** mit-aktualisiert: `actions/checkout` steht upstream bei v7,
+`actions/setup-python` bei v7. Pinning ist eine Supply-Chain-Maßnahme;
+ein Major-Upgrade ist eine funktionale Änderung und braucht ein eigenes Work
+Item mit eigenem grünen CI-Lauf. Beides in einem PR zu vermischen macht bei
+einem roten Lauf die Ursache unauffindbar.
+
+### Update-Verfahren
+
+```bash
+# SHA zu einem Tag aufloesen -- nie aus einem README abschreiben:
+gh api repos/actions/checkout/git/matching-refs/tags/v4.4.0 \
+  --jq '.[] | "\(.ref) \(.object.type) \(.object.sha)"'
+```
+
+Ist `object.type` gleich `tag` statt `commit`, handelt es sich um ein annotiertes
+Tag — dann ist der gesuchte Commit-SHA `.object.sha` **des dereferenzierten
+Objekts**, nicht der des Tag-Objekts. Im Zweifel gegenprüfen mit
+`gh api repos/<owner>/<repo>/commits/<sha> --jq .sha`.
+
+---
+
+## 3. CVE-Scan
+
+> **Wird im selben PR (DATENSCHLE-59) nachgezogen.** Bis dahin gilt: es gibt
+> `gitleaks` für Secrets, aber nichts, das bekannte Schwachstellen in
+> Abhängigkeiten und Images findet.
+
+---
+
+## 4. Offene Punkte
+
+- **`deploy/coolify/docker-compose.yaml`** enthält zwei ungepinnte Referenzen
+  (`postgres:16-alpine`, `mcr.microsoft.com/presidio-anonymizer:latest`). Die
+  Datei liegt außerhalb des Reviers von DATENSCHLE-59 und wird parallel von einer
+  anderen Lane bearbeitet — deshalb hier bewusst nicht angefasst, sondern
+  gemeldet. Die Digests aus Abschnitt 1 sind direkt übernehmbar. Der
+  LiteLLM- und der Analyzer-Dienst dieser Datei bauen aus `../../litellm` bzw.
+  `../../presidio` und erben die Pins dieses PRs bereits.
+- **Kein Lockfile für die Python-Abhängigkeiten.** `litellm/requirements-guardrail.txt`
+  und `test/requirements.txt` verwenden Bereiche (`httpx>=0.27,<1.0`), keine
+  exakten Pins. Gesetz 5 verlangt ein Lockfile. Ohne eins ist eine Installation
+  von heute nicht dieselbe wie eine von morgen — dasselbe Problem wie bei
+  `:latest`, nur eine Ebene tiefer. Eigenes Work Item nötig; die Datei ist
+  ebenfalls außerhalb des Reviers von DATENSCHLE-59.
