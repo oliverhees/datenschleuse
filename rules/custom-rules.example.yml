@@ -1,7 +1,7 @@
 # Datenschleuse — eigene Begriffe und Muster (Vorlage)
 #
 # ALLE Werte hier sind FREI ERFUNDEN. Kopieren und anpassen:
-#     cp rules/custom-rules.example.yml rules/custom-rules.yml
+#     install -m 600 rules/custom-rules.example.yml rules/custom-rules.yml
 #
 # Die echte Datei rules/custom-rules.yml ist per .gitignore vom Repository
 # ausgeschlossen -- sie enthaelt eure echten Kunden- und Projektnamen und ist

@@ -20,11 +20,15 @@ mit), **sofort wirksam** (kein Rebuild, kein Neustart) und **einzeln testbar**.
 
 ## In zwei Minuten zum ersten eigenen Begriff
 
-Einmalig die Vorlage kopieren:
+Einmalig die Vorlage kopieren — mit `install -m 600`, nicht mit `cp`:
 
 ```bash
-cp rules/custom-rules.example.yml rules/custom-rules.yml
+install -m 600 rules/custom-rules.example.yml rules/custom-rules.yml
 ```
+
+`cp` würde die Rechte eurer Umask übernehmen (meist `0664`) — die Datei wäre
+dann für jeden Benutzer der Maschine lesbar, obwohl echte Kundennamen darin
+stehen. `datenschleuse-rules list` warnt euch, falls das passiert ist.
 
 Begriff hinterlegen — das `--example` ist Pflicht und ist zugleich der
 Testfall der Regel:
@@ -195,6 +199,7 @@ kein Satz.
 
 ## Sicherheit und Datenschutz
 
+- **Dateirechte werden geprüft.** `list` warnt, wenn die Regeldatei für andere Benutzer lesbar ist (`chmod 600` behebt es). Die CLI selbst schreibt immer `0600`.
 - **`rules/custom-rules.yml` gehört nicht ins Repository.** Sie steht in der
   `.gitignore` und ist wie ein Secret zu behandeln — sie enthält genau die
   Namen, die ihr schützen wollt. Die Datei wird mit Rechten `0600` geschrieben.

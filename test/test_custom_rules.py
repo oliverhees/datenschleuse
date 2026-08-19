@@ -862,3 +862,36 @@ class TestMatchBudgetIsPerCall(_RuleFileTestCase):
         start = time.monotonic()
         rs.find("Ein ganz normaler Satz mit Begriff7 darin.")
         self.assertLess(time.monotonic() - start, 0.5)
+
+
+# ===========================================================================
+# 14. F6 (Security-Audit) — der Setup-Weg per `cp` erzeugt 0664
+#
+# save_document schreibt 0600. Wer die Beispieldatei aber per `cp` kopiert,
+# bekommt die Rechte der Umask (typisch 0664) -- die Regeldatei mit echten
+# Kundennamen ist dann fuer jeden Benutzer der Maschine lesbar, ohne Warnung.
+# ===========================================================================
+class TestFilePermissionWarning(_RuleFileTestCase):
+    def test_group_readable_file_is_flagged(self):
+        self.write_rules([rule("k", value="Adlerflug")])
+        os.chmod(self.path, 0o664)
+        self.assertTrue(cr.permission_warning(self.path))
+
+    def test_owner_only_file_is_not_flagged(self):
+        self.write_rules([rule("k", value="Adlerflug")])
+        os.chmod(self.path, 0o600)
+        self.assertIsNone(cr.permission_warning(self.path))
+
+    def test_missing_file_is_not_flagged(self):
+        self.assertIsNone(cr.permission_warning(
+            os.path.join(self._dir.name, "gibt-es-nicht.yml")))
+
+    def test_warning_names_the_fix_command(self):
+        self.write_rules([rule("k", value="Adlerflug")])
+        os.chmod(self.path, 0o644)
+        self.assertIn("chmod 600", cr.permission_warning(self.path))
+
+    def test_describe_carries_the_warning(self):
+        self.write_rules([rule("k", value="Adlerflug")])
+        os.chmod(self.path, 0o664)
+        self.assertTrue(cr.RuleSet(self.path).describe()["permission_warning"])
