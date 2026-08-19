@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import re
+import sys
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 # httpx ist im offiziellen LiteLLM-Image bereits vorhanden (LiteLLM-Dependency)
@@ -728,10 +729,24 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 or kwargs.pop("custom_rules_path", None)
                 or cur.default_rules_path()
             )
+            # Security-Finding F3: den Ladefehler AUSWERTEN statt ihn im
+            # RuleSet liegen zu lassen. Vorher las nur die CLI auf dem Host
+            # load_error aus -- im Container blieb ein Kaltstart mit kaputter
+            # Regeldatei damit voellig unsichtbar, obwohl die komplette eigene
+            # Maskierungsschicht ausgefallen war.
+            if self.custom_rules.load_error:
+                print(
+                    f"[datenschleuse] FEHLER: eigene Regeln nicht geladen -- "
+                    f"{self.custom_rules.load_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         except Exception as exc:  # pragma: no cover - defensiv
             print(
-                f"[datenschleuse] Eigene Regeln konnten nicht geladen werden "
-                f"({type(exc).__name__}); Presidio-Maskierung laeuft normal weiter.",
+                f"[datenschleuse] FEHLER: eigene Regeln konnten nicht geladen "
+                f"werden ({type(exc).__name__}) -- eigene Begriffe werden NICHT "
+                f"maskiert; die Presidio-Maskierung laeuft unveraendert weiter.",
+                file=sys.stderr,
                 flush=True,
             )
             self.custom_rules = None
@@ -793,8 +808,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
             entities = entities + self.custom_rules.find(text)
         except Exception as exc:  # pragma: no cover - defensiv
             print(
-                f"[datenschleuse] Eigene Regeln uebersprungen "
+                f"[datenschleuse] WARNUNG: eigene Regeln uebersprungen "
                 f"({type(exc).__name__}); Presidio-Maskierung bleibt aktiv.",
+                file=sys.stderr,
                 flush=True,
             )
         return entities
