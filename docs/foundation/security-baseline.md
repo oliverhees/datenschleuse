@@ -30,32 +30,34 @@ Historie derselben Lücke — der Grund für diese Regel:
 - DATENSCHLE-64: der `content`-**Container** selbst (dict statt Liste)
 - DATENSCHLE-66: alle **Felder neben `content`**, allen voran
   `tool_calls[].function.arguments` (für agentische Clients der Normalfall)
+- DATENSCHLE-65: die **Felder innerhalb eines Content-Parts** — die Allowlist
+  griff dort bis dahin nur auf den Part-**Typ**
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
-`MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
-Tabelle werden gemeinsam geändert, nie einzeln):
+`MESSAGE_FIELDS_VALIDATED` und `PART_FIELDS_MASKED` / `PART_FIELDS_VALIDATED`
+in `litellm/datenschleuse_guardrail.py` — Code und Tabelle werden gemeinsam
+geändert, nie einzeln):
 
 | Ebene | maskiert | validiert (nicht maskiert) | Rest |
 |---|---|---|---|
 | Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
 | tool_call | `function` | `id`, `type`, `index` | blockiert |
 | function | `name`, `arguments` | — | blockiert |
-| content-Part | `text` | `image_url` (nach Image-Policy) | Part-**Typ** blockiert; Part-**Felder** ⚠️ siehe unten |
+| content-Part `text` | `text` | `type`, `cache_control` | blockiert |
+| content-Part `image_url` | — | `type`, `image_url` (nach Image-Policy), `cache_control` | blockiert |
+| `image_url`-Container | — | `url`, `detail` | blockiert |
 
-> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Für
-> content-Parts gilt die Allowlist bisher nur für den Part-**Typ**, nicht für
-> die **Felder** eines Parts. Ein Text-Part mit einem Zusatzfeld —
-> `{"type":"text","text":"harmlos","notiz":"<PII>"}` — läuft ungeprüft durch:
-> `text` wird maskiert, das Zusatzfeld unverändert weitergereicht
-> (verifiziert). Die Zeile oben beschreibt insoweit den Soll-, nicht den
-> Ist-Zustand. Der Defekt stammt aus DATENSCHLE-57 und ist in
-> **DATENSCHLE-65** terminiert; bis dahin gilt die Zusage „Rest blockiert"
-> auf der Part-Ebene **nicht**.
->
-> Diese Warnung bleibt stehen, bis DATENSCHLE-65 gemerged ist. Eine
-> dokumentierte Sicherheitszusage, auf die sich ein Betreiber verlässt, ist
-> selbst ein Sicherheitsmerkmal — eine zu weit gefasste Zusage ist ein Defekt,
-> auch wenn der Code darunter älter ist als sie.
+Die Part-Ebene ist damit auf **beiden** Achsen geschlossen: Allowlist für den
+Part-**Typ** (DATENSCHLE-57) und Allowlist für die **Felder** innerhalb eines
+Parts (DATENSCHLE-65). Bis DATENSCHLE-65 galt die Zusage „Rest blockiert" nur
+für den Typ — ein Part mit erlaubtem Typ durfte zusätzliche, ungeprüfte Felder
+tragen. Dasselbe gilt seither eine Ebene tiefer für den `image_url`-Container,
+dessen Zusatzfelder die Bild-Policy unverändert überlebten.
+
+`cache_control` ist auf Part-Ebene **zugelassen und validiert, nicht
+maskiert** — Anthropic-Clients hängen den Marker an Content-Blöcke, ein Block
+wäre Client-Breakage. Er trägt keinen Freitext (geschlossene Wertemengen für
+`type` und `ttl`), deshalb gilt er für Text- **und** Bild-Parts.
 
 Regeln dazu:
 - IDs werden **validiert statt maskiert**: ihr Wert muss byte-identisch
@@ -87,6 +89,21 @@ Regeln dazu:
   aus unserem eigenen konstanten Vokabular; frei gewählte Feldnamen erscheinen
   ausschließlich als stabiler Fingerprint. Ein Feldname ist Client-Inhalt und
   kann selbst PII sein — Werte erscheinen nie, weder im Log noch am Client.
+- **Bekannte Provider-Felder werden benannt, nicht einzeln entdeckt.** Zu
+  jeder Ebene gehört eine Liste real existierender Felder, die wir bewusst
+  NICHT behandeln (`KNOWN_UNSUPPORTED_MESSAGE_FIELDS`,
+  `KNOWN_UNSUPPORTED_PART_FIELDS`). Sie blocken wie jedes unbekannte Feld,
+  werden dem Betreiber aber beim Namen genannt, damit er nicht per
+  Trial-and-Error gegen die Allowlist raten muss. Was dort fehlt und was
+  bewusst nicht behandelt wird, steht im Code am Register.
+- **Offene Schwachstellen werden im Umfang beschrieben, nie im Bauplan.**
+  Eine noch offene Lücke wird nach Ebene und Wirkung dokumentiert („die
+  Feldebene innerhalb eines Parts wird nicht geprüft"), niemals mit einem
+  lauffähigen Beispiel-Payload. Unsere Doku ist öffentlich; ein Payload darin
+  ist eine Schritt-für-Schritt-Anleitung zur Umgehung der Maskierung, die
+  genau so lange nutzbar bleibt, wie der Fix braucht. Nach dem Fix darf die
+  Beschreibung konkret werden — ein neuer Payload gehört trotzdem nicht
+  hinein.
 
 ### Feld-Fingerprint — Formel
 
