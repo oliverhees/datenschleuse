@@ -200,6 +200,28 @@ Platzhalter, schlägt die Re-Identifikation **still** fehl — der Nutzer sieht
 einen stehengebliebenen Platzhalter oder, im schlimmsten Fall, den falschen
 Namen. Kleine Modelle brauchen hier mehr Aufmerksamkeit als große.
 
+### 4. Offen: der Hinweistext ist nur gegen ein Modell vermessen
+
+`ANONYMIZATION_NOTICE` geht an **jedes** Zielmodell in Produktion — über
+eurouter.ai also an gpt-4o-mini, claude-sonnet-5 und gemma-3-27b-it. Vermessen
+wurde er hier ausschließlich gegen das lokale **llama3.1:8b**.
+
+Das ist keine Kleinigkeit, denn Befund 1 zeigt: Die Formulierung entscheidet
+darüber, ob ein Modell Platzhalter indextreu zurückgibt. Was bei llama3.1:8b
+3 von 3 Läufen korrekt durchlief, kann bei einem anderen Modell anders
+ausfallen — in beide Richtungen. Der frühere Live-Befund vom 2026-07-29 wurde
+seinerzeit gegen gpt-4o-mini beobachtet, also gegen ein anderes Modell als das
+hier vermessene.
+
+Warum es hier nicht nachgemessen wurde: Ein Lauf gegen die Produktivmodelle
+bräuchte den echten eurouter-Key, und der wird nicht gelesen (Gesetz 5).
+Zusätzlich würden dabei Testdaten die Maschine verlassen — der ganze Grund,
+warum dieser Beweis auf einem lokalen Modell aufsetzt.
+
+**Zu tun vor dem nächsten Release:** Verifikation des Hinweistexts gegen
+mindestens ein Produktivmodell — Platzhalter indextreu zurückgegeben, keine
+Verweigerung. Eigenes Work Item.
+
 ## Voraussetzungen
 
 - Docker + Compose v2
