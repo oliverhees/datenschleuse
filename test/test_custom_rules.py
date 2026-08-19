@@ -493,3 +493,110 @@ class TestGuardrailIntegration(_RuleFileTestCase, unittest.IsolatedAsyncioTestCa
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===========================================================================
+# 9. F1 (Security-Audit) — eine eigene Regel darf NIE Schutz WEGNEHMEN
+#
+# Der gefaehrlichste denkbare Defekt fuer dieses Feature: Ein Anwender legt
+# eine Regel an, um sich ZUSAETZLICH zu schuetzen, und verliert dadurch
+# Schutz, den er vorher hatte -- ohne es zu merken. Ursache war, dass
+# _resolve_overlaps den ueberlappenden schwaecheren Treffer KOMPLETT verwarf,
+# auch wenn dieser den Gewinner echt enthielt.
+# ===========================================================================
+class TestCustomRuleNeverReducesMasking(_RuleFileTestCase):
+    def _presidio(self, text, wert, typ, score):
+        i = text.index(wert)
+        return {"entity_type": typ, "start": i, "end": i + len(wert), "score": score}
+
+    def test_custom_rule_does_not_unmask_rest_of_presidio_span(self):
+        """Regel auf 'Max' darf 'Mustermann' nicht im Klartext rauslassen."""
+        text = "Bitte melde dich bei Max Mustermann von Nordwind Logistik GmbH."
+        self.write_rules([
+            rule("kunde-max", entity="Kundenname", value="Max",
+                 examples=["Kunde Max meldet sich"]),
+            rule("kunde-nordwind", entity="Kundenname", value="Nordwind",
+                 examples=["Firma Nordwind meldet sich"]),
+        ])
+        rs = cr.RuleSet(self.path)
+
+        presidio = [
+            self._presidio(text, "Max Mustermann", "PERSON", 0.85),
+            self._presidio(text, "Nordwind Logistik GmbH", "DE_FIRMA", 0.6),
+        ]
+        maskiert = dg.Masker().mask(text, presidio + rs.find(text))
+
+        self.assertNotIn("Mustermann", maskiert)
+        self.assertNotIn("Logistik", maskiert)
+        self.assertNotIn("GmbH", maskiert)
+
+    def test_masking_with_custom_rules_covers_at_least_presidio_alone(self):
+        """Formal: die maskierte Zeichenmenge darf durch eigene Regeln nur
+        wachsen, nie schrumpfen."""
+        text = "Bitte melde dich bei Max Mustermann von Nordwind Logistik GmbH."
+        self.write_rules([rule("kunde-max", entity="Kundenname", value="Max",
+                               examples=["Kunde Max meldet sich"])])
+        rs = cr.RuleSet(self.path)
+        presidio = [self._presidio(text, "Max Mustermann", "PERSON", 0.85)]
+
+        def abgedeckt(entities):
+            positionen = set()
+            for e in dg.Masker._resolve_overlaps(entities, len(text)):
+                positionen.update(range(e["start"], e["end"]))
+            return positionen
+
+        nur_presidio = abgedeckt(presidio)
+        mit_eigenen = abgedeckt(presidio + rs.find(text))
+        self.assertTrue(nur_presidio.issubset(mit_eigenen),
+                        "eigene Regeln haben Abdeckung WEGGENOMMEN")
+
+
+class TestResolveOverlapsCoverage(unittest.TestCase):
+    """Direkt auf _resolve_overlaps -- die Stelle, an der F1 entstand."""
+
+    def test_stronger_short_span_inside_weaker_long_span_keeps_full_span(self):
+        text = "Max Mustermann"
+        entities = [
+            {"entity_type": "PERSON", "start": 0, "end": 14, "score": 0.85},
+            {"entity_type": "CUSTOM_KUNDENNAME", "start": 0, "end": 3, "score": 0.9},
+        ]
+        kept = dg.Masker._resolve_overlaps(entities, len(text))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual((kept[0]["start"], kept[0]["end"]), (0, 14))
+        self.assertEqual(kept[0]["entity_type"], "CUSTOM_KUNDENNAME")
+
+    def test_partial_overlap_masks_the_union(self):
+        entities = [
+            {"entity_type": "A", "start": 0, "end": 10, "score": 0.9},
+            {"entity_type": "B", "start": 5, "end": 20, "score": 0.4},
+        ]
+        kept = dg.Masker._resolve_overlaps(entities, 30)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual((kept[0]["start"], kept[0]["end"]), (0, 20))
+
+    def test_chained_overlaps_merge_transitively(self):
+        entities = [
+            {"entity_type": "A", "start": 0, "end": 6, "score": 0.9},
+            {"entity_type": "B", "start": 4, "end": 12, "score": 0.5},
+            {"entity_type": "C", "start": 10, "end": 18, "score": 0.6},
+        ]
+        kept = dg.Masker._resolve_overlaps(entities, 30)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual((kept[0]["start"], kept[0]["end"]), (0, 18))
+
+    def test_disjoint_spans_stay_separate(self):
+        entities = [
+            {"entity_type": "A", "start": 0, "end": 5, "score": 0.9},
+            {"entity_type": "B", "start": 10, "end": 15, "score": 0.5},
+        ]
+        kept = dg.Masker._resolve_overlaps(entities, 30)
+        self.assertEqual(len(kept), 2)
+
+    def test_adjacent_spans_are_not_merged(self):
+        """Direkt aneinandergrenzend ist KEINE Ueberlappung."""
+        entities = [
+            {"entity_type": "A", "start": 0, "end": 5, "score": 0.9},
+            {"entity_type": "B", "start": 5, "end": 10, "score": 0.5},
+        ]
+        kept = dg.Masker._resolve_overlaps(entities, 30)
+        self.assertEqual(len(kept), 2)

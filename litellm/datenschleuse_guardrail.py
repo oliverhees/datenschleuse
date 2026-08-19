@@ -478,9 +478,26 @@ class Masker:
 
     @staticmethod
     def _resolve_overlaps(entities: List[Dict[str, Any]], text_len: int) -> List[Dict[str, Any]]:
-        """Presidio kann ueberlappende Treffer liefern (z.B. PERSON und
-        LOCATION auf demselben Span). Wir behalten pro Position den Treffer mit
-        dem hoechsten Score und lassen ueberlappende, schwaechere fallen.
+        """Loest ueberlappende Treffer auf, OHNE je Abdeckung zu verlieren.
+
+        Presidio kann ueberlappende Treffer liefern (z.B. PERSON und LOCATION
+        auf demselben Span); mit den eigenen Regeln (DATENSCHLE-7) kommen
+        weitere hinzu. Der Typ wird weiterhin vom Treffer mit dem hoechsten
+        Score bestimmt -- die WEITE aber ist die Vereinigung aller
+        ueberlappenden Spans.
+
+        Sicherheits-Rationale (Security-Audit-Finding F1, HIGH): frueher wurde
+        der schwaechere Treffer bei Ueberlappung KOMPLETT verworfen. Enthielt
+        er den staerkeren, verschwand damit der Rest seines Spans aus der
+        Maskierung. Konkret: eine eigene Regel auf "Max" (Score 0.9) schlug
+        den Presidio-PERSON-Treffer "Max Mustermann" (0.85) -- und
+        "Mustermann" ging im KLARTEXT zum Anbieter. Wer eine Schutzregel
+        anlegte, senkte damit seinen Schutz, ohne es zu merken.
+
+        Genau das ist jetzt strukturell ausgeschlossen: die maskierte
+        Zeichenmenge kann durch einen zusaetzlichen Treffer nur WACHSEN, nie
+        schrumpfen. Ein etwas zu weit maskierter Span kostet hoechstens
+        Antwortqualitaet -- ein zu enger kostet Daten.
         """
         valid = [
             e for e in entities
@@ -490,13 +507,38 @@ class Masker:
             and e.get("entity_type")
         ]
         # Hoher Score zuerst, dann laengerer Span, dann fruehere Position.
+        # Dadurch legt der staerkste Treffer einer Gruppe den Typ fest.
         valid.sort(key=lambda e: (-float(e.get("score", 0.0)), -(e["end"] - e["start"]), e["start"]))
+
         kept: List[Dict[str, Any]] = []
         for e in valid:
-            if any(not (e["end"] <= k["start"] or e["start"] >= k["end"]) for k in kept):
-                continue  # ueberlappt einen bereits behaltenen, staerkeren Treffer
-            kept.append(e)
-        return kept
+            treffer = None
+            for k in kept:
+                if not (e["end"] <= k["start"] or e["start"] >= k["end"]):
+                    treffer = k
+                    break
+            if treffer is None:
+                kept.append(dict(e))
+            else:
+                # Vereinigung statt Verwerfen -- nie verkuerzen.
+                treffer["start"] = min(treffer["start"], e["start"])
+                treffer["end"] = max(treffer["end"], e["end"])
+
+        # Durch das Aufweiten koennen zwei behaltene Spans einander jetzt
+        # ueberlappen (transitive Ketten A-B-C). Ein Sweep in Startreihenfolge
+        # verschmilzt sie endgueltig; der hoechste Score gibt den Typ vor.
+        kept.sort(key=lambda e: (e["start"], e["end"]))
+        merged: List[Dict[str, Any]] = []
+        for e in kept:
+            if merged and e["start"] < merged[-1]["end"]:
+                letzter = merged[-1]
+                letzter["end"] = max(letzter["end"], e["end"])
+                if float(e.get("score", 0.0)) > float(letzter.get("score", 0.0)):
+                    letzter["entity_type"] = e["entity_type"]
+                    letzter["score"] = e.get("score", 0.0)
+            else:
+                merged.append(dict(e))
+        return merged
 
 
 class ReidStreamProcessor:
