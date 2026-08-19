@@ -291,6 +291,96 @@ class TestUnknownCallTypeFailsClosed(unittest.IsolatedAsyncioTestCase):
                     await _run(guard, data, bad)
 
 
+class TestTextPromptPayloadShape(unittest.IsolatedAsyncioTestCase):
+    """Der call_type sagt nur, WELCHE Route spricht -- nicht, wie ihr Payload
+    aussieht. Deshalb prueft der unterstuetzte Pfad zusaetzlich die FORM."""
+
+    async def test_prompt_list_of_strings_is_masked(self):
+        """Die OpenAI-API erlaubt eine Liste von Prompts (Batch)."""
+        guard = _guard()
+        data = {"prompt": [f"Konto {_IBAN}", "Max Mustermann anrufen"]}
+        out = await _run(guard, data, "atext_completion")
+        self.assertFalse(_leaks_plaintext(out))
+        self.assertNotIn("Max Mustermann", out["prompt"][1])
+
+    async def test_prompt_token_ids_are_blocked(self):
+        """Token-ID-Listen sind spezifiziert, aber kein analysierbarer Text:
+        Presidio findet darin nichts, waehrend die IDs denselben Klartext
+        tragen. 'Geprueft' waere hier eine Luege -> blocken."""
+        guard = _guard()
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run(guard, {"prompt": [1212, 5544, 9910]}, "atext_completion")
+
+    async def test_prompt_of_wrong_type_is_blocked(self):
+        for bad in ({"text": _IBAN}, 42, True):
+            with self.subTest(bad=type(bad).__name__):
+                guard = _guard()
+                with self.assertRaises(dg.DatenschleuseBlocked):
+                    await _run(guard, {"prompt": bad}, "atext_completion")
+
+    async def test_missing_prompt_is_blocked(self):
+        guard = _guard()
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run(guard, {"model": "x"}, "atext_completion")
+
+    async def test_text_completion_with_messages_is_blocked(self):
+        """Mehrdeutiger Payload: die Route wertet ihn als Text-Completion, im
+        Body steht aber zusaetzlich ein Chat-Kanal, den dieser Pfad nicht
+        verarbeitet. Genau so entsteht ein ungeprueftes Feld."""
+        guard = _guard()
+        data = {
+            "prompt": "harmlos",
+            "messages": [{"role": "user", "content": f"IBAN {_IBAN}"}],
+        }
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _run(guard, data, "atext_completion")
+
+
+class TestTextCompletionReturnPath(unittest.IsolatedAsyncioTestCase):
+    """AK 6: Re-Identifikation auf dem Rueckweg muss fuer JEDE unterstuetzte
+    Route greifen.
+
+    /v1/completions antwortet mit ``choices[].text`` -- NICHT mit
+    ``choices[].message.content``. Ohne eigene Behandlung bekaeme der Client
+    rohe ``<IBAN_CODE_0>``-Platzhalter zurueck: kein Leck, aber die Route
+    waere nur halb unterstuetzt, und genau das soll dieses Work Item
+    beenden."""
+
+    async def test_non_streaming_text_choice_is_reidentified(self):
+        guard = _guard()
+        data = {"metadata": {dg.REID_MAP_KEY: {"<IBAN_CODE_0>": _IBAN}}}
+        response = {"choices": [{"text": "Konto <IBAN_CODE_0> ist gedeckt."}]}
+        out = await guard.async_post_call_success_hook(
+            data=data, user_api_key_dict=None, response=response
+        )
+        self.assertEqual(out["choices"][0]["text"], f"Konto {_IBAN} ist gedeckt.")
+
+    async def test_streaming_text_choice_is_reidentified(self):
+        """Der Platzhalter bricht mitten durch einen Chunk -- dasselbe
+        Sliding-Window wie im Chat-Kanal muss auch hier greifen."""
+        guard = _guard()
+        request_data = {"metadata": {dg.REID_MAP_KEY: {"<IBAN_CODE_0>": _IBAN}}}
+        chunks = [
+            {"choices": [{"text": "Konto <IBAN_"}]},
+            {"choices": [{"text": "CODE_0> ist"}]},
+            {"choices": [{"text": " gedeckt."}]},
+        ]
+
+        async def gen():
+            for chunk in chunks:
+                yield chunk
+
+        out = []
+        async for chunk in guard.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=None, response=gen(), request_data=request_data
+        ):
+            out.append(chunk)
+
+        text = "".join(c["choices"][0].get("text") or "" for c in out)
+        self.assertEqual(text, f"Konto {_IBAN} ist gedeckt.")
+        self.assertNotIn("<IBAN_CODE_0>", text)
+
+
 class TestSupportedRoutesStillWork(unittest.IsolatedAsyncioTestCase):
     """Regression: der Fix darf die tragende Route nicht brechen."""
 

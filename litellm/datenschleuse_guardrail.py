@@ -2043,6 +2043,15 @@ class DatenschleuseGuardrail(_GuardrailBase):
             if choices is None and isinstance(response, dict):
                 choices = response.get("choices")
             for choice in choices or []:
+                # /v1/completions antwortet mit ``choices[].text`` statt
+                # ``choices[].message.content`` (DATENSCHLE-69). Ohne diesen
+                # Zweig bekaeme der Client dort rohe Platzhalter zurueck --
+                # kein Leck, aber die Route waere nur halb unterstuetzt, und
+                # AK 6 verlangt den Rueckweg fuer JEDE unterstuetzte Route.
+                text = self._field(choice, "text")
+                if isinstance(text, str):
+                    self._set_field(choice, "text", reidentify_full(text, reid_map))
+
                 message = getattr(choice, "message", None)
                 if message is None and isinstance(choice, dict):
                     message = choice.get("message")
@@ -2259,46 +2268,64 @@ class DatenschleuseGuardrail(_GuardrailBase):
         return final_chunk
 
     @staticmethod
-    def _extract_delta(chunk: Any) -> Optional[str]:
-        """Holt ``choices[0].delta.content`` aus einem Chunk. Gibt None zurueck,
-        wenn kein Text-Delta vorhanden ist (dann Chunk unveraendert lassen)."""
-        try:
-            choices = getattr(chunk, "choices", None)
-            if choices is None and isinstance(chunk, dict):
-                choices = chunk.get("choices")
-            if not choices:
-                return None
-            first = choices[0]
-            delta = getattr(first, "delta", None)
-            if delta is None and isinstance(first, dict):
-                delta = first.get("delta")
-            if delta is None:
-                return None
-            content = getattr(delta, "content", None)
-            if content is None and isinstance(delta, dict):
-                content = delta.get("content")
-            return content if isinstance(content, str) else None
-        except Exception:
-            return None
+    def _delta_target(chunk: Any) -> Optional[Tuple[Any, str]]:
+        """Liefert (Container, Feldname) des Text-Kanals eines Chunks.
 
-    @staticmethod
-    def _set_delta(chunk: Any, value: str) -> None:
-        """Setzt ``choices[0].delta.content`` auf ``value``."""
+        Zwei Formen, weil die Datenschleuse zwei Routen bedient
+        (DATENSCHLE-69):
+
+        * Chat-Completions streamen ``choices[0].delta.content``.
+        * /v1/completions streamt ``choices[0].text`` -- es gibt dort gar kein
+          ``delta``-Objekt.
+
+        Lesen und Schreiben gehen bewusst durch DIESELBE Funktion. Wuerden
+        Extract und Set die Stelle unabhaengig voneinander bestimmen, koennte
+        ein Chat-Chunk ein fremdes ``text``-Feld bekommen (oder umgekehrt) --
+        also Text an einer Stelle landen, die der Client nicht liest, waehrend
+        der Platzhalter an der gelesenen stehen bleibt."""
         choices = getattr(chunk, "choices", None)
         if choices is None and isinstance(chunk, dict):
             choices = chunk.get("choices")
         if not choices:
-            return
+            return None
         first = choices[0]
         delta = getattr(first, "delta", None)
         if delta is None and isinstance(first, dict):
             delta = first.get("delta")
-        if delta is None:
+        if delta is not None:
+            return (delta, "content")
+        # Text-Completion-Chunk: der Text haengt direkt an der Choice.
+        if isinstance(first, dict):
+            if "text" in first:
+                return (first, "text")
+            return None
+        if hasattr(first, "text"):
+            return (first, "text")
+        return None
+
+    @classmethod
+    def _extract_delta(cls, chunk: Any) -> Optional[str]:
+        """Holt das Text-Delta eines Chunks. Gibt None zurueck, wenn keines
+        vorhanden ist (dann Chunk unveraendert lassen)."""
+        try:
+            target = cls._delta_target(chunk)
+            if target is None:
+                return None
+            container, field = target
+            value = cls._field(container, field)
+            return value if isinstance(value, str) else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _set_delta(cls, chunk: Any, value: str) -> None:
+        """Setzt das Text-Delta eines Chunks -- an genau der Stelle, aus der
+        ``_extract_delta`` gelesen haette."""
+        target = cls._delta_target(chunk)
+        if target is None:
             return
-        if isinstance(delta, dict):
-            delta["content"] = value
-        else:
-            delta.content = value
+        container, field = target
+        cls._set_field(container, field, value)
 
     @staticmethod
     def _clear_finish_reason(chunk: Any) -> None:
