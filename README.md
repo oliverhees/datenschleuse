@@ -201,6 +201,12 @@ Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregis
 
 Gemessen gegen einen eigenen deutschen Testkorpus (`test/corpus/`): **Recall 100 %, Precision 100 %** über alle Pflicht-Entitäten (Ziel war ≥95 %/≥90 %). Lauf jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py`.
 
+## 🔁 Der Round-Trip, bewiesen
+
+Die zentrale Behauptung — *Klartext rein, Platzhalter zum Modell, Klartext zurück* — ist nicht nur unit-getestet, sondern gegen den echten Stack mitgeschnitten: der Upstream-Payload wird an der Vertrauensgrenze protokolliert, und dort steht nachweislich `<PERSON_1>` statt „Maria Meier". Inklusive Streaming über zerrissene Chunk-Grenzen hinweg.
+
+Selbst nachvollziehen: `./test/run-e2e-roundtrip.sh` — Details und Artefakte in [E2E-ROUNDTRIP-BEWEIS.md](docs/E2E-ROUNDTRIP-BEWEIS.md).
+
 ## ⚠️ Ehrliche DSGVO-Einordnung (bitte lesen)
 
 Die Datenschleuse **reduziert das Risiko erheblich**, indem Personendaten gar nicht erst im Klartext an den Modellanbieter gehen. Sie ist eine technische Maßnahme im Sinne von **Art. 25 DSGVO** (Datenschutz durch Technikgestaltung), eine zusätzliche Schutzschicht. Aber:
