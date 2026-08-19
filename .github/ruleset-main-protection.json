@@ -2,6 +2,7 @@
   "name": "main-protection",
   "target": "branch",
   "enforcement": "active",
+  "bypass_actors": [],
   "conditions": {
     "ref_name": {
       "include": ["~DEFAULT_BRANCH"],
@@ -26,10 +27,10 @@
       "parameters": {
         "strict_required_status_checks_policy": true,
         "required_status_checks": [
-          { "context": "test" },
-          { "context": "syntax-check" },
-          { "context": "security" },
-          { "context": "gates" }
+          { "context": "test", "integration_id": 15368 },
+          { "context": "syntax-check", "integration_id": 15368 },
+          { "context": "security", "integration_id": 15368 },
+          { "context": "gates", "integration_id": 15368 }
         ]
       }
     }
