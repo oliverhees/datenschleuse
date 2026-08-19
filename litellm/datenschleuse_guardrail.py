@@ -1459,13 +1459,59 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Die bekannten Platzhalter werden vorher durch ein neutrales Zeichen
         ersetzt: sonst wuerde die Erkennung womoeglich den Platzhalter selbst
         (``<PERSON_0>``) als Namen lesen und jeden korrekt maskierten
-        Tool-Aufruf blocken."""
+        Tool-Aufruf blocken.
+
+        Aus dem Ergebnis werden die Treffer der EIGENEN Regeln des Anwenders
+        (DATENSCHLE-7, Praefix ``CUSTOM_``) herausgefiltert. Zwei Gruende:
+
+        1. Sie haetten hier nichts mehr zu finden. Eigene Regeln sind
+           deterministische Literale bzw. Regexe, die im ersten Durchlauf
+           bereits ueber jeden Textknoten gelaufen sind. Was sie dort nicht
+           getroffen haben, koennen sie hier nicht neu treffen -- die
+           Ersetzung kann einen Match nur zerstoeren. Presidio dagegen ist
+           kontextbasiert: dort kann der zweite Durchlauf sehr wohl etwas
+           finden, was der erste uebersehen hat. Fuer Presidio hat diese
+           Nachpruefung also einen Zweck, fuer deterministische Regeln nicht.
+
+        2. Sie erzeugen hier FALSCHE Treffer. Gemessen (drei Faelle):
+           Ein Muster, das Whitespace ueberspannt (``Nord\s*wind``), greift
+           auf ``Nord<PERSON_0>wind`` erst NACH der Ersetzung, weil aus dem
+           Platzhalter ein Leerzeichen wird -- im Original passte es nicht.
+           Ebenso trifft ein Muster wie ``\s{3,}`` die Leerzeichenkette, die
+           aus mehreren angrenzenden Platzhaltern entsteht. Beides sind
+           Treffer, die ausschliesslich durch die Nachpruefung entstehen --
+           und jeder davon haette einen korrekt maskierten Request blockiert,
+           mit einer Meldung, die auf einen Maskierungsfehler zeigt. Wer ein
+           breites eigenes Muster anlegt, haette damit seine eigenen Anfragen
+           lahmgelegt.
+
+        Ein breites Grossbuchstaben-Muster (``[A-Z]{5,}``) ist dagegen
+        unauffaellig -- das faengt die Neutralisierung bereits ab. Der Filter
+        schliesst den Suchraum aber grundsaetzlich statt fillerabhaengig.
+
+        WARUM FILTERN UND NICHT ``_presidio_analyze`` AUFRUFEN: Beides schliesst
+        denselben Suchraum, und der direkte Aufruf waere die elegantere Form.
+        ``_analyze`` ist hier aber die Naht, an der die Tests dieses Moduls
+        die Erkennung ersetzen (test_toolcall_masking.py setzt
+        ``guard._analyze``). Ein Wechsel des Aufrufs -- oder auch nur ein
+        zusaetzlicher Parameter -- laesst diese Mocks ins Leere laufen und
+        schickt zehn Tests gegen das echte Netzwerk. Der Filter erreicht
+        dasselbe Ergebnis, ohne fremde Testnaehte zu zerschneiden.
+
+        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Diesen Filter zu entfernen
+        bringt den Defekt zurueck. Er ist nicht kosmetisch und nicht
+        defensiv -- er ist die Bedingung dafuer, dass ein Anwender ein breites
+        eigenes Muster anlegen kann, ohne seine eigenen Anfragen lahmzulegen.
+        """
         if not isinstance(text, str) or not text.strip():
             return
         probe = text
         for placeholder in sorted(masker.reid_map, key=len, reverse=True):
             probe = probe.replace(placeholder, _PLACEHOLDER_PROBE_FILLER)
-        leftovers = await self._analyze(probe)
+        leftovers = [
+            e for e in await self._analyze(probe)
+            if not str(e.get("entity_type", "")).startswith(cur.ENTITY_PREFIX)
+        ]
         if leftovers:
             types = sorted({str(e.get("entity_type")) for e in leftovers})
             # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
