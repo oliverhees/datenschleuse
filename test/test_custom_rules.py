@@ -813,3 +813,52 @@ class TestEntityNameDoesNotLeakTheSecret(_RuleFileTestCase):
         self.assertNotIn("Nordwind", maskiert)
         self.assertNotIn("Logistik", maskiert)
         self.assertIn("<CUSTOM_KUNDENNAME_0>", maskiert)
+
+
+# ===========================================================================
+# 13. F2 (Security-Audit) — das Zeitbudget gilt pro REQUEST, nicht pro Regel
+#
+# Mit einem Budget pro Regel summierte sich die Wartezeit: 20 pathologische
+# Muster = 20 x 0,25 s = 5 s pro Text. Und weil find() synchrone CPU-Arbeit
+# ist, blockiert sie waehrenddessen den asyncio-Event-Loop -- also auch
+# fremde, parallel laufende Requests.
+# ===========================================================================
+class TestMatchBudgetIsPerCall(_RuleFileTestCase):
+    def test_many_pathological_rules_stay_within_one_budget(self):
+        regeln = [
+            rule(f"redos-{i}", entity="MUELL", kind="regex", value=r"(a|a)*$",
+                 examples=["aaaaaaaaaa"])
+            for i in range(10)
+        ]
+        regeln.append(rule("heil", value="Adlerflug"))
+        self.write_rules(regeln)
+        rs = cr.RuleSet(self.path, match_timeout=0.2)
+
+        boese = "a" * 44 + "b Projekt Adlerflug"
+        start = time.monotonic()
+        treffer = self.matched_values(rs, boese)
+        dauer = time.monotonic() - start
+
+        self.assertIn("Adlerflug", treffer)
+        self.assertLess(dauer, 1.0,
+                        f"Budget summierte sich auf {dauer:.2f}s statt gedeckelt zu sein")
+
+    def test_healthy_rules_before_the_slow_one_still_match(self):
+        """Wer zuerst drankommt, liefert -- das Budget frisst nicht alles."""
+        self.write_rules([
+            rule("heil", value="Adlerflug"),
+            rule("redos", entity="MUELL", kind="regex", value=r"(a|a)*$",
+                 examples=["aaaaaaaaaa"]),
+        ])
+        rs = cr.RuleSet(self.path, match_timeout=0.2)
+        treffer = self.matched_values(rs, "a" * 44 + "b Projekt Adlerflug")
+        self.assertIn("Adlerflug", treffer)
+
+    def test_normal_ruleset_is_not_slowed_down(self):
+        self.write_rules([rule(f"r{i}", value=f"Begriff{i}",
+                               examples=[f"Text Begriff{i} hier"])
+                          for i in range(30)])
+        rs = cr.RuleSet(self.path)
+        start = time.monotonic()
+        rs.find("Ein ganz normaler Satz mit Begriff7 darin.")
+        self.assertLess(time.monotonic() - start, 0.5)
