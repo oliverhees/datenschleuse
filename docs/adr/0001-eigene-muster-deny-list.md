@@ -116,3 +116,44 @@ zu trainieren, was ISC-36 direkt widerspricht.
   Presidio-Instanz mit) — dieselbe bereits dokumentierte Grenze wie bei den
   deutschen Custom-Recognizern. Ein eigener Kundenname auf einem Screenshot
   wird also nicht durch eine eigene Regel geschwärzt.
+
+## Nachtrag 2026-08-19 — Korrekturen aus dem Security-Audit
+
+Zwei der oben genannten Konsequenzen haben sich durch die Audit-Findings F3 und
+F8 geändert. Der ursprüngliche Text bleibt stehen (er dokumentiert den
+Entscheidungsstand); hier steht, was heute gilt.
+
+**Zeitbudget und ReDoS (ersetzt den zweiten Punkt unter „Schwerer").**
+Das `timeout` des `regex`-Moduls begrenzt katastrophales Backtracking nicht
+mehr nur auf die betroffene Regel. Das Budget gilt für die gesamte
+Regelprüfung eines Textes und wird bedarfsgerecht auf die Regeln verteilt.
+Reicht es nicht, wird die Anfrage **blockiert** statt teilweise maskiert
+ausgeliefert (Finding F8).
+
+Grund: Ein Teilergebnis ist von einem vollständigen äußerlich nicht zu
+unterscheiden. „Regel läuft ins Timeout, alle anderen liefern weiter" klang
+nach Robustheit, hieß praktisch aber: ein Teil der Treffer war maskiert, der
+Rest ging im Klartext hinaus — ohne jedes Signal.
+
+**Abgrenzung zu ISC-26.** Das Kriterium schützt davor, dass ein *fehlerhaftes
+Muster* die Pipeline lahmlegt. Das gilt unverändert: fehlerhafte Muster werden
+beim **Laden** erkannt und einzeln in Quarantäne gestellt, der Betrieb läuft
+weiter. Ein **Match-Timeout zur Laufzeit** ist ein anderer Sachverhalt — dort
+ist nicht das Muster das Problem, sondern die unbekannte *Vollständigkeit* des
+Ergebnisses. Unbekannte Abdeckung als vollständig auszuliefern wäre ein
+Datenleck, kein Verfügbarkeitsgewinn.
+
+**Unlesbare Regeldatei (präzisiert den dritten Punkt unter „Schwerer").**
+Der ursprüngliche Text galt nur für den Warmlauf. Zwei Fälle sind zu trennen
+(Finding F3):
+
+- **Warmlauf** — die Datei wird beschädigt, während ein gültiger Regelsatz im
+  Speicher steht: dieser bleibt aktiv, der Fehler wird laut gemeldet. Wie
+  ursprünglich beschrieben.
+- **Kaltstart** — beim Start ist die Datei bereits beschädigt: dann gibt es
+  keinen letzten gültigen Stand, es ist **nichts** aktiv. Die eigene
+  Maskierungsschicht ist ausgefallen, die Presidio-Erkennung läuft weiter. Die
+  Meldung sagt das ausdrücklich, statt einen aktiven Regelsatz zu behaupten.
+
+Die Unterscheidung ist nicht kosmetisch: Die ursprüngliche Formulierung hätte
+einem Betreiber im Kaltstartfall Schutz zugesichert, den es nicht gab.

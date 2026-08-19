@@ -208,16 +208,20 @@ kein Satz.
 - **Keine Werte in Logs.** Fehlermeldungen nennen nur Regelnamen und
   Fehlerkategorie, nie den Regelwert.
 - **Kategorienamen werden geprüft.** Ein `--entity`, das ein Wort mit dem Wert teilt, wird abgelehnt — sonst reiste der Name im Platzhalter zum Anbieter, während der Wert maskiert ist.
-- **ReDoS-Schutz.** Ein Muster mit exponentiellem Backtracking läuft in ein
-  Zeitbudget und wird für diesen Text übersprungen, statt den Request
-  anzuhalten. Alle anderen Regeln greifen weiter.
+- **Zeitbudget mit fail-closed.** Die Regelprüfung hat pro Anfrage ein festes
+  Zeitbudget. Reicht es nicht — etwa weil ein Muster mit exponentiellem
+  Backtracking rechnet —, wird die Anfrage **blockiert**, nicht halb maskiert
+  ausgeliefert. Ein unvollständiges Ergebnis sieht von außen genau aus wie ein
+  vollständiges; deshalb darf es keins geben. Wer diese Meldung sieht, hat ein
+  zu teures Muster: `datenschleuse-rules list` zeigt die Kandidaten.
 
 ## Grenzen, die ihr kennen solltet
 
-- **Bilder.** Der Image-Redactor bringt eine eigene Presidio-Instanz mit und
-  kennt eure Regeln nicht. Ein Kundenname auf einem Screenshot wird dadurch
-  nicht geschwärzt. Für sensible Setups bleibt `DATENSCHLEUSE_IMAGE_POLICY=block`
-  die ehrlichere Wahl.
+- **Bilder.** Eure eigenen Regeln wirken auf Text, nicht auf Bildinhalte —
+  der Image-Redactor ist ein eigener Dienst mit eigener Erkennung. Verlasst
+  euch für eigene Begriffe also nicht auf Bilder. Wer das nicht in Kauf nehmen
+  will, setzt `DATENSCHLEUSE_IMAGE_POLICY=block`; dann kommen Bilder gar nicht
+  erst durch.
 - **Schreibweisen.** Eine Regel trifft, was dasteht. `Nordwind Logistik`
   fängt nicht `Nordwind-Logistik` oder `Nordwind GmbH`. Für Varianten entweder
   mehrere Begriffe anlegen oder ein Muster schreiben — und mit
