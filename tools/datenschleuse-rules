@@ -149,8 +149,11 @@ def cmd_add(args) -> int:
         regel = cr.add_rule(pfad, roh)
     except cr.RuleError as exc:
         print(farbe(f"Nicht gespeichert — {exc}", ROT))
-        print(farbe("Kein ungetestetes Muster geht live (ISC-24). Die "
-                    "Regeldatei ist unveraendert.", GELB))
+        # Der ISC-24-Hinweis passt nur zum roten Testfall; bei einem
+        # Validierungsfehler waere er irrefuehrend.
+        if "Testfall" in str(exc):
+            print(farbe("Kein ungetestetes Muster geht live (ISC-24).", GELB))
+        print(farbe("Die Regeldatei ist unveraendert.", GELB))
         return 1
 
     print(farbe(f"✓ Regel {regel.name!r} gespeichert und SOFORT aktiv.", GRUEN))
