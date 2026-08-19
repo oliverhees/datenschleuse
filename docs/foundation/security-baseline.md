@@ -42,15 +42,15 @@ Tabelle werden gemeinsam geändert, nie einzeln):
 | function | `name`, `arguments` | — | blockiert |
 | content-Part | `text` | `image_url` (nach Image-Policy) | Part-**Typ** blockiert; Part-**Felder** ⚠️ siehe unten |
 
-> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Für
-> content-Parts gilt die Allowlist bisher nur für den Part-**Typ**, nicht für
-> die **Felder** eines Parts. Ein Text-Part mit einem Zusatzfeld —
-> `{"type":"text","text":"harmlos","notiz":"<PII>"}` — läuft ungeprüft durch:
-> `text` wird maskiert, das Zusatzfeld unverändert weitergereicht
-> (verifiziert). Die Zeile oben beschreibt insoweit den Soll-, nicht den
-> Ist-Zustand. Der Defekt stammt aus DATENSCHLE-57 und ist in
-> **DATENSCHLE-65** terminiert; bis dahin gilt die Zusage „Rest blockiert"
-> auf der Part-Ebene **nicht**.
+> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Die Allowlist
+> greift für content-Parts derzeit auf den Part-**Typ**; die **Feldebene**
+> innerhalb eines Parts ist noch nicht erfasst und in Arbeit. Die Zeile oben
+> beschreibt insoweit den Soll-, nicht den Ist-Zustand: die Zusage „Rest
+> blockiert" gilt auf der Part-Ebene bis zum Merge von **DATENSCHLE-65**
+> **nicht**. Der Defekt stammt aus DATENSCHLE-57.
+>
+> Der genaue Umfang steht am Work Item, nicht hier — Begründung im Abschnitt
+> „Offene Schwachstellen in eigener Doku".
 >
 > Diese Warnung bleibt stehen, bis DATENSCHLE-65 gemerged ist. Eine
 > dokumentierte Sicherheitszusage, auf die sich ein Betreiber verlässt, ist
@@ -124,6 +124,28 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
 - **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String.
 - **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
   vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
+
+## Offene Schwachstellen in eigener Doku (bindend)
+
+Eigene Doku benennt eine offene Schwachstelle im **Umfang**, nie im **Bauplan**.
+Kein Beispiel-Payload, kein Reproduktionspfad für etwas Unbehobenes. Ehrlichkeit
+über den Ist-Zustand ja, Anleitung nein.
+
+Der Maßstab in einem Satz: Der Leser muss erkennen, worauf er sich **nicht**
+verlassen darf — er darf daraus nicht ableiten können, wie er es auslöst.
+
+- **Nennen:** betroffene Ebene, Tragweite der Abweichung, Work Item, ab wann die
+  Zusage wieder gilt.
+- **Weglassen:** Payload, Feldnamen, Struktur, Typ, Aufrufreihenfolge — alles,
+  woraus sich der Weg zur Lücke zusammensetzen lässt.
+- Der vollständige Sachverhalt gehört ans Work Item. Plane ist intern, dieses
+  Repository ist öffentlich: jede Zeile hier ist eine Veröffentlichung.
+- Nach dem Merge des Fixes darf die Beschreibung vollständig werden — vorher nicht.
+
+Das ist kein Widerspruch zum Klartext-Gebot: Vollständigkeit gilt nach innen,
+Zurückhaltung nach außen. Eine zu weit gefasste Sicherheitszusage ist ein Defekt
+(siehe Part-Ebene oben) — eine mitgelieferte Anleitung, sie zu umgehen, ist einer
+mit Reichweite.
 
 ## Threat Model
 - Beim Kickoff: STRIDE-Kurzdurchlauf pro Kernfeature, Ergebnis als
