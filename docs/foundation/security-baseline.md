@@ -30,32 +30,45 @@ Historie derselben Lücke — der Grund für diese Regel:
 - DATENSCHLE-64: der `content`-**Container** selbst (dict statt Liste)
 - DATENSCHLE-66: alle **Felder neben `content`**, allen voran
   `tool_calls[].function.arguments` (für agentische Clients der Normalfall)
+- DATENSCHLE-65: die **Felder innerhalb eines Content-Parts** — die Allowlist
+  griff dort bis dahin nur auf den Part-**Typ**
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
-`MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
-Tabelle werden gemeinsam geändert, nie einzeln):
+`MESSAGE_FIELDS_VALIDATED` und `PART_FIELDS_MASKED` / `PART_FIELDS_VALIDATED`
+in `litellm/datenschleuse_guardrail.py` — Code und Tabelle werden gemeinsam
+geändert, nie einzeln):
 
 | Ebene | maskiert | validiert (nicht maskiert) | Rest |
 |---|---|---|---|
 | Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
 | tool_call | `function` | `id`, `type`, `index` | blockiert |
 | function | `name`, `arguments` | — | blockiert |
-| content-Part | `text` | `image_url` (nach Image-Policy) | Part-**Typ** blockiert; Part-**Felder** ⚠️ siehe unten |
+| content-Part `text` | `text` | `type`, `cache_control` | blockiert |
+| content-Part `image_url` | — | `type`, `image_url` (nach Image-Policy), `cache_control` | blockiert |
+| `image_url`-Container | — | `url`, `detail` | blockiert |
 
-> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Die Allowlist
-> greift für content-Parts derzeit auf den Part-**Typ**; die **Feldebene**
-> innerhalb eines Parts ist noch nicht erfasst und in Arbeit. Die Zeile oben
-> beschreibt insoweit den Soll-, nicht den Ist-Zustand: die Zusage „Rest
-> blockiert" gilt auf der Part-Ebene bis zum Merge von **DATENSCHLE-65**
-> **nicht**. Der Defekt stammt aus DATENSCHLE-57.
->
-> Der genaue Umfang steht am Work Item, nicht hier — Begründung im Abschnitt
-> „Offene Schwachstellen in eigener Doku".
->
-> Diese Warnung bleibt stehen, bis DATENSCHLE-65 gemerged ist. Eine
-> dokumentierte Sicherheitszusage, auf die sich ein Betreiber verlässt, ist
-> selbst ein Sicherheitsmerkmal — eine zu weit gefasste Zusage ist ein Defekt,
-> auch wenn der Code darunter älter ist als sie.
+Die Part-Ebene ist damit auf **beiden** Achsen geschlossen: Allowlist für den
+Part-**Typ** (DATENSCHLE-57) und Allowlist für die **Felder** innerhalb eines
+Parts (DATENSCHLE-65). Bis DATENSCHLE-65 galt die Zusage „Rest blockiert" nur
+für den Typ — ein Part mit erlaubtem Typ durfte zusätzliche, ungeprüfte Felder
+tragen. Dasselbe gilt seither eine Ebene tiefer für den `image_url`-Container,
+dessen Zusatzfelder die Bild-Policy unverändert überlebten.
+
+`cache_control` ist auf Part-Ebene **zugelassen und validiert, nicht
+maskiert** — Anthropic-Clients hängen den Marker an Content-Blöcke, ein Block
+wäre Client-Breakage. Er trägt keinen Freitext (geschlossene Wertemengen für
+`type` und `ttl`), deshalb gilt er für Text- **und** Bild-Parts.
+
+**„Validiert" heißt Struktur, nicht Inhalt.** In der Tabelle bedeutet
+„validiert" ausschließlich: das Feld hat den erwarteten Typ und — wo eine
+geschlossene Wertemenge existiert (`cache_control.type`, `cache_control.ttl`,
+`image_url.detail`) — einen Wert daraus. Es bedeutet **nicht**, dass der Inhalt
+auf PII geprüft wird. Konkret bei `image_url.url`: geprüft wird, dass es ein
+String ist, nicht was darin steht. Bei `image_policy="pass"` verlässt dieser
+String den Proxy unverändert — eine URL kann also personenbezogene Daten in
+Pfad oder Query tragen und wird dabei nicht maskiert. Wer Bild-URLs aus
+Nutzereingaben zusammensetzt, betreibt `pass` auf eigenes Risiko;
+`redact` oder `block` sind die Voreinstellungen der Wahl.
 
 Regeln dazu:
 - IDs werden **validiert statt maskiert**: ihr Wert muss byte-identisch
@@ -87,6 +100,15 @@ Regeln dazu:
   aus unserem eigenen konstanten Vokabular; frei gewählte Feldnamen erscheinen
   ausschließlich als stabiler Fingerprint. Ein Feldname ist Client-Inhalt und
   kann selbst PII sein — Werte erscheinen nie, weder im Log noch am Client.
+- **Bekannte Provider-Felder werden benannt, nicht einzeln entdeckt.** Zu
+  jeder Ebene gehört eine Liste real existierender Felder, die wir bewusst
+  NICHT behandeln (`KNOWN_UNSUPPORTED_MESSAGE_FIELDS`,
+  `KNOWN_UNSUPPORTED_PART_FIELDS`). Sie blocken wie jedes unbekannte Feld,
+  werden dem Betreiber aber beim Namen genannt, damit er nicht per
+  Trial-and-Error gegen die Allowlist raten muss. Was dort fehlt und was
+  bewusst nicht behandelt wird, steht im Code am Register.
+- **Offene Schwachstellen werden im Umfang beschrieben, nie im Bauplan** —
+  ausgeführt im eigenen Abschnitt „Offene Schwachstellen in eigener Doku".
 
 ### Feld-Fingerprint — Formel
 
@@ -141,6 +163,9 @@ verlassen darf — er darf daraus nicht ableiten können, wie er es auslöst.
 - Der vollständige Sachverhalt gehört ans Work Item. Plane ist intern, dieses
   Repository ist öffentlich: jede Zeile hier ist eine Veröffentlichung.
 - Nach dem Merge des Fixes darf die Beschreibung vollständig werden — vorher nicht.
+  Ein veröffentlichter Payload bleibt genau so lange nutzbar, wie der Fix
+  braucht; das ist das Zeitfenster, das diese Regel schließt. Auch nach dem
+  Fix gehört ein neuer Payload nicht in die Doku.
 
 Das ist kein Widerspruch zum Klartext-Gebot: Vollständigkeit gilt nach innen,
 Zurückhaltung nach außen. Eine zu weit gefasste Sicherheitszusage ist ein Defekt
