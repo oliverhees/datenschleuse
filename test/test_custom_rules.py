@@ -19,6 +19,8 @@ Python-Stdlib-Paket "test" und schlaegt dort fehl, siehe DATENSCHLE-62):
     python3 -m unittest test_custom_rules -v
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -600,3 +602,110 @@ class TestResolveOverlapsCoverage(unittest.TestCase):
         ]
         kept = dg.Masker._resolve_overlaps(entities, 30)
         self.assertEqual(len(kept), 2)
+
+
+# ===========================================================================
+# 10. F3 (Security-Audit) — Kaltstart mit kaputter Regeldatei
+#
+# Bei JEDEM Container-Neustart wird ein frisches RuleSet gebaut. Ist die
+# Regeldatei dann beschaedigt, gibt es keinen "letzten guten Regelsatz" --
+# es ist schlicht NICHTS aktiv. Frueher war dieser Pfad komplett lautlos und
+# die Meldung behauptete das Gegenteil. Ein beschaedigtes Byte haette die
+# komplette eigene Maskierungsschicht still abgeschaltet.
+# ===========================================================================
+class TestColdStartWithBrokenFile(_RuleFileTestCase):
+    def _laden_mit_stderr(self):
+        fehler = io.StringIO()
+        with contextlib.redirect_stderr(fehler):
+            rs = cr.RuleSet(self.path)
+        return rs, fehler.getvalue()
+
+    def test_cold_start_broken_yaml_says_nothing_is_active(self):
+        """Die Meldung muss die WAHRHEIT sagen: es ist nichts aktiv."""
+        self.write_raw("rules: [ das ist: kein: gueltiges yaml")
+        rs, _ = self._laden_mit_stderr()
+
+        self.assertEqual(rs.active_rules, [])
+        self.assertTrue(rs.load_error)
+        # Darf NICHT behaupten, ein alter Regelsatz sei noch aktiv.
+        self.assertNotIn("zuletzt gueltige", rs.load_error)
+        self.assertIn("KEINE", rs.load_error)
+
+    def test_cold_start_broken_yaml_is_loud_on_stderr(self):
+        """Lautlos war der eigentliche Defekt -- der Betreiber muss es sehen."""
+        self.write_raw("rules: [ kaputt")
+        _, stderr = self._laden_mit_stderr()
+        self.assertTrue(stderr.strip(), "Kaltstart-Fehler wurde nicht gemeldet")
+        self.assertIn("datenschleuse", stderr.lower())
+
+    def test_cold_start_error_names_no_file_content(self):
+        """Auch die laute Meldung darf keinen Regelwert leaken (Gesetz 5)."""
+        self.write_raw('rules: [ {name: x, value: "Nordwind Sonderprojekt"')
+        rs, stderr = self._laden_mit_stderr()
+        self.assertNotIn("Nordwind", stderr)
+        self.assertNotIn("Nordwind", rs.load_error or "")
+
+    def test_warm_reload_keeps_last_good_and_says_so_truthfully(self):
+        """Der von Oliver freigegebene Pfad: hier gibt es einen letzten guten
+        Stand, und nur hier darf die Meldung das auch behaupten."""
+        self.write_rules([rule("heil", value="Adlerflug")])
+        rs, _ = self._laden_mit_stderr()
+        self.assertTrue(rs.find("Projekt Adlerflug"))
+
+        time.sleep(0.01)
+        self.write_raw("rules: [ jetzt kaputt")
+        fehler = io.StringIO()
+        with contextlib.redirect_stderr(fehler):
+            treffer = rs.find("Projekt Adlerflug")
+
+        self.assertTrue(treffer, "letzter guter Stand wurde verworfen")
+        self.assertIn("zuletzt gueltige", rs.load_error)
+        self.assertTrue(fehler.getvalue().strip(), "Reload-Fehler war lautlos")
+
+    def test_error_is_not_repeated_on_every_single_request(self):
+        """Laut ja -- aber kein Log-Spam bei jedem Request."""
+        self.write_raw("rules: [ kaputt")
+        rs, _ = self._laden_mit_stderr()
+        fehler = io.StringIO()
+        with contextlib.redirect_stderr(fehler):
+            for _ in range(20):
+                rs.find("irgendein Text")
+        self.assertEqual(fehler.getvalue(), "")
+
+    def test_recovery_after_fixing_the_file_is_reported(self):
+        """Wenn es wieder geht, soll man das auch sehen."""
+        self.write_raw("rules: [ kaputt")
+        rs, _ = self._laden_mit_stderr()
+        self.assertEqual(rs.active_rules, [])
+
+        time.sleep(0.01)
+        self.write_rules([rule("heil", value="Adlerflug")])
+        fehler = io.StringIO()
+        with contextlib.redirect_stderr(fehler):
+            treffer = rs.find("Projekt Adlerflug")
+
+        self.assertTrue(treffer)
+        self.assertIsNone(rs.load_error)
+        self.assertIn("wieder", fehler.getvalue().lower())
+
+
+class TestGuardrailSurfacesRuleFileError(_RuleFileTestCase,
+                                         unittest.IsolatedAsyncioTestCase):
+    async def test_guardrail_logs_broken_rule_file_at_startup(self):
+        """Der Guardrail wertete load_error frueher NIE aus -- nur die CLI auf
+        dem Host tat das. Im Container blieb der Fehler unsichtbar."""
+        self.write_raw("{{{ kein yaml")
+        fehler = io.StringIO()
+        with contextlib.redirect_stderr(fehler):
+            guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        self.assertTrue(fehler.getvalue().strip(),
+                        "Guardrail meldet die kaputte Regeldatei nicht")
+        self.assertIsNotNone(guard.custom_rules)
+
+    async def test_guardrail_startup_quiet_when_file_is_fine(self):
+        self.write_rules([rule("heil", value="Adlerflug")])
+        fehler = io.StringIO()
+        with contextlib.redirect_stderr(fehler):
+            dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+        self.assertEqual(fehler.getvalue(), "")

@@ -49,6 +49,7 @@ echter Kundenname sein kann) -- siehe ``_safe_reason``.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -331,8 +332,64 @@ class RuleSet:
         self._quarantined: List[QuarantinedRule] = []
         self._stat_key: Optional[Tuple[int, int]] = None
         self._seen_file = False
+        # Gab es in DIESEM Prozess je einen erfolgreich geladenen Regelsatz?
+        # Unterscheidet den Kaltstart (Container-Neustart mit kaputter Datei:
+        # es ist NICHTS aktiv) vom Warmlauf (die Datei geht kaputt, waehrend
+        # ein guter Satz im Speicher steht). Die beiden Faelle brauchen
+        # verschiedene Meldungen -- siehe Security-Finding F3.
+        self._has_good_ruleset = False
+        # Zuletzt GEMELDETER Fehler, damit die Warnung laut ist, aber nicht
+        # bei jedem Request erneut ins Log laeuft.
+        self._reported: Optional[str] = None
         self.load_error: Optional[str] = None
         self._reload_if_changed()
+
+    # -- Melden -------------------------------------------------------------
+    def _report(self, text: str, level: str = "FEHLER") -> None:
+        """Schreibt eine Betriebsmeldung nach stderr (Container-Log).
+
+        stderr statt stdout, weil das hier Stoerungsmeldungen sind und nicht
+        Programmausgabe -- und weil ein stiller Ausfall der Maskierungsschicht
+        genau der Defekt war, den Security-Finding F3 beschrieben hat.
+        """
+        print(f"[datenschleuse] {level}: {text}", file=sys.stderr, flush=True)
+
+    def _set_load_error(self, text: str) -> None:
+        """Setzt den Fehler und meldet ihn EINMAL pro Auftreten."""
+        if text != self._reported:
+            self._report(text)
+            self._reported = text
+        self.load_error = text
+
+    def _clear_load_error(self) -> None:
+        """Erfolgreich geladen: Fehler loeschen und Erholung melden."""
+        if self._reported is not None:
+            self._report(
+                "Regeldatei ist wieder lesbar -- die eigenen Regeln sind "
+                "wieder aktiv.", level="OK",
+            )
+            self._reported = None
+        self.load_error = None
+
+    def _fehlermeldung(self, ursache: str) -> str:
+        """Baut die Meldung, die zum tatsaechlichen Zustand PASST.
+
+        Der Unterschied ist nicht kosmetisch: Beim Kaltstart gibt es keinen
+        alten Regelsatz, auf den man zurueckfallen koennte -- dann ist die
+        eigene Maskierungsschicht schlicht AUS, und die Meldung muss das
+        sagen, statt Sicherheit zu suggerieren.
+        """
+        if self._has_good_ruleset:
+            return (
+                f"Regeldatei {self.path}: {ursache} -- der zuletzt gueltige "
+                f"Regelsatz bleibt aktiv."
+            )
+        return (
+            f"Regeldatei {self.path}: {ursache} -- es sind KEINE eigenen "
+            f"Regeln aktiv. Die eigene Maskierungsschicht ist ausgefallen; "
+            f"eigene Begriffe werden NICHT maskiert. Die Presidio-Erkennung "
+            f"laeuft unveraendert weiter. Pruefen mit: datenschleuse-rules list"
+        )
 
     # -- Zustand ------------------------------------------------------------
     @property
@@ -364,19 +421,18 @@ class RuleSet:
         except FileNotFoundError:
             if self._seen_file:
                 # Die Datei ist WEG, obwohl sie schon mal da war (geloeschter
-                # Mount o.ae.). Den letzten guten Stand behalten -- der Schutz
-                # darf nicht durch ein verschwundenes Volume ausfallen.
-                self.load_error = (
-                    f"Regeldatei {self.path} ist nicht mehr lesbar -- der "
-                    f"zuletzt gueltige Regelsatz bleibt aktiv."
-                )
+                # Mount o.ae.). Steht ein guter Satz im Speicher, bleibt er
+                # aktiv -- sonst ist die Schicht aus, und das wird gesagt.
+                self._set_load_error(self._fehlermeldung("Datei verschwunden"))
             else:
                 # Nie dagewesen: das Feature wird schlicht nicht genutzt.
+                # Das ist kein Fehler und wird deshalb auch nicht gemeldet.
                 self._active, self._quarantined = [], []
                 self.load_error = None
             return
         except OSError as exc:
-            self.load_error = f"Regeldatei {self.path} nicht lesbar: {exc}"
+            self._set_load_error(self._fehlermeldung(
+                f"nicht lesbar ({type(exc).__name__})"))
             return
 
         if key == self._stat_key:
@@ -390,14 +446,14 @@ class RuleSet:
             with open(self.path, encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
         except Exception as exc:
-            # Kaputte Datei: den letzten guten Stand BEHALTEN. Ein Tippfehler
-            # beim Handeditieren darf nicht den laufenden Schutz abschalten.
-            # Sichtbar wird der Fehler ueber load_error und die CLI.
-            self.load_error = (
-                f"Regeldatei {self.path} ist nicht lesbar/kein gueltiges YAML "
-                f"({type(exc).__name__}) -- der zuletzt gueltige Regelsatz "
-                f"bleibt aktiv."
-            )
+            # Kaputte Datei. Steht ein guter Satz im Speicher, bleibt er aktiv
+            # (ein Tippfehler beim Handeditieren soll den laufenden Schutz
+            # nicht abschalten). Beim KALTSTART gibt es keinen solchen Satz --
+            # dann ist die Schicht aus, und genau das wird laut gemeldet.
+            # Der Grund traegt nur den Ausnahme-TYP, nie Dateiinhalt (Gesetz 5):
+            # die YAML-Fehlermeldung zitiert die fehlerhafte Zeile woertlich.
+            self._set_load_error(self._fehlermeldung(
+                f"kein gueltiges YAML ({type(exc).__name__})"))
             return
 
         aktiv: List[Rule] = []
@@ -413,10 +469,8 @@ class RuleSet:
             roh_regeln = None
 
         if not isinstance(roh_regeln, list):
-            self.load_error = (
-                f"Regeldatei {self.path}: erwartet wird eine Liste unter "
-                f"'rules:' -- der zuletzt gueltige Regelsatz bleibt aktiv."
-            )
+            self._set_load_error(self._fehlermeldung(
+                "erwartet wird eine Liste unter 'rules:'"))
             return
 
         gesehen: Dict[str, int] = {}
@@ -454,7 +508,21 @@ class RuleSet:
 
         self._active = aktiv
         self._quarantined = quarantaene
-        self.load_error = None
+        self._has_good_ruleset = True
+        self._clear_load_error()
+
+        # Quarantaene ist zur Laufzeit sonst unsichtbar (Finding F4): wer die
+        # Datei von Hand editiert, sieht die rote Regel nur, wenn er zufaellig
+        # die CLI aufruft. Deshalb einmal pro Ladevorgang ins Container-Log --
+        # nur Regelnamen, nie Werte.
+        if quarantaene:
+            self._report(
+                f"{len(quarantaene)} eigene Regel(n) sind NICHT aktiv "
+                f"(Testfall rot oder ungueltig): "
+                f"{', '.join(q.name for q in quarantaene)}. "
+                f"Diese Muster schuetzen nicht. Details: datenschleuse-rules list",
+                level="WARNUNG",
+            )
 
     # -- Anwenden -----------------------------------------------------------
     def find(self, text: str) -> List[Dict[str, Any]]:
@@ -488,17 +556,17 @@ class RuleSet:
             except TimeoutError:
                 # Pathologisches Muster (ReDoS). Nur diese Regel faellt fuer
                 # diesen Text aus -- kein Wert wird geloggt (ISC-36).
-                print(
-                    f"[datenschleuse] Regel {regel.name!r} ueberschritt ihr "
-                    f"Zeitbudget und wurde fuer diesen Text uebersprungen; "
-                    f"alle anderen Regeln greifen weiter.",
-                    flush=True,
+                self._report(
+                    f"Regel {regel.name!r} ueberschritt ihr Zeitbudget und "
+                    f"wurde fuer diesen Text uebersprungen; alle anderen "
+                    f"Regeln greifen weiter.",
+                    level="WARNUNG",
                 )
             except Exception as exc:  # pragma: no cover - defensiv
-                print(
-                    f"[datenschleuse] Regel {regel.name!r} fehlgeschlagen "
+                self._report(
+                    f"Regel {regel.name!r} fehlgeschlagen "
                     f"({type(exc).__name__}); alle anderen Regeln greifen weiter.",
-                    flush=True,
+                    level="WARNUNG",
                 )
         return treffer
 
