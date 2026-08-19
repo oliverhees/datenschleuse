@@ -201,7 +201,7 @@ tatsächlich beheben kann.**
 | Was | Wo | Blockiert | Nur Bericht |
 |-----|----|-----------|-------------|
 | Python-Abhängigkeiten | `security`-Job in `ci.yml`, bei jedem PR | CRITICAL + HIGH, **nur mit verfügbarem Fix** | alles ohne Fix, MEDIUM, LOW, UNKNOWN |
-| Container-Images | `image-scan.yml`, wöchentlich + bei Pin-Änderung | CRITICAL, **nur mit verfügbarem Fix** | HIGH, MEDIUM, alles ohne Fix |
+| Container-Images | `image-scan.yml`, wöchentlich + bei Pin-Änderung | **nichts** (siehe „Der Presidio-Altbestand") | alles |
 
 Begründung im Einzelnen:
 
@@ -210,16 +210,59 @@ Begründung im Einzelnen:
   er nicht ändern kann — der klassische Weg, ein Gate unglaubwürdig zu machen.
   Diese Funde verschwinden aber nicht: Sie stehen im Bericht-Schritt (siehe
   unten).
-- **Abhängigkeiten strenger als Images (HIGH vs. nur CRITICAL).** Unsere
-  Abhängigkeiten haben wir selbst gewählt, und die Behebung ist meist eine
-  Zeile: Version hochziehen. Ein CVE im Basis-Image dagegen kommt von
-  außen und trifft jeden gleichzeitig laufenden PR. Bei HIGH auf Images zu
-  blockieren, hätte binnen Wochen alles lahmgelegt.
+- **Abhängigkeiten blockieren, Images nicht.** Unsere Abhängigkeiten haben
+  wir selbst gewählt, und die Behebung ist meist eine Zeile: Version
+  hochziehen. Ein CVE im Basis-Image dagegen kommt von außen, trifft jeden
+  gleichzeitig laufenden PR — und ist, wie sich beim ersten echten Lauf
+  zeigte, oft gar nicht von uns behebbar. Siehe nächster Abschnitt.
 - **Jeder Scan läuft zweimal.** Erst ein Bericht-Schritt mit `exit-code: 0`
   und weiter Schwelle (bis LOW herunter, inklusive der Funde ohne Fix), dann
   das eigentliche Gate. So steht *alles* im Job-Log — niemand kann später
   sagen, wir hätten es nicht gesehen —, aber nur die handhabbare Teilmenge
   stoppt den Merge. Sichtbarkeit und Blockade sind bewusst getrennt.
+
+### Der Presidio-Altbestand — offene Entscheidung für Oliver
+
+Der erste echte Lauf des Image-Scans (Run `32252889633`, 2026-08-19) hat die
+ursprünglich geplante Schwelle „CRITICAL mit Fix blockiert" sofort widerlegt:
+
+| Image | CRITICAL (mit Fix) | Gesamt (CRITICAL/HIGH/MEDIUM) |
+|-------|--------------------|-------------------------------|
+| `litellm:v1.97.0` | 0 | 0 |
+| `postgres:16.15-alpine` | 1 (CVE-2025-68121, Go-stdlib `crypto/tls`) | 43 |
+| `presidio-analyzer:2.2.362` | 9 (openssl, gnutls, perl) | 226 |
+| `presidio-anonymizer:2.2.362` | 9 (dieselben) | 228 |
+| `presidio-image-redactor:0.0.58` | vorhanden | — |
+
+Das Entscheidende ist nicht die Zahl, sondern dass **wir sie nicht senken
+können**: Die Presidio-Images sind Debian-basiert, und `2.2.362` *ist* der
+neueste von Microsoft veröffentlichte Stand. „In Debian gefixt" heißt nicht
+„von uns behebbar" — den Fix muss Microsoft in einen Rebuild gießen. Es gibt
+keinen Digest, auf den wir hochziehen könnten.
+
+Ein blockierender Check, den niemand erfüllen *kann*, ist exakt der
+Mechanismus, durch den Scanner abgeschaltet werden. Deshalb meldet
+`image-scan.yml` und blockiert nicht. Die Merge-Sperre sitzt dort, wo sie
+handhabbar ist: beim Dependency-Gate.
+
+Bemerkenswert im Kontrast: `litellm:v1.97.0` ist sauber. Das Image basiert auf
+Chainguard/Wolfi, wo minimale Angriffsfläche das Produktversprechen ist.
+
+**Zu entscheiden hat das Oliver, nicht ein Agent** (Gesetz 5 — Ausnahmen bei
+High/Critical genehmigt nur er). Die Optionen, ehrlich benannt:
+
+1. **Akzeptieren und dokumentieren.** Die Dienste hängen im internen
+   `datenschleuse-net` und sind nicht öffentlich erreichbar; die
+   OpenSSL-Lücke ist laut Beschreibung auf 32-Bit-Systemen relevant, wir
+   fahren 64 Bit. Kostet nichts, ändert aber am Auslieferungszustand nichts.
+2. **Analyzer/Anonymizer selbst bauen.** Presidio ist Open Source; ein
+   eigener Build auf gepatchter Basis (oder Wolfi) bringt die CRITICALs auf
+   null, kostet aber dauerhaft Wartung — wir übernehmen damit Microsofts Job.
+3. **Warten und beobachten.** Der wöchentliche Lauf meldet, sobald Microsoft
+   nachzieht; dann greift das normale Digest-Update (§1).
+
+Sobald der Altbestand entschieden ist, wird `image-scan.yml` Schritt 2 wieder
+auf `exit-code: "1"` gestellt. Der Schalter steht dort kommentiert.
 
 ### Wo die Scans hängen — und warum getrennt
 
