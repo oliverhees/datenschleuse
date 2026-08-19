@@ -775,7 +775,25 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return entities
         try:
             entities = entities + self.custom_rules.find(text)
+        except cur.RuleMatchingIncomplete as exc:
+            # Security-Finding F8 (HIGH): Die Regelpruefung konnte fuer diesen
+            # Text nicht vollstaendig laufen. Ein Teilergebnis waere hier das
+            # gefaehrlichste Ergebnis ueberhaupt -- der Text SIEHT maskiert
+            # aus, waehrend ein Teil der Vorkommen im Klartext hinausgeht,
+            # und niemand sucht nach einem Fehler, den er nicht sieht.
+            # Deshalb dieselbe Konsequenz wie bei nicht erreichbarem Presidio:
+            # blocken statt raten.
+            raise DatenschleuseBlocked(
+                f"Die eigenen Regeln konnten fuer diesen Text nicht "
+                f"vollstaendig geprueft werden ({exc}) -- Request blockiert "
+                f"(fail-closed). Eine unvollstaendige Maskierung waere von "
+                f"einer vollstaendigen nicht zu unterscheiden. Muster pruefen "
+                f"mit: datenschleuse-rules list"
+            ) from exc
         except Exception as exc:  # pragma: no cover - defensiv
+            # Andere Fehler der Regel-Schicht bleiben folgenlos fuer die
+            # Presidio-Maskierung (ISC-26): dort ist die Abdeckung bekannt,
+            # nur die eigene Zusatzschicht fehlt.
             print(
                 f"[datenschleuse] WARNUNG: eigene Regeln uebersprungen "
                 f"({type(exc).__name__}); Presidio-Maskierung bleibt aktiv.",
