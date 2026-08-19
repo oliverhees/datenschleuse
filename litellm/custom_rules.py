@@ -93,6 +93,14 @@ MAX_ENTITY_WORDS = 3
 # beruecksichtigt. Kuerzere sind zu generisch, um etwas zu verraten.
 MIN_LEAK_TOKEN_LENGTH = 3
 
+# Mindest-Zeitbudget pro Regel. Security-Finding F8: eine reine Aufteilung
+# nach ANZAHL (rest/offen) gab der ersten von 30 Regeln nur 1/31 des Budgets,
+# obwohl die uebrigen 30 fast nichts brauchten -- eine harmlose term-Regel
+# lief bei vielen Treffern ins Timeout, waehrend 96 % des Budgets ungenutzt
+# blieben. Der Mindestanteil verteilt nach BEDARF statt nach Kopfzahl:
+# gesunde Regeln verbrauchen Mikrosekunden und geben ihren Rest weiter.
+MIN_RULE_BUDGET = 0.05
+
 DEFAULT_SCORES = {"term": 0.9, "regex": 0.85}
 
 # Regelnamen sind Bezeichner, keine Freitexte -- sie tauchen in Meldungen und
@@ -103,6 +111,30 @@ _NAME_PATTERN = regex.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # Presidio-Registry (recognizers-config.yml: global_regex_flags 26); IGNORECASE
 # wird NICHT global gesetzt, sondern pro Regel ueber ``case_sensitive``.
 _BASE_FLAGS = regex.DOTALL | regex.MULTILINE
+
+
+class RuleMatchingIncomplete(Exception):
+    """Die Regelpruefung konnte fuer diesen Text NICHT vollstaendig laufen.
+
+    Security-Finding F8 (HIGH): Frueher behielt ``find()`` bei einem Timeout
+    die bereits gesammelten Treffer und lieferte sie als vollstaendiges
+    Ergebnis aus. Der Text sah dadurch korrekt maskiert aus, waehrend ein Teil
+    der Vorkommen im KLARTEXT zum Anbieter ging -- gemessen 1187 von 2000
+    maskiert, der Rest offen. Genau diese stille Teil-Maskierung ist
+    gefaehrlicher als ein sichtbarer Block: niemand sucht nach einem Fehler,
+    den er nicht sieht.
+
+    Deshalb gibt es fuer ein unvollstaendiges Ergebnis keinen Rueckgabewert
+    mehr, sondern diese Ausnahme. Der Guardrail uebersetzt sie in einen
+    fail-closed Block -- dieselbe Regel wie bei nicht erreichbarem Presidio.
+
+    Abgrenzung zu ISC-26: Jenes Kriterium schuetzt vor FEHLERHAFTEN MUSTERN,
+    und die werden weiterhin beim LADEN erkannt und einzeln in Quarantaene
+    gestellt, ohne die Pipeline zu beruehren. Hier geht es um etwas anderes:
+    um ein Ergebnis, dessen VOLLSTAENDIGKEIT unbekannt ist. Unbekannte
+    Abdeckung als vollstaendig auszuliefern waere ein Datenleck, kein
+    Verfuegbarkeitsgewinn.
+    """
 
 
 class RuleError(ValueError):
@@ -633,25 +665,70 @@ class RuleSet:
         for regel in self._active:
             rest = frist - time.monotonic()
             if rest <= 0:
+                # Auch hier kein Teilergebnis: uebersprungene Regeln bedeuten
+                # ungeprueften Text, und ungeprueft ist nicht dasselbe wie
+                # sauber (Finding F8).
                 self._report(
-                    f"Zeitbudget fuer die eigenen Regeln erschoepft; "
-                    f"{offen} Regel(n) wurden fuer diesen Text uebersprungen. "
-                    f"Das deutet auf ein pathologisches Muster hin -- pruefen "
-                    f"mit: datenschleuse-rules list",
-                    level="WARNUNG",
+                    f"Zeitbudget fuer die eigenen Regeln erschoepft, "
+                    f"{offen} Regel(n) ungeprueft. Der Request wird blockiert "
+                    f"(fail-closed) statt teilweise maskiert ausgeliefert. "
+                    f"Muster pruefen mit: datenschleuse-rules list",
+                    level="FEHLER",
                 )
-                break
+                raise RuleMatchingIncomplete(
+                    f"{offen} eigene Regel(n) konnten fuer diesen Text nicht "
+                    f"mehr geprueft werden (Zeitbudget erschoepft)."
+                )
             # FAIRER ANTEIL statt "wer zuerst kommt, frisst alles": jede Regel
             # bekoemmt den gleichen Bruchteil des VERBLEIBENDEN Budgets. Ein
             # pathologisches Muster verbrennt so nur seinen eigenen Anteil und
             # kann die gesunden Regeln dahinter nicht aushungern -- genau das
             # passierte mit einer simplen gemeinsamen Frist. Gesunde Regeln
             # brauchen Mikrosekunden und vererben ihren Rest an die naechsten.
-            anteil = rest / offen
+            # Verteilung nach BEDARF, nicht nach Kopfzahl (Finding F8): der
+            # Anteil ist mindestens MIN_RULE_BUDGET, gedeckelt auf den Rest.
+            # Gesunde Regeln brauchen Mikrosekunden und vererben ihren Rest;
+            # eine reine 1/N-Teilung verhungerte dagegen die vorderste Regel,
+            # obwohl fast das gesamte Budget ungenutzt blieb.
+            anteil = min(rest, max(rest / offen, MIN_RULE_BUDGET))
             offen -= 1
             try:
-                for m in regel.pattern.finditer(text, timeout=anteil):
-                    start, end = m.span()
+                # NUR die Spans innerhalb des Zeitbudgets einsammeln. Der
+                # ``timeout`` von finditer laeuft ueber die GESAMTE Iteration,
+                # also zaehlte frueher auch der Aufbau der Ergebnis-Dicts im
+                # Schleifenkoerper gegen das Regex-Budget (Finding F8). Genau
+                # deshalb war die TREFFERZAHL der Ausloeser und nicht die
+                # Textgroesse. Die Dicts entstehen jetzt ausserhalb.
+                spans = [m.span() for m
+                         in regel.pattern.finditer(text, timeout=anteil)]
+            except TimeoutError as exc:
+                # Kein Teilergebnis ausliefern. Wir wissen an dieser Stelle
+                # NICHT, wie viele Vorkommen noch gekommen waeren -- die
+                # bereits gefundenen als vollstaendig zu behandeln hiesse,
+                # den Rest im Klartext hinauszulassen (Finding F8, HIGH).
+                self._report(
+                    f"Regel {regel.name!r} ueberschritt ihr Zeitbudget. Die "
+                    f"Vollstaendigkeit der Maskierung ist damit fuer diesen "
+                    f"Text nicht gesichert -- der Request wird blockiert "
+                    f"(fail-closed) statt halb maskiert ausgeliefert. "
+                    f"Muster pruefen mit: datenschleuse-rules list",
+                    level="FEHLER",
+                )
+                raise RuleMatchingIncomplete(
+                    f"Regel {regel.name!r} konnte fuer diesen Text nicht "
+                    f"vollstaendig geprueft werden."
+                ) from exc
+            except Exception as exc:  # pragma: no cover - defensiv
+                # Andere Fehler bleiben regel-lokal (ISC-26): sie betreffen
+                # das Muster selbst, nicht die Vollstaendigkeit des Ergebnisses.
+                self._report(
+                    f"Regel {regel.name!r} fehlgeschlagen "
+                    f"({type(exc).__name__}); alle anderen Regeln greifen weiter.",
+                    level="WARNUNG",
+                )
+            else:
+                # Ergebnis-Dicts BEWUSST hier, ausserhalb des Zeitbudgets.
+                for start, end in spans:
                     if end > start:
                         treffer.append({
                             "entity_type": regel.entity_type,
@@ -663,21 +740,6 @@ class RuleSet:
                                 "recognizer_name": f"DatenschleuseCustomRule:{regel.name}",
                             },
                         })
-            except TimeoutError:
-                # Pathologisches Muster (ReDoS). Nur diese Regel faellt fuer
-                # diesen Text aus -- kein Wert wird geloggt (ISC-36).
-                self._report(
-                    f"Regel {regel.name!r} ueberschritt ihr Zeitbudget und "
-                    f"wurde fuer diesen Text uebersprungen; alle anderen "
-                    f"Regeln greifen weiter.",
-                    level="WARNUNG",
-                )
-            except Exception as exc:  # pragma: no cover - defensiv
-                self._report(
-                    f"Regel {regel.name!r} fehlgeschlagen "
-                    f"({type(exc).__name__}); alle anderen Regeln greifen weiter.",
-                    level="WARNUNG",
-                )
         return treffer
 
 

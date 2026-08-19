@@ -245,7 +245,14 @@ class TestFaultIsolation(_RuleFileTestCase):
 
     def test_catastrophic_regex_does_not_hang_the_pipeline(self):
         """Ein Muster mit exponentiellem Backtracking (ReDoS) darf den Request
-        nicht anhalten. Die Regel laeuft in ein Timeout, alle anderen liefern."""
+        nicht ANHALTEN.
+
+        Praezisiert nach Security-Finding F8: Der betroffene Request wird
+        sichtbar geblockt statt still halb maskiert ausgeliefert -- ein
+        Teilergebnis ist von einem vollstaendigen nicht zu unterscheiden.
+        "Nicht lahmlegen" heisst: begrenzte Zeit und kein Dauerschaden, NICHT
+        "liefere aus, was zufaellig fertig wurde".
+        """
         self.write_rules([
             rule("redos", entity="MUELL", kind="regex", value=r"(a|a)*$",
                  examples=["aaaaaaaaaa"]),
@@ -255,11 +262,14 @@ class TestFaultIsolation(_RuleFileTestCase):
         boese = "a" * 44 + "b Projekt Adlerflug"
 
         start = time.monotonic()
-        treffer = self.matched_values(rs, boese)
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find(boese)
         dauer = time.monotonic() - start
 
-        self.assertIn("Adlerflug", treffer)
-        self.assertLess(dauer, 5.0, "ReDoS-Regel hat die Pipeline blockiert")
+        self.assertLess(dauer, 5.0, "ReDoS-Regel hat die Pipeline angehalten")
+        # Kein Dauerschaden: der naechste, harmlose Text laeuft normal durch.
+        self.assertEqual(self.matched_values(rs, "Projekt Adlerflug laeuft"),
+                         ["Adlerflug"])
 
     def test_unknown_rule_type_is_quarantined_not_fatal(self):
         self.write_rules([
@@ -836,23 +846,28 @@ class TestMatchBudgetIsPerCall(_RuleFileTestCase):
 
         boese = "a" * 44 + "b Projekt Adlerflug"
         start = time.monotonic()
-        treffer = self.matched_values(rs, boese)
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find(boese)
         dauer = time.monotonic() - start
 
-        self.assertIn("Adlerflug", treffer)
         self.assertLess(dauer, 1.0,
                         f"Budget summierte sich auf {dauer:.2f}s statt gedeckelt zu sein")
 
-    def test_healthy_rules_before_the_slow_one_still_match(self):
-        """Wer zuerst drankommt, liefert -- das Budget frisst nicht alles."""
+    def test_pathological_rule_only_affects_texts_that_trigger_it(self):
+        """Eine pathologische Regel kostet nur die Texte, die sie ausloesen --
+        nicht den Betrieb. Texte ohne das Ausloesemuster laufen normal."""
         self.write_rules([
             rule("heil", value="Adlerflug"),
             rule("redos", entity="MUELL", kind="regex", value=r"(a|a)*$",
                  examples=["aaaaaaaaaa"]),
         ])
         rs = cr.RuleSet(self.path, match_timeout=0.2)
-        treffer = self.matched_values(rs, "a" * 44 + "b Projekt Adlerflug")
-        self.assertIn("Adlerflug", treffer)
+        # Harmloser Text: laeuft durch, obwohl die ReDoS-Regel geladen ist.
+        self.assertEqual(self.matched_values(rs, "Projekt Adlerflug laeuft"),
+                         ["Adlerflug"])
+        # Ausloesender Text: sichtbarer Block statt stiller Teil-Maskierung.
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find("a" * 44 + "b Projekt Adlerflug")
 
     def test_normal_ruleset_is_not_slowed_down(self):
         self.write_rules([rule(f"r{i}", value=f"Begriff{i}",
@@ -895,3 +910,84 @@ class TestFilePermissionWarning(_RuleFileTestCase):
         self.write_rules([rule("k", value="Adlerflug")])
         os.chmod(self.path, 0o664)
         self.assertTrue(cr.RuleSet(self.path).describe()["permission_warning"])
+
+
+# ===========================================================================
+# 15. F8 (Security-Audit) — Teil-Maskierung darf es nicht geben
+#
+# Der F2-Fix teilte das Budget nach ANZAHL statt nach BEDARF (rest/offen).
+# Eine harmlose term-Regel an Position 1 von 30 bekam 1/31 des Budgets,
+# obwohl die uebrigen 30 fast nichts brauchten -- bei vielen Treffern lief
+# sie ins Timeout. Und ``except TimeoutError`` behielt die bereits
+# gesammelten Treffer: ein TEILERGEBNIS wurde als vollstaendig behandelt.
+# Der Text sah korrekt maskiert aus, waehrend die Haelfte im Klartext ging.
+# ===========================================================================
+class TestPartialMatchingNeverLeaks(_RuleFileTestCase):
+    KUNDE = "Nordwind Logistik"
+
+    def _regelsatz(self, kunde_zuerst, n=30):
+        kunde = rule("kunde", entity="Kundenname", value=self.KUNDE,
+                     examples=[f"Kunde {self.KUNDE} meldet sich"])
+        fueller = [rule(f"fuell{i}", entity="Sonstiges", value=f"Begriff{i}",
+                        examples=[f"Text Begriff{i} hier"]) for i in range(n)]
+        return [kunde] + fueller if kunde_zuerst else fueller + [kunde]
+
+    def _kunden_treffer(self, rs, text):
+        return [t for t in rs.find(text)
+                if t["entity_type"] == "CUSTOM_KUNDENNAME"]
+
+    def test_all_occurrences_masked_with_rule_in_first_position(self):
+        """Das Leck: Regel an Position 1 von 30, 2000 Vorkommen."""
+        text = (self.KUNDE + " ") * 2000
+        self.write_rules(self._regelsatz(kunde_zuerst=True))
+        rs = cr.RuleSet(self.path)
+        self.assertEqual(len(self._kunden_treffer(rs, text)), 2000)
+
+    def test_rule_position_does_not_change_the_result(self):
+        """Die Position einer Regel in der Datei darf den Schutz nicht
+        beeinflussen -- das war der einzige Unterschied im Auditor-Befund."""
+        text = (self.KUNDE + " ") * 2000
+
+        self.write_rules(self._regelsatz(kunde_zuerst=True))
+        zuerst = len(self._kunden_treffer(cr.RuleSet(self.path), text))
+
+        time.sleep(0.01)
+        self.write_rules(self._regelsatz(kunde_zuerst=False))
+        zuletzt = len(self._kunden_treffer(cr.RuleSet(self.path), text))
+
+        self.assertEqual(zuerst, zuletzt)
+        self.assertEqual(zuerst, 2000)
+
+    def test_budget_is_not_wasted_on_healthy_rules(self):
+        """96 % des Budgets lagen ungenutzt, waehrend abgeschnitten wurde."""
+        text = (self.KUNDE + " ") * 2000
+        self.write_rules(self._regelsatz(kunde_zuerst=True, n=100))
+        rs = cr.RuleSet(self.path)
+        start = time.monotonic()
+        treffer = self._kunden_treffer(rs, text)
+        dauer = time.monotonic() - start
+        self.assertEqual(len(treffer), 2000)
+        self.assertLess(dauer, 1.0)
+
+    def test_timeout_never_returns_a_partial_result(self):
+        """Wenn die Zeit doch nicht reicht: lieber sichtbar blocken als still
+        halb maskieren. Ein Teilergebnis sieht korrekt aus und ist es nicht."""
+        self.write_rules([rule("kunde", entity="Kundenname", value=self.KUNDE,
+                               examples=[f"Kunde {self.KUNDE} meldet sich"])])
+        rs = cr.RuleSet(self.path)
+        rs.match_timeout = 0.0000001  # erst NACH dem Laden, sonst Quarantaene
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find((self.KUNDE + " ") * 5000)
+
+    def test_attack_scenario_many_occurrences_never_leaks(self):
+        """Angriff: Client kennt eine Regel und flutet den Text mit dem Wert."""
+        text = (self.KUNDE + " ") * 4000
+        self.write_rules(self._regelsatz(kunde_zuerst=True, n=20))
+        rs = cr.RuleSet(self.path)
+        try:
+            treffer = self._kunden_treffer(rs, text)
+        except cr.RuleMatchingIncomplete:
+            return  # sichtbarer Block ist ein zulaessiger Ausgang
+        maskiert = dg.Masker().mask(text, treffer)
+        self.assertNotIn(self.KUNDE, maskiert,
+                         "Werte sind im Klartext hinausgegangen")
