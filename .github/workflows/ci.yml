@@ -8,14 +8,24 @@ on:
 permissions:
   contents: read
 
+# SUPPLY-CHAIN-REGEL (DATENSCHLE-59), bindend fuer diese Datei:
+# JEDE `uses:`-Zeile wird auf einen Commit-SHA gepinnt, nie auf ein Tag.
+# Ein Tag wie `@v4` ist verschiebbar -- wer ihn verschiebt, fuehrt fremden
+# Code in unserer CI aus, mit unserem GITHUB_TOKEN. Der `# vX.Y.Z`-Kommentar
+# dahinter ist nur Lesehilfe fuer Menschen; verbindlich ist der SHA.
+# Wie man einen SHA sauber ermittelt (nie abschreiben, immer aufloesen):
+#   gh api repos/<owner>/<repo>/git/matching-refs/tags/<tag> \
+#     --jq '.[] | "\(.ref) \(.object.sha)"'
+# Details + Update-Verfahren: docs/foundation/supply-chain.md
+
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -r litellm/requirements-guardrail.txt -r test/requirements.txt
@@ -31,8 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # Kein Linter (ruff/flake8/...) festgelegt -- das ist eine
@@ -46,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: gitleaks (Secrets-Scan)
@@ -59,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Laufzettel pruefen (SHA-gepinnte Verdicts)
