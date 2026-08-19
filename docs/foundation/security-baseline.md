@@ -73,6 +73,43 @@ Regeln dazu:
   ausschließlich als stabiler Fingerprint. Ein Feldname ist Client-Inhalt und
   kann selbst PII sein — Werte erscheinen nie, weder im Log noch am Client.
 
+### Feld-Fingerprint — Formel
+
+Damit ein Betreiber einen Fingerprint selbst nachrechnen kann, ohne in den
+Quellcode zu sehen:
+
+```
+fingerprint(feldname) = sha256(repr(feldname).encode("utf-8")).hexdigest()[:8]
+```
+
+`repr()` (nicht `str()`), weil ein Feldname nicht zwingend ein String ist.
+Nachrechnen in der Shell:
+
+```bash
+python3 -c 'import hashlib;print(hashlib.sha256(repr("mein_feld").encode()).hexdigest()[:8])'
+```
+
+Der Fingerprint ist stabil: derselbe Name ergibt immer denselben Wert. Damit
+lässt sich ein blockendes Feld durch Vergleich eingrenzen, ohne dass der Name
+selbst das System verlässt.
+
+### Verifikationsdurchlauf — bekannte Grenzen
+
+Der Durchlauf ist bewusst streng und erhöht die Blockrate für **legitime**
+Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
+
+- **Boundary-Artefakte der Erkennung.** Derselbe Analyzer kann an derselben
+  Stelle im zweiten Durchlauf anschlagen, wo er im ersten nichts fand, weil
+  sich der umgebende Kontext durch die Ersetzung verändert hat. Gegen echtes
+  Presidio belegt: `{"projekt":"Digitalisierung Rathaus Muenchen",
+  "ansprechpartner":"Frau Schmidt"}` wird geblockt — der Knoten-Durchlauf
+  erkennt „Digitalisierung" als LOCATION und übersieht „Rathaus Muenchen",
+  der Verifikationsdurchlauf findet es dann. **Kein Code-Fehler.** Die
+  Blockmeldung nennt deshalb beide möglichen Ursachen und unterstellt keine.
+- **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String.
+- **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
+  vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
+
 ## Threat Model
 - Beim Kickoff: STRIDE-Kurzdurchlauf pro Kernfeature, Ergebnis als
   `docs/adr/` bzw. Anhang hier. Bei neuen Angriffsflächen aktualisieren.

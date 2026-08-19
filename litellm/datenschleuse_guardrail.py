@@ -1332,11 +1332,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
             types = sorted({str(e.get("entity_type")) for e in leftovers})
             # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
             # Client-Inhalt) -- nie den Fundtext selbst (Gesetz 5).
+            # Formulierung bewusst ehrlich (QA-Audit): ein Restbefund ist
+            # NICHT zwingend ein Fehler im Maskierungspfad. Er entsteht auch
+            # durch Grenzfaelle der Erkennung selbst -- derselbe Analyzer
+            # findet an derselben Stelle im zweiten Durchlauf etwas, das er
+            # im ersten uebersehen hat, weil sich der umgebende Kontext durch
+            # die Ersetzung veraendert hat. Belegt am Beispiel
+            # "Digitalisierung Rathaus Muenchen" + "Frau Schmidt". Eine
+            # Meldung, die dem Betreiber einen Code-Fehler unterstellt, waere
+            # in diesen Faellen schlicht falsch.
             raise DatenschleuseBlocked(
                 "Nach der Maskierung wurden weiterhin personenbezogene Daten "
                 f"erkannt ({', '.join(types)}) -- Request blockiert "
-                "(fail-closed). Das ist ein Fehler in der Maskierung, kein "
-                "Konfigurationsproblem."
+                "(fail-closed). Ursache ist entweder eine Luecke im "
+                "Maskierungspfad oder ein Grenzfall der Erkennung, bei dem "
+                "erst der zweite Durchlauf anschlaegt. In beiden Faellen "
+                "gilt: im Zweifel nicht rauslassen."
             )
 
     async def _mask_arguments(
@@ -1596,6 +1607,15 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # JSON-Strings landet, den der Client wieder zusammensetzt.
         escaped_map = json_escaped_mapping(reid_map)
         tool_states: Dict[Any, Dict[str, Any]] = {}
+        # Reasoning-Modelle streamen ihre Gedankenkette in einem EIGENEN
+        # Delta-Feld, nicht in delta.content. Ohne eigenen Prozessor sah der
+        # Nutzer dort rohe <PERSON_0>-Tokens: kein Leck, aber AK3 verlangt,
+        # dass die Re-Identifikation "ebenso greift wie beim Textkanal" --
+        # und Streaming-Reasoning ist ein beworbenes Client-Kernfeature.
+        reasoning_processor = ReidStreamProcessor(
+            reid_map, margin=self.placeholder_margin
+        )
+        last_reasoning_chunk = None
 
         last_content_chunk = None
         try:
@@ -1603,6 +1623,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 self._stream_reidentify_tool_calls(
                     chunk, tool_states, escaped_map, reid_map
                 )
+                if self._stream_reidentify_reasoning(chunk, reasoning_processor):
+                    last_reasoning_chunk = chunk
                 content = self._extract_delta(chunk)
                 if content is None:
                     # Chunk ohne Text-Delta (role-only, finish_reason, usage) ->
@@ -1635,6 +1657,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 if state["template"] is None or not any(tails.values()):
                     continue
                 yield self._build_tool_tail_chunk(state["template"], key, tails)
+            # Und der Rest des Reasoning-Puffers -- ohne diesen Flush fehlt
+            # dem Nutzer das Ende der Gedankenkette.
+            reasoning_tail = reasoning_processor.flush()
+            if reasoning_tail and last_reasoning_chunk is not None:
+                yield self._build_reasoning_tail_chunk(
+                    last_reasoning_chunk, reasoning_tail
+                )
 
     # ---- Post-Call Non-Streaming: einfacher Voll-Ersatz -------------------
     async def async_post_call_success_hook(
@@ -1803,6 +1832,39 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     self._set_field(function, field, state[field].feed(value))
             state["template"] = chunk
 
+    def _stream_reidentify_reasoning(
+        self, chunk: Any, processor: ReidStreamProcessor
+    ) -> bool:
+        """Ersetzt Platzhalter im Reasoning-Delta EINES Chunks (in-place).
+
+        Gibt True zurueck, wenn der Chunk ueberhaupt Reasoning trug -- dann
+        taugt er als Vorlage fuer den Abschluss-Chunk."""
+        delta = self._chunk_delta(chunk)
+        if delta is None:
+            return False
+        value = self._field(delta, "reasoning_content")
+        if not isinstance(value, str):
+            return False
+        self._set_field(delta, "reasoning_content", processor.feed(value))
+        return True
+
+    def _blank_stream_fragments(self, chunk: Any) -> None:
+        """Leert in einem GEKLONTEN Chunk alle Fragmente, die der Client
+        bereits bekommen hat. Ohne das wuerde ein Abschluss-Chunk den Inhalt
+        seiner Vorlage ein zweites Mal ausliefern."""
+        self._set_delta(chunk, "")
+        delta = self._chunk_delta(chunk)
+        if delta is not None and isinstance(
+            self._field(delta, "reasoning_content"), str
+        ):
+            self._set_field(delta, "reasoning_content", "")
+        for _key, function in self._iter_stream_functions(chunk):
+            if function is None:
+                continue
+            for field in ("arguments", "name"):
+                if isinstance(self._field(function, field), str):
+                    self._set_field(function, field, "")
+
     def _build_tool_tail_chunk(
         self, template: Any, key: Any, tails: Dict[str, str]
     ) -> Any:
@@ -1813,15 +1875,24 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Fragmente im Klon werden geleert, damit nichts doppelt beim Client
         ankommt -- uebrig bleibt genau der Rest."""
         final_chunk = copy.deepcopy(template)
-        self._set_delta(final_chunk, "")
+        self._blank_stream_fragments(final_chunk)
         for other_key, function in self._iter_stream_functions(final_chunk):
-            if function is None:
+            if function is None or other_key != key:
                 continue
             for field in ("arguments", "name"):
-                if not isinstance(self._field(function, field), str):
-                    continue
-                value = tails.get(field, "") if other_key == key else ""
-                self._set_field(function, field, value)
+                if isinstance(self._field(function, field), str):
+                    self._set_field(function, field, tails.get(field, ""))
+        self._clear_finish_reason(final_chunk)
+        return final_chunk
+
+    def _build_reasoning_tail_chunk(self, template: Any, tail: str) -> Any:
+        """Abschluss-Chunk fuer den Reasoning-Restpuffer -- gleiche Mechanik
+        wie beim Content- und Tool-Call-Tail."""
+        final_chunk = copy.deepcopy(template)
+        self._blank_stream_fragments(final_chunk)
+        delta = self._chunk_delta(final_chunk)
+        if delta is not None:
+            self._set_field(delta, "reasoning_content", tail)
         self._clear_finish_reason(final_chunk)
         return final_chunk
 

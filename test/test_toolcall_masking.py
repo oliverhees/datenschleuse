@@ -722,5 +722,84 @@ class TestBlockDiagnostics(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(eins, drei, "anderer Feldname -> anderer Fingerprint")
 
 
+# ===========================================================================
+# 8. Streaming: reasoning_content (QA-Audit zu fb3ae87)
+# ===========================================================================
+def _reasoning_chunk(fragment):
+    return {
+        "choices": [
+            {"delta": {"content": None, "reasoning_content": fragment},
+             "finish_reason": None}
+        ]
+    }
+
+
+def _collect_stream(chunks_out, feld):
+    """Sammelt ein Delta-Feld ueber alle ausgegebenen Chunks."""
+    text = ""
+    for chunk in chunks_out:
+        wert = chunk["choices"][0]["delta"].get(feld)
+        if isinstance(wert, str):
+            text += wert
+    return text
+
+
+class TestStreamingReasoningReidentification(unittest.IsolatedAsyncioTestCase):
+    """AK3 verlangt, dass die Re-Identifikation auf dem Rueckweg 'ebenso
+    greift wie beim Textkanal' -- nicht nur, dass nichts leckt. Streaming-
+    Reasoning ist Hermes' beworbenes Kernfeature: ein Nutzer mit
+    Reasoning-Modell sah bisher rohe <PERSON_0>-Tokens in der Gedankenkette."""
+
+    async def _run(self, chunks, reid_map):
+        guard = _guard()
+        request_data = {"metadata": {dg.REID_MAP_KEY: reid_map}}
+        out = []
+        async for chunk in guard.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=None, response=_async_gen(chunks), request_data=request_data
+        ):
+            out.append(chunk)
+        return out
+
+    async def test_reasoning_content_is_reidentified_in_stream(self):
+        out = await self._run(
+            [_reasoning_chunk("Ich pruefe <PERSON_0> genauer.")],
+            {"<PERSON_0>": "Max Mustermann"},
+        )
+        text = _collect_stream(out, "reasoning_content")
+        self.assertNotIn("<PERSON_0>", text)
+        self.assertEqual(text, "Ich pruefe Max Mustermann genauer.")
+
+    async def test_placeholder_split_across_reasoning_chunks(self):
+        """Derselbe Chunk-Grenzen-Fall wie im Textkanal: der Platzhalter
+        bricht mitten durch."""
+        out = await self._run(
+            [_reasoning_chunk("Ich pruefe <PER"), _reasoning_chunk("SON_0> genauer.")],
+            {"<PERSON_0>": "Max Mustermann"},
+        )
+        text = _collect_stream(out, "reasoning_content")
+        self.assertNotIn("<PERSON_0>", text)
+        self.assertEqual(text, "Ich pruefe Max Mustermann genauer.")
+
+    async def test_reasoning_and_content_in_same_stream(self):
+        """Reasoning-Phase, dann Antwort-Phase -- beide Kanaele muessen
+        vollstaendig und unvermischt ankommen."""
+        chunks = [
+            _reasoning_chunk("Kunde ist <PERSON_0>."),
+            {"choices": [{"delta": {"content": "Hallo <PERSON_0>!"},
+                          "finish_reason": None}]},
+        ]
+        out = await self._run(chunks, {"<PERSON_0>": "Max Mustermann"})
+        self.assertEqual(
+            _collect_stream(out, "reasoning_content"), "Kunde ist Max Mustermann."
+        )
+        self.assertEqual(_collect_stream(out, "content"), "Hallo Max Mustermann!")
+
+    async def test_reasoning_stream_without_mapping_is_untouched(self):
+        """Ohne Platzhalter darf nichts gepuffert oder veraendert werden
+        (voller Streaming-Speed)."""
+        out = await self._run([_reasoning_chunk("Kein PII hier.")], {})
+        self.assertEqual(_collect_stream(out, "reasoning_content"), "Kein PII hier.")
+
+
 if __name__ == "__main__":
     unittest.main()
