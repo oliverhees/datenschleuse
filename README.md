@@ -203,7 +203,7 @@ Gemessen gegen einen eigenen deutschen Testkorpus (`test/corpus/`): **Recall 100
 
 ## 🔁 Der Round-Trip, bewiesen
 
-Die zentrale Behauptung — *Klartext rein, Platzhalter zum Modell, Klartext zurück* — ist nicht nur unit-getestet, sondern gegen den echten Stack mitgeschnitten: der Upstream-Payload wird an der Vertrauensgrenze protokolliert, und dort steht nachweislich `<PERSON_1>` statt „Maria Meier". Inklusive Streaming über zerrissene Chunk-Grenzen hinweg.
+Die zentrale Behauptung — *Klartext rein, Platzhalter zum Modell, Klartext zurück* — ist nicht nur unit-getestet, sondern gegen den echten Stack mitgeschnitten: der Upstream-Payload wird an der Vertrauensgrenze protokolliert, und dort steht nachweislich `<PERSON_0>` statt „Maria Meier". Inklusive Streaming über zerrissene Chunk-Grenzen hinweg.
 
 Selbst nachvollziehen: `./test/run-e2e-roundtrip.sh` — Details und Artefakte in [E2E-ROUNDTRIP-BEWEIS.md](docs/E2E-ROUNDTRIP-BEWEIS.md).
 

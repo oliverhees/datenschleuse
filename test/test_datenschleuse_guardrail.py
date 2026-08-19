@@ -470,6 +470,60 @@ class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
             "damit den Index der echten Platzhalter ueberschreibt.",
         )
 
+    def test_notice_contains_no_angle_bracket_at_all(self):
+        """Die Invariante, die wir wirklich behaupten -- und die einzige, die
+        haelt (Security-Audit-Finding zu DATENSCHLE-67).
+
+        Die beiden Tests darueber pruefen Regexe auf durchgaengig
+        GROSSGESCHRIEBENE Tokens. Damit laufen <Person_1>, <Name_1>,
+        <Platzhalter>, <PERSON 1> und <PERSON-1> allesamt durch -- ein
+        kuenftiger Bearbeiter, der den Hinweis "verstaendlicher" macht und
+        <Person_1> einfuegt, stellt die urspruengliche Falle wieder her, und
+        beide Tests bleiben gruen.
+
+        Der Hinweis braucht ueberhaupt keine spitze Klammer: er beschreibt das
+        Prinzip in Worten. Also ist das Verbot der oeffnenden Klammer die
+        praezise, nicht umgehbare Form der Regel. Die beiden Regex-Tests
+        bleiben als Dokumentation der historischen Faelle stehen.
+        """
+        self.assertNotIn(
+            "<", dg.ANONYMIZATION_NOTICE,
+            "Der Hinweis enthaelt eine spitze Klammer. Alles, was der Hinweis "
+            "dem Modell platzhalter-foermig hinhaelt, baut das Modell nach -- "
+            "zweimal in diesem Projekt belegt (Beispiel-Platzhalter, dann "
+            "Schablone). Er beschreibt das Prinzip in Worten und braucht "
+            "deshalb keine Klammer.",
+        )
+
+    def test_notice_still_says_something_useful(self):
+        """Gegenprobe zur Verbots-Assertion (Security-Audit-Finding, zweite
+        Haelfte): ein auf Leerstring reduzierter Hinweis wuerde jede
+        Verbotspruefung bestehen, waehrend die Re-Identifikation still
+        degradiert -- das Modell wuesste dann nicht mehr, dass Platzhalter
+        Absicht sind, und begaenne sie umzuformulieren oder nachzufragen.
+
+        Deshalb hier die Mindestaussage: der Hinweis muss die drei Dinge
+        leisten, wegen denen es ihn gibt. Bewusst auf Schluesselbegriffe
+        gepinnt statt auf den Wortlaut -- Umformulieren bleibt erlaubt,
+        Aushoehlen nicht.
+        """
+        notice = dg.ANONYMIZATION_NOTICE
+        self.assertGreater(
+            len(notice), 150,
+            "Hinweis ist auf eine Laenge geschrumpft, die das Prinzip nicht "
+            f"mehr erklaeren kann ({len(notice)} Zeichen).",
+        )
+        for begriff, zweck in (
+            ("Platzhalter", "benennt, worum es geht"),
+            ("kein Tippfehler", "sagt, dass es Absicht ist"),
+            ("exakt", "verlangt woertliche Rueckgabe"),
+            ("unveränderter Nummer", "schuetzt den Index (Befund DATENSCHLE-67)"),
+        ):
+            self.assertIn(
+                begriff, notice,
+                f"Dem Hinweis fehlt '{begriff}' -- der Teil, der {zweck}.",
+            )
+
     async def test_notice_examples_never_collide_with_real_reid_map(self):
         """Verhaltensnachweis: kein platzhalterfoermiger Token aus dem Hinweis
         darf ein Schluessel des echten reid_map sein."""
