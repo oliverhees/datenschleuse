@@ -5,3 +5,10 @@ __pycache__/
 .claude/
 docker-compose.override.yml
 local-cockpit-test/
+
+# Eigene Begriffe und Muster des Anwenders (DATENSCHLE-7).
+# Diese Datei enthaelt potenziell echte Kundennamen, Projektnamen und
+# Mandantennamen -- also genau die PII, die die Datenschleuse schuetzen soll.
+# Sie gehoert NIE ins (oeffentliche) Repository. Als Vorlage dient
+# rules/custom-rules.example.yml mit erfundenen Werten.
+rules/custom-rules.yml
