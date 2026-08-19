@@ -81,6 +81,17 @@ ENTITY_PREFIX = "CUSTOM_"
 
 RULE_TYPES = ("term", "regex")
 
+# Ein Kategoriename ist ein Wort, kein Satz. Die Grenze ist bewusst eng: der
+# Name landet WOERTLICH im Platzhalter und geht damit an den LLM-Anbieter
+# (Security-Finding F7). Wer hier einen ganzen Satz eintraegt, verwechselt
+# Kategorie mit Inhalt.
+MAX_ENTITY_LENGTH = 40
+MAX_ENTITY_WORDS = 3
+
+# Tokens ab dieser Laenge werden beim Leak-Abgleich Kategorie-gegen-Wert
+# beruecksichtigt. Kuerzere sind zu generisch, um etwas zu verraten.
+MIN_LEAK_TOKEN_LENGTH = 3
+
 DEFAULT_SCORES = {"term": 0.9, "regex": 0.85}
 
 # Regelnamen sind Bezeichner, keine Freitexte -- sie tauchen in Meldungen und
@@ -188,6 +199,51 @@ def _safe_reason(name: str, kategorie: str, detail: str = "",
     return text
 
 
+def _tokens(text: str) -> set:
+    """Zerlegt Text in kleingeschriebene Wort-Tokens ab MIN_LEAK_TOKEN_LENGTH."""
+    roh = regex.findall(r"[^\W_]+", text or "", flags=regex.UNICODE)
+    return {t.lower() for t in roh if len(t) >= MIN_LEAK_TOKEN_LENGTH}
+
+
+def check_entity_does_not_leak(entity: str, value: str) -> None:
+    """Stellt sicher, dass der Kategoriename nicht selbst das Geheimnis ist.
+
+    Security-Finding F7: Der Entitaetsname steht woertlich im Platzhalter
+    (``<CUSTOM_NORDWIND_LOGISTIK_GMBH_0>``) und geht damit an den
+    LLM-Anbieter. Wer seine Kategorie nach dem Kunden benennt -- die
+    naheliegendste Sache der Welt -- maskiert den WERT und verschickt den
+    NAMEN trotzdem. Der eigene Schutz waere aufgehoben, ohne dass es jemand
+    bemerkt.
+
+    Erkennbar ist der Fall daran, dass Kategorie und Wert sich ein Wort
+    teilen: jedes Wort des Werts ist per Definition Teil des Geheimnisses.
+    Wirft ``RuleError`` -- OHNE den Wert zu zitieren (Gesetz 5).
+    """
+    sauber = (entity or "").strip()
+    if len(sauber) > MAX_ENTITY_LENGTH:
+        raise RuleError(
+            f"entity ist zu lang (max. {MAX_ENTITY_LENGTH} Zeichen). Der "
+            f"Kategoriename steht im Platzhalter und geht an den "
+            f"LLM-Anbieter -- gemeint ist eine Kategorie wie 'Kundenname', "
+            f"nicht der Inhalt selbst."
+        )
+    if len(sauber.split()) > MAX_ENTITY_WORDS:
+        raise RuleError(
+            f"entity besteht aus zu vielen Woertern (max. "
+            f"{MAX_ENTITY_WORDS}). Gemeint ist eine Kategorie wie "
+            f"'Kundenname' oder 'Projektnummer', kein Satz."
+        )
+    geteilt = _tokens(sauber) & _tokens(value)
+    if geteilt:
+        raise RuleError(
+            "entity und value teilen sich ein Wort -- der Kategoriename "
+            "waere damit selbst ein Teil des Geheimnisses. Der Name landet "
+            "WOERTLICH im Platzhalter und geht an den LLM-Anbieter; der Wert "
+            "waere maskiert, der Name nicht. Bitte die KATEGORIE benennen "
+            "(z.B. 'Kundenname', 'Projektname'), nicht den Kunden."
+        )
+
+
 def _term_to_pattern(value: str) -> str:
     """Macht aus einem Begriff ein woertliches Muster mit Wortgrenzen.
 
@@ -252,6 +308,10 @@ def build_rule(raw: Any, match_timeout: float = DEFAULT_MATCH_TIMEOUT) -> Rule:
     value = raw.get("value")
     if not isinstance(value, str) or not value.strip():
         raise RuleError("value fehlt (der Begriff bzw. das Regex-Muster)")
+
+    # Der Kategoriename geht im Platzhalter an den Anbieter -- er darf das
+    # Geheimnis nicht selbst enthalten (Security-Finding F7).
+    check_entity_does_not_leak(entity, value)
 
     case_sensitive = bool(raw.get("case_sensitive", False))
 

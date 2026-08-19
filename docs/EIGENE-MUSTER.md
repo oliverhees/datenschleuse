@@ -148,7 +148,7 @@ Globale Option `--rules PFAD` überschreibt die Regeldatei.
 | Feld | Pflicht | Bedeutung |
 |---|---|---|
 | `name` | ja | eindeutiger Kurzname (Kleinbuchstaben, Ziffern, `-`, `_`) |
-| `entity` | ja | Kategorie → Platzhalter `<CUSTOM_KATEGORIE_N>` |
+| `entity` | ja | Kategorie → Platzhalter `<CUSTOM_KATEGORIE_N>`. **Geht an den Anbieter** — Kategorie benennen, nie den Kunden |
 | `type` | ja | `term` (wörtlicher Begriff) oder `regex` |
 | `value` | ja | der Begriff bzw. das Muster |
 | `examples` | **ja** | mindestens ein Text, in dem die Regel greifen MUSS |
@@ -156,6 +156,34 @@ Globale Option `--rules PFAD` überschreibt die Regeldatei.
 | `score` | nein | Konfidenz 0–1 (Default: 0.9 Begriff / 0.85 Muster) |
 | `case_sensitive` | nein | Default `false` |
 | `enabled` | nein | auf `false` setzen zum Abschalten |
+
+### Der Kategoriename geht an den Anbieter — der Wert nicht
+
+Das ist die eine Sache, die man hier falsch machen kann. Der Wert wird
+maskiert, der **Kategoriename steht im Platzhalter** und reist damit wörtlich
+zum LLM-Anbieter:
+
+```
+--entity Kundenname  --term "Nordwind Logistik"
+→ Modell sieht:  <CUSTOM_KUNDENNAME_0>          ✅ verrät nichts
+
+--entity "Nordwind Logistik"  --term "Nordwind Logistik"
+→ Modell sähe:   <CUSTOM_NORDWIND_LOGISTIK_0>   ❌ Name ist trotzdem draußen
+```
+
+Die zweite Variante hebt den eigenen Schutz auf — der Wert ist maskiert, der
+Name geht raus. Deshalb wird sie **abgelehnt**:
+
+```
+Nicht gespeichert — entity und value teilen sich ein Wort -- der Kategoriename
+waere damit selbst ein Teil des Geheimnisses. [...] Bitte die KATEGORIE
+benennen (z.B. 'Kundenname', 'Projektname'), nicht den Kunden.
+```
+
+**Faustregel:** `--entity` benennt die *Sorte* von Daten (Kundenname,
+Projektnummer, Mandant), niemals den konkreten Kunden. Kategorienamen sind
+deshalb auf 40 Zeichen und 3 Wörter begrenzt — ein Kategoriename ist ein Wort,
+kein Satz.
 
 ### Was ihr über Begriffe wissen solltet
 
@@ -174,6 +202,7 @@ Globale Option `--rules PFAD` überschreibt die Regeldatei.
   Regel in echten Anfragen trifft, wird nirgendwo mitgeschrieben.
 - **Keine Werte in Logs.** Fehlermeldungen nennen nur Regelnamen und
   Fehlerkategorie, nie den Regelwert.
+- **Kategorienamen werden geprüft.** Ein `--entity`, das ein Wort mit dem Wert teilt, wird abgelehnt — sonst reiste der Name im Platzhalter zum Anbieter, während der Wert maskiert ist.
 - **ReDoS-Schutz.** Ein Muster mit exponentiellem Backtracking läuft in ein
   Zeitbudget und wird für diesen Text übersprungen, statt den Request
   anzuhalten. Alle anderen Regeln greifen weiter.
