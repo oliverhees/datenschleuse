@@ -30,6 +30,7 @@
 - [Architektur](#-architektur)
 - [Sicherheitsmodell](#-sicherheitsmodell)
   - [Fail-Policy](#fail-policy-verfügbarkeit-vs-datenschutz)
+  - [Welche API-Routen geschützt sind](#welche-api-routen-geschützt-sind)
   - [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen)
   - [Quasi-Identifier](#quasi-identifier-session-übergreifende-akkumulation)
 - [Was erkannt wird](#-was-erkannt-wird)
