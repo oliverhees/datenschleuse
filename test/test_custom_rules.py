@@ -991,3 +991,136 @@ class TestPartialMatchingNeverLeaks(_RuleFileTestCase):
         maskiert = dg.Masker().mask(text, treffer)
         self.assertNotIn(self.KUNDE, maskiert,
                          "Werte sind im Klartext hinausgegangen")
+
+
+# ===========================================================================
+# 16. Integration mit dem Verifikationsdurchlauf aus DATENSCHLE-66
+#
+# _verify_no_pii_left schickt den FERTIG maskierten String noch einmal durch
+# _analyze -- also durch den Pfad, in dem auch die eigenen Regeln haengen.
+# Ein Rest-Treffer dort blockt den Request. Die Sorge war: eigene Regeln
+# koennten auf den Platzhaltern selbst anschlagen und damit korrekt maskierte
+# Anfragen grundlos lahmlegen.
+#
+# DATENSCHLE-66 neutralisiert die bekannten Platzhalter vorher mit einem
+# Leerzeichen (_PLACEHOLDER_PROBE_FILLER). Diese Tests MESSEN, ob das
+# ausreicht -- hergeleitet war es, belegt bisher nicht.
+# ===========================================================================
+class TestVerificationPassInteraction(_RuleFileTestCase,
+                                      unittest.IsolatedAsyncioTestCase):
+    async def _guard_ohne_presidio(self):
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine_treffer(text, payload=None):
+            return []
+
+        guard._presidio_analyze = keine_treffer
+        return guard
+
+    async def test_fall1_breites_grossbuchstaben_muster_blockt_nicht(self):
+        """Fall 1: '[A-Z]{5,}' wuerde CUSTOM und KUNDENNAME im Platzhalter
+        treffen, wenn nicht neutralisiert wuerde."""
+        self.write_rules([rule(
+            "breit", entity="Kuerzel", kind="regex", value=r"[A-Z]{5,}",
+            examples=["Das Kuerzel ABCDEF steht hier"],
+        )])
+        guard = await self._guard_ohne_presidio()
+
+        # WICHTIG: echt maskieren lassen statt den maskierten Text zu
+        # erfinden. Was die Regel im ersten Durchlauf trifft, ist danach
+        # ersetzt -- ein handgebauter String wuerde einen Defekt vortaeuschen,
+        # den die Pipeline gar nicht erzeugen kann.
+        text = "Vertrag mit Nordwind Logistik geschlossen."
+        masker = dg.Masker()
+        maskiert = masker.mask(text, await guard._analyze(text))
+
+        await guard._verify_no_pii_left(maskiert, masker)  # darf NICHT werfen
+
+    async def test_fall2_regel_die_ueber_den_filler_hinweg_greift(self):
+        """Fall 2: Verkleben. Das Leerzeichen trennt zwar, aber ein Muster mit
+        \\s* ueberspannt es trotzdem."""
+        self.write_rules([rule(
+            "verklebt", entity="Firmenname", kind="regex", value=r"Nord\s*wind",
+            examples=["Die Nord wind Gruppe"],
+        )])
+        guard = await self._guard_ohne_presidio()
+
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        maskiert = "Nord<PERSON_0>wind"
+
+        try:
+            await guard._verify_no_pii_left(maskiert, masker)
+        except dg.DatenschleuseBlocked as exc:
+            self.fail(f"grundloser Block durch Filler-Verklebung: {exc}")
+
+    async def test_fall3_regel_die_den_filler_selbst_erfasst(self):
+        """Fall 3: aneinandergrenzende Platzhalter werden zu einer
+        Leerzeichenkette, die ein Whitespace-Muster erfasst."""
+        self.write_rules([rule(
+            "whitespace", entity="Formatierung", kind="regex", value=r"\s{3,}",
+            examples=["a   b"],
+        )])
+        guard = await self._guard_ohne_presidio()
+
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        masker.reid_map["<PERSON_1>"] = "Erika"
+        masker.reid_map["<PERSON_2>"] = "Anna"
+        # DREI angrenzende Platzhalter -> drei Leerzeichen -> \s{3,} greift.
+        maskiert = "<PERSON_0><PERSON_1><PERSON_2>"
+
+        try:
+            await guard._verify_no_pii_left(maskiert, masker)
+        except dg.DatenschleuseBlocked as exc:
+            self.fail(f"grundloser Block durch Filler-Kette: {exc}")
+
+    async def test_echter_rest_wird_weiterhin_geblockt(self):
+        """Gegenprobe: die Nachpruefung darf durch den Filter nicht stumpf
+        geworden sein. Ein PRESIDIO-Rest muss weiterhin blocken -- nur die
+        eigenen Regeln sind ausgenommen, nicht die Erkennung als solche."""
+        self.write_rules([rule("kunde", entity="Kundenname",
+                               value="Nordwind Logistik",
+                               examples=["Kunde Nordwind Logistik meldet sich"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def presidio_findet_rest(text, payload=None):
+            i = text.find("Max Mustermann")
+            if i < 0:
+                return []
+            return [{"entity_type": "PERSON", "start": i,
+                     "end": i + len("Max Mustermann"), "score": 0.9}]
+
+        guard._presidio_analyze = presidio_findet_rest
+
+        masker = dg.Masker()
+        masker.reid_map["<CUSTOM_KUNDENNAME_0>"] = "Nordwind Logistik"
+        # Der Name ist NICHT maskiert -> muss auffallen.
+        maskiert = "<CUSTOM_KUNDENNAME_0> und Max Mustermann"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(maskiert, masker)
+
+    async def test_eigene_treffer_werden_gefiltert_praefix_belegt(self):
+        """Der Filter haengt am ENTITY_PREFIX -- wenn der wandert, muss das
+        hier auffallen und nicht still den Schutz aendern."""
+        self.assertEqual(cr.ENTITY_PREFIX, "CUSTOM_")
+        with open(os.path.join(_HERE, "..", "litellm",
+                               "datenschleuse_guardrail.py"),
+                  encoding="utf-8") as fh:
+            quelle = fh.read()
+        self.assertIn("startswith(cur.ENTITY_PREFIX)", quelle)
+
+    async def test_verifikation_wertet_typen_aus_nicht_zaehlungen(self):
+        """Punkt 3 des Leads: meine F1-Union verschmilzt zwei Entitaeten zu
+        EINEM Platzhalter. Wertet die Nachpruefung Zaehlungen aus, saehe das
+        wie eine Diskrepanz aus. Am Code belegt: sie bildet eine Menge der
+        entity_type-Werte, zaehlt also nicht."""
+        with open(os.path.join(_HERE, "..", "litellm",
+                               "datenschleuse_guardrail.py"),
+                  encoding="utf-8") as fh:
+            quelle = fh.read()
+        start = quelle.index("async def _verify_no_pii_left")
+        koerper = quelle[start:start + 6000]
+        self.assertIn("{str(e.get(\"entity_type\")) for e in leftovers}", koerper)
+        self.assertNotIn("len(leftovers)", koerper)
