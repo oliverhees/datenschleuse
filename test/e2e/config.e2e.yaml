@@ -1,0 +1,38 @@
+# Datenschleuse — LiteLLM-Konfiguration NUR fuer den E2E-Round-Trip-Beweis.
+#
+# Unterschied zu litellm/config.yaml: ein einziges Modell, das nicht in die
+# Cloud zeigt, sondern ueber den mitschneidenden Tap (test/e2e/tap.py) auf ein
+# LOKALES Ollama (llama3.1:8b). Genau deshalb duerfen hier echte deutsche
+# Testdaten benutzt werden -- sie verlassen die Maschine nicht.
+#
+# Der Guardrail-Block ist ABSICHTLICH identisch zur Produktivkonfiguration
+# (gleiche Klasse, gleiche Parameter, gleiches QI-Preset). Ein Beweis gegen
+# eine entschaerfte Konfiguration waere kein Beweis.
+
+model_list:
+  - model_name: datenschleuse-e2e
+    litellm_params:
+      model: openai/llama3.1:8b
+      # -> Tap -> Ollama. Der Tap protokolliert, was das Modell wirklich sieht.
+      api_base: http://ds-e2e-tap:8080/v1
+      # Eigener, nur fuer diesen Testlauf erzeugter Key. Ollama prueft ihn
+      # nicht; er existiert, weil der OpenAI-Client einen Key verlangt.
+      # Es wird BEWUSST kein Produktiv-Key gelesen (Gesetz 5).
+      api_key: os.environ/E2E_UPSTREAM_KEY
+
+guardrails:
+  - guardrail_name: "datenschleuse-reid"
+    litellm_params:
+      guardrail: datenschleuse_guardrail.DatenschleuseGuardrail
+      mode: ["pre_call", "post_call"]
+      default_on: true
+      presidio_language: "de"
+      presidio_score_threshold: 0.0
+      qi_risk_preset: "balanced"
+
+litellm_settings:
+  set_verbose: true
+  turn_off_message_logging: true
+
+general_settings:
+  master_key: os.environ/DATENSCHLEUSE_MASTER_KEY

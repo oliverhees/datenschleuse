@@ -1,0 +1,70 @@
+# Isolierter Stack NUR fuer den Round-Trip-Beweis (DATENSCHLE-67).
+#
+# Beruehrt den laufenden Produktiv-Stack nicht: eigener Compose-Projektname,
+# eigene Container, eigene Host-Ports (4001 Proxy, 4600 Tap), eigener,
+# frisch erzeugter Master-Key. Der laufende presidio-analyzer wird
+# MITBENUTZT -- bewusst, denn ein Beweis gegen einen anderen Analyzer als den
+# echten waere nur ein halber Beweis.
+name: datenschleuse-e2e
+
+services:
+  # Mitschneidender Upstream-Tap: LiteLLM -> [tap] -> Ollama.
+  ds-e2e-tap:
+    image: python:3.12-slim
+    container_name: ds-e2e-tap
+    command: ["python", "-u", "/app/tap.py"]
+    environment:
+      - TAP_UPSTREAM=${DS_E2E_OLLAMA_URL:-http://lokyy-brain-ollama-1:11434}
+      - TAP_PORT=8080
+    volumes:
+      - ./tap.py:/app/tap.py:ro
+    ports:
+      - "4600:8080"
+    networks:
+      - e2e-net
+      - ollama-net
+
+  # Die Datenschleuse selbst: dasselbe Image wie produktiv, dieselbe
+  # Guardrail-Datei (read-only aus dem Arbeitsbaum gemountet).
+  ds-e2e-litellm:
+    image: datenschleuse-datenschleuse:latest
+    container_name: ds-e2e-litellm
+    depends_on:
+      - ds-e2e-tap
+    volumes:
+      - ./config.e2e.yaml:/app/config.yaml:ro
+      - ../../litellm/datenschleuse_guardrail.py:/app/datenschleuse_guardrail.py:ro
+      - ../../litellm/qi_generalization.py:/app/qi_generalization.py:ro
+      - ../../litellm/qi_state.py:/app/qi_state.py:ro
+      - ../../litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
+      - ../../presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+    environment:
+      - PYTHONPATH=/app
+      - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      # Frisch erzeugt in run-e2e-roundtrip.sh -- niemals aus .env gelesen.
+      - DATENSCHLEUSE_MASTER_KEY=${DS_E2E_MASTER_KEY:?DS_E2E_MASTER_KEY fehlt -- test/run-e2e-roundtrip.sh benutzen}
+      - E2E_UPSTREAM_KEY=${DS_E2E_UPSTREAM_KEY:-sk-e2e-local-ollama}
+      - DATENSCHLEUSE_STATE_KEY=${DS_E2E_STATE_KEY:?DS_E2E_STATE_KEY fehlt -- test/run-e2e-roundtrip.sh benutzen}
+      - DATENSCHLEUSE_STATE_DB=/tmp/qi_state_e2e.db
+      - DATENSCHLEUSE_STATE_TTL_SECONDS=3600
+      - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
+      - PRESIDIO_IMAGE_REDACTOR_API_BASE=http://presidio-image-redactor:3000
+      - DATENSCHLEUSE_IMAGE_POLICY=redact
+    ports:
+      - "4001:4000"
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+    networks:
+      - e2e-net
+      - presidio-net
+
+networks:
+  e2e-net:
+  # Netz des laufenden Ollama-Containers.
+  ollama-net:
+    external: true
+    name: ${DS_E2E_OLLAMA_NETWORK:-lokyy-brain_default}
+  # Netz des laufenden Produktiv-Stacks -- nur lesender HTTP-Zugriff auf den
+  # presidio-analyzer, es wird nichts daran veraendert.
+  presidio-net:
+    external: true
+    name: ${DS_E2E_PRESIDIO_NETWORK:-datenschleuse_datenschleuse-net}
