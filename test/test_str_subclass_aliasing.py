@@ -547,5 +547,176 @@ class TestAequivalenzUeberAlleRegister(unittest.TestCase):
         self.assertFalse(dg._ist_echter_str(Harmlos("text")))
 
 
+
+# ===========================================================================
+# 7) EXTERNAL-REVIEW-BEFUNDE C1 und C2
+# ===========================================================================
+def _klassenname_getarnt(tarnung, nutzlast=_PII):
+    """Subklasse, die sich als ``tarnung`` ausgibt UND deren KLASSENNAME die
+    Nutzlast traegt. ``__name__`` ist frei waehlbar -- damit ist
+    ``type(x).__name__`` ein client-kontrollierter String, kein konstanter."""
+    kls = type(nutzlast, (str,), {
+        "__hash__": lambda self: hash(tarnung),
+        "__eq__": lambda self, other: other == tarnung,
+    })
+    boese = kls(nutzlast)
+    assert type(boese).__name__ == nutzlast
+    return boese
+
+
+class TestKlassennameIstKeinKonstantesVokabular(_AliasAssertions):
+    """C2 aus dem External Review -- ein Befund, den DIESER Fix erst
+    aufgemacht hat: vorher passierte eine getarnte Subklasse die Allowlist
+    stillschweigend, jetzt landet sie im generischen Zweig -- und genau der
+    formatiert ``type(x).__name__`` in die Meldung. Der Kommentar darueber
+    ("nur sein Python-Typname") stimmte damit nicht mehr.
+
+    Ein Klassenname ist frei waehlbar, also Client-Inhalt wie jeder andere
+    Wert. Gesetz 5 gilt fuer ihn genauso."""
+
+    def test_part_typ(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_part_shape(
+                {"type": _klassenname_getarnt("text"), "text": "hallo"}
+            ),
+            "part.type -> type(x).__name__",
+        )
+
+    def test_rolle(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_message_shape(
+                {"role": _klassenname_getarnt("user"), "content": "hallo"}
+            ),
+            "role -> type(x).__name__",
+        )
+
+    def test_zitat_typ(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_citations(
+                [{"type": _klassenname_getarnt("char_location"), "cited_text": "x"}]
+            ),
+            "citation.type -> type(x).__name__",
+        )
+
+    def test_cache_control_typ(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_cache_control(
+                {"type": _klassenname_getarnt("ephemeral")}
+            ),
+            "cache_control.type -> type(x).__name__",
+        )
+
+    def test_tool_call_typ(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_tool_call(
+                {"id": "call_1", "type": _klassenname_getarnt("function")}
+            ),
+            "tool_call.type -> type(x).__name__",
+        )
+
+    def test_image_url_detail(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_image_url_container(
+                {"url": "https://example.org/b.png",
+                 "detail": _klassenname_getarnt("auto")}
+            ),
+            "image_url.detail -> type(x).__name__",
+        )
+
+    def test_echte_typnamen_bleiben_erhalten(self):
+        """Verhaltens-Neutralitaet: die Diagnose fuer echte JSON-Typen darf
+        nicht verlorengehen -- ein Betreiber muss weiterhin sehen, dass da
+        ein dict statt eines Strings stand."""
+        faelle = [
+            ({"type": 1, "text": "x"}, "int"),
+            ({"type": {}, "text": "x"}, "dict"),
+            ({"type": [], "text": "x"}, "list"),
+            ({"type": None, "text": "x"}, "NoneType"),
+        ]
+        for part, erwartet in faelle:
+            with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+                dg.DatenschleuseGuardrail._validate_part_shape(part)
+            self.assertIn(erwartet, str(ctx.exception))
+
+
+class TestTextwerteMuessenEchteStrSein(_AliasAssertions):
+    """C1 aus dem External Review: der schwerwiegendste Fund. Eine Subklasse,
+    die bei ``strip()`` luegt, bringt den Analyzer dazu, den Text fuer leer zu
+    halten -- der Text geht dann UNMASKIERT ans Zielmodell. Nicht in ein Log,
+    sondern an die Cloud. Das ist der Zweck dieser Software, invertiert."""
+
+    def _luegner(self, nutzlast=_PII):
+        class NurStrip(str):
+            def strip(self, *a, **k):
+                return ""
+        return NurStrip(nutzlast)
+
+    def test_validate_text_field_blockt_luegner(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_text_field(
+                self._luegner(), "probe"
+            ),
+            "_validate_text_field",
+        )
+
+    def test_message_shape_blockt_luegner_in_name(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_message_shape(
+                {"role": "user", "content": "hallo", "name": self._luegner()}
+            ),
+            "msg.name",
+        )
+
+    def test_part_text_blockt_luegner(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_part_shape(
+                {"type": "text", "text": self._luegner()}
+            ),
+            "part.text",
+        )
+
+    def test_zitat_text_blockt_luegner(self):
+        self.assertBlockt(
+            lambda: dg.DatenschleuseGuardrail._validate_citations(
+                [{"type": "char_location", "cited_text": self._luegner()}]
+            ),
+            "citations[].cited_text",
+        )
+
+    def test_echte_strings_bleiben_erlaubt(self):
+        """Verhaltens-Neutralitaet fuer den Textpfad."""
+        G = dg.DatenschleuseGuardrail
+        for wert in ("", " ", "hallo", "a" * 10000):
+            G._validate_text_field(wert, "probe")
+        G._validate_text_field(None, "probe")
+        G._validate_part_shape({"type": "text", "text": ""})
+        G._validate_message_shape({"role": "user", "content": "", "name": "n"})
+
+
+class TestLuegnerErreichtDasModellNicht(
+    _AliasAssertions, unittest.IsolatedAsyncioTestCase
+):
+    """C1 end-to-end durch den echten Hook. Der Beleg des Pruefers lautete:
+    'content geht raus als: Maximilian Mustermann, IBAN ...' -- unmaskiert,
+    mit leerer reid_map. Dieser Test haelt fest, dass das nicht mehr geht."""
+
+    async def test_content_luegner_wird_geblockt(self):
+        class NurStrip(str):
+            def strip(self, *a, **k):
+                return ""
+
+        data = {"messages": [{"role": "user", "content": NurStrip(_PII)}]}
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await _guard().async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data,
+                call_type="completion",
+            )
+        meldung = str(ctx.exception)
+        self.assertKeinLeck(meldung, "async_pre_call_hook content")
+        # Der Block muss aus der Formpruefung kommen, nicht aus einem
+        # Presidio-Verbindungsfehler.
+        self.assertNotIn("Presidio", meldung)
+
+
 if __name__ == "__main__":
     unittest.main()
