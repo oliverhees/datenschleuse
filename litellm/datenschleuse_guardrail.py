@@ -660,6 +660,52 @@ def _ist_registriert(wert: Any, register: Any) -> bool:
     return _ist_echter_str(wert) and wert in register
 
 
+# Typnamen, die als Diagnose ausgegeben werden duerfen. Bewusst genau die
+# Typen, die ``json.loads`` erzeugen kann, plus die Python-Nachbarn, die ein
+# In-Process-Aufrufer legitim uebergibt. Alles andere ist ein Klassenname aus
+# fremder Feder -- und der ist frei waehlbar.
+SICHERE_TYPNAMEN = frozenset({
+    "str", "int", "float", "bool", "bytes", "bytearray", "complex",
+    "list", "tuple", "dict", "set", "frozenset", "NoneType",
+})
+
+_UNBEKANNTER_TYP = "unbekannt"
+
+
+def _typname(wert: Any) -> str:
+    """Der Python-Typname eines Wertes -- aber nur, wenn er aus unserem
+    Vokabular stammt.
+
+    Review-Finding C2 (extern, empirisch belegt): ``_typname(x)`` ist
+    KEIN konstanter Wert. Ein Klassenname ist frei waehlbar, und
+    ``type(nutzlast, (str,), {...})`` macht daraus einen beliebig langen
+    Client-String. Die Meldungen dieser Datei geben den Typnamen aus, gerade
+    WEIL der Wert selbst nicht ausgegeben werden darf (Gesetz 5) -- damit war
+    die Ausweichroute genauso offen wie der Hauptweg.
+
+    Besonders unangenehm: dieser Sink wurde durch die Registerhaertung
+    (``_ist_registriert``) erst gut erreichbar. Vorher passierte eine
+    getarnte Subklasse die Allowlist stillschweigend; jetzt landet sie im
+    generischen Zweig -- und genau der formatiert den Typnamen. Ein Fix, der
+    einen zweiten Kanal oeffnet, ist kein Fix.
+
+    Verhaltens-Neutralitaet: fuer alles, was ueber HTTP ankommen kann
+    (``json.loads`` erzeugt nur str/int/float/bool/list/dict/NoneType), ist
+    die Ausgabe unveraendert -- ein Betreiber sieht weiterhin, dass in
+    ``type`` ein dict statt eines Strings stand. Nur exotische Fremdklassen
+    verlieren ihren Namen, und deren Name ist genau das Problem.
+
+    Der Vergleich laeuft ueber ``_ist_registriert``: ``__name__`` darf selbst
+    eine str-Subklasse sein (CPython prueft beim Setzen nur ``PyUnicode``),
+    also gilt hier dieselbe Identitaetsfrage wie ueberall sonst.
+    """
+    return (
+        type(wert).__name__
+        if _ist_registriert(type(wert).__name__, SICHERE_TYPNAMEN)
+        else _UNBEKANNTER_TYP
+    )
+
+
 def _field_fingerprint(name: Any) -> str:
     """Stabiler, wertfreier Kurz-Fingerprint eines Feldnamens.
 
@@ -1184,7 +1230,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Fehlt der Key ganz (None), ist das kein Chat-Request -> unveraendert.
         if messages is not None and not isinstance(messages, list):
             raise DatenschleuseBlocked(
-                f"messages vom Typ {type(messages).__name__!r} wird von der "
+                f"messages vom Typ {_typname(messages)!r} wird von der "
                 "Datenschleuse nicht geprueft und ist deshalb blockiert "
                 "(fail-closed). Erlaubt ist nur eine Liste von Nachrichten."
             )
@@ -1196,7 +1242,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # ans Modell weitergereicht. Was nicht geprueft werden
                     # kann, passiert nicht (Gesetz: fail-closed).
                     raise DatenschleuseBlocked(
-                        f"Nachricht vom Typ {type(msg).__name__!r} wird von der "
+                        f"Nachricht vom Typ {_typname(msg)!r} wird von der "
                         "Datenschleuse nicht geprueft und ist deshalb blockiert "
                         "(fail-closed). Erlaubt sind nur Nachrichten-Objekte."
                     )
@@ -1207,7 +1253,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 self._validate_message_shape(msg)
 
                 content = msg.get("content")
-                if isinstance(content, str):
+                # ``_ist_echter_str`` statt ``isinstance``: ``content`` laeuft
+                # NICHT durch ``_validate_text_field`` (es darf auch eine
+                # Liste sein), waehlt hier aber den Maskierungspfad. Eine
+                # ``strip()``-Luegner-Subklasse nahm damit den Textpfad, fand
+                # nichts zu maskieren und ging unveraendert raus (C1).
+                # Subklassen fallen jetzt in den ``elif content is not None``
+                # weiter unten und blocken dort fail-closed.
+                if _ist_echter_str(content):
                     original = content
                     entities = await self._analyze(original)
 
@@ -1317,14 +1370,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # ``elif content is not None`` statt ``else`` -- None
                     # faellt durch und bleibt unveraendert.
                     #
-                    # type(content).__name__ ist ein kurzer, konstant
+                    # _typname(content) ist ein kurzer, konstant
                     # harmloser Typname -- nie der Wert selbst -- in der
                     # Meldung (Gesetz 5; siehe auch die Korrektur der
                     # Part-Fehlermeldung weiter oben, DATENSCHLE-64 zweites
                     # Finding).
                     raise DatenschleuseBlocked(
                         f"Nachricht mit content vom Typ "
-                        f"{type(content).__name__!r} wird von der "
+                        f"{_typname(content)!r} wird von der "
                         "Datenschleuse nicht geprueft und ist deshalb "
                         "blockiert (fail-closed). Erlaubt sind nur String- "
                         "oder Listen-content."
@@ -1430,7 +1483,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         role = msg.get("role")
         if role is not None and not _ist_registriert(role, ALLOWED_ROLES):
             raise DatenschleuseBlocked(
-                f"Nachricht mit unbekannter Rolle (Typ {type(role).__name__!r}) "
+                f"Nachricht mit unbekannter Rolle (Typ {_typname(role)!r}) "
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
                 f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_ROLES))}."
             )
@@ -1453,7 +1506,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if tool_calls is not None:
             if not isinstance(tool_calls, list):
                 raise DatenschleuseBlocked(
-                    f"tool_calls vom Typ {type(tool_calls).__name__!r} ist nicht "
+                    f"tool_calls vom Typ {_typname(tool_calls)!r} ist nicht "
                     "pruefbar und deshalb blockiert (fail-closed). Erlaubt ist "
                     "nur eine Liste."
                 )
@@ -1487,7 +1540,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         """
         if not isinstance(part, dict):
             raise DatenschleuseBlocked(
-                f"Content-Part vom Typ {type(part).__name__!r} ist nicht "
+                f"Content-Part vom Typ {_typname(part)!r} ist nicht "
                 "pruefbar und deshalb blockiert (fail-closed). Erlaubt sind "
                 "nur Part-Objekte."
             )
@@ -1523,7 +1576,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 # zweites Security-Finding).
                 grund = (
                     "Content-Part mit nicht erlaubtem Typ "
-                    f"({type(part_type).__name__}) wird von der "
+                    f"({_typname(part_type)}) wird von der "
                     "Datenschleuse nicht geprueft"
                 )
                 hinweis = ""
@@ -1606,7 +1659,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return
         if not isinstance(value, dict):
             raise DatenschleuseBlocked(
-                f"image_url vom Typ {type(value).__name__!r} ist kein "
+                f"image_url vom Typ {_typname(value)!r} ist kein "
                 "Bild-Verweis -- blockiert (fail-closed). Erlaubt ist ein "
                 "String oder ein Objekt wie {'url': '...'}."
             )
@@ -1624,7 +1677,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         detail = value.get("detail")
         if detail is not None and not _ist_registriert(detail, IMAGE_URL_DETAILS):
             raise DatenschleuseBlocked(
-                f"image_url.detail (Typ {type(detail).__name__!r}) ist kein "
+                f"image_url.detail (Typ {_typname(detail)!r}) ist kein "
                 "bekannter Wert -- als Freitext-Kanal blockiert (fail-closed). "
                 f"Erlaubt: {', '.join(sorted(IMAGE_URL_DETAILS))}."
             )
@@ -1633,10 +1686,26 @@ class DatenschleuseGuardrail(_GuardrailBase):
     def _validate_text_field(value: Any, field: str) -> None:
         """Ein Textfeld ist ein String oder gar nicht da. Alles andere ist
         nicht maskierbar -> blocken statt still durchreichen."""
-        if value is None or isinstance(value, str):
+        # ``type(value) is str`` statt ``isinstance`` -- Review-Finding C1
+        # (extern, empirisch belegt), und der schwerwiegendste Fund dieser
+        # Runde: das Ziel ist nicht ein Logsatz, sondern die Cloud.
+        #
+        # Der Maskierungspfad vertraut auf ``str``-SEMANTIK, nicht nur auf den
+        # Typ: ``_analyze`` steigt bei ``not text.strip()`` aus,
+        # ``Masker.mask`` bei leerer Entity-Liste, ``_resolve_overlaps`` misst
+        # gegen ``len(text)``. Eine Subklasse, die bei ``strip()`` luegt,
+        # bringt den Analyzer dazu, den Text fuer leer zu halten -- er geht
+        # dann UNMASKIERT ans Zielmodell, mit leerer reid_map. Das ist der
+        # Zweck dieser Software, invertiert.
+        #
+        # Jede einzelne Methode gegen Luegen abzusichern ist aussichtslos:
+        # ``__len__``, ``__getitem__``, ``replace``, ``find`` -- jede kann
+        # luegen. Deshalb wird die Identitaetsfrage EINMAL hier gestellt, an
+        # der Stelle, die ohnehin der Chokepoint fuer Textfelder ist.
+        if value is None or _ist_echter_str(value):
             return
         raise DatenschleuseBlocked(
-            f"{field} vom Typ {type(value).__name__!r} ist kein Text und damit "
+            f"{field} vom Typ {_typname(value)!r} ist kein Text und damit "
             "nicht maskierbar -- blockiert (fail-closed). Erlaubt ist nur ein "
             "String (oder das Feld ganz weglassen)."
         )
@@ -1654,7 +1723,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return
         if not isinstance(value, dict):
             raise DatenschleuseBlocked(
-                f"cache_control vom Typ {type(value).__name__!r} ist kein "
+                f"cache_control vom Typ {_typname(value)!r} ist kein "
                 "Caching-Marker -- blockiert (fail-closed). Erlaubt ist nur "
                 "ein Objekt wie {'type': 'ephemeral'}."
             )
@@ -1671,14 +1740,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
         marker = value.get("type")
         if not _ist_registriert(marker, CACHE_CONTROL_TYPES):
             raise DatenschleuseBlocked(
-                f"cache_control.type (Typ {type(marker).__name__!r}) ist kein "
+                f"cache_control.type (Typ {_typname(marker)!r}) ist kein "
                 "bekannter Caching-Marker -- blockiert (fail-closed). Erlaubt: "
                 f"{', '.join(sorted(CACHE_CONTROL_TYPES))}."
             )
         ttl = value.get("ttl")
         if ttl is not None and not _ist_registriert(ttl, CACHE_CONTROL_TTLS):
             raise DatenschleuseBlocked(
-                f"cache_control.ttl (Typ {type(ttl).__name__!r}) ist kein "
+                f"cache_control.ttl (Typ {_typname(ttl)!r}) ist kein "
                 "bekannter Wert -- blockiert (fail-closed). Erlaubt: "
                 f"{', '.join(sorted(CACHE_CONTROL_TTLS))}."
             )
@@ -1696,7 +1765,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return
         if isinstance(value, bool) or not isinstance(value, int):
             raise DatenschleuseBlocked(
-                f"{field} vom Typ {type(value).__name__!r} ist kein "
+                f"{field} vom Typ {_typname(value)!r} ist kein "
                 "Zitat-Index -- als ungepruefter Kanal blockiert "
                 "(fail-closed). Erlaubt ist nur eine Ganzzahl."
             )
@@ -1729,7 +1798,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return
         if not isinstance(value, list):
             raise DatenschleuseBlocked(
-                f"citations vom Typ {type(value).__name__!r} ist kein "
+                f"citations vom Typ {_typname(value)!r} ist kein "
                 "Zitat-Array -- blockiert (fail-closed). Erlaubt ist nur "
                 "eine Liste von Zitat-Objekten."
             )
@@ -1743,7 +1812,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         for citation in value:
             if not isinstance(citation, dict):
                 raise DatenschleuseBlocked(
-                    f"Zitat vom Typ {type(citation).__name__!r} ist nicht "
+                    f"Zitat vom Typ {_typname(citation)!r} ist nicht "
                     "pruefbar und deshalb blockiert (fail-closed). Erlaubt "
                     "sind nur Zitat-Objekte."
                 )
@@ -1772,7 +1841,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 else:
                     grund = (
                         "Zitat-Typ "
-                        f"({type(citation_type).__name__}) ist der "
+                        f"({_typname(citation_type)}) ist der "
                         "Datenschleuse nicht bekannt"
                     )
                 raise DatenschleuseBlocked(
@@ -1842,7 +1911,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if not isinstance(value, str) or not OPAQUE_ID_PATTERN.fullmatch(value):
             raise DatenschleuseBlocked(
                 f"{field} ist kein zulaessiger Identifier (Typ "
-                f"{type(value).__name__!r}) -- als Freitext-Kanal blockiert "
+                f"{_typname(value)!r}) -- als Freitext-Kanal blockiert "
                 "(fail-closed). Erlaubt: bis zu 128 Zeichen aus "
                 "A-Z a-z 0-9 _ . : -"
             )
@@ -1851,7 +1920,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
     def _validate_tool_call(call: Any) -> None:
         if not isinstance(call, dict):
             raise DatenschleuseBlocked(
-                f"tool_call vom Typ {type(call).__name__!r} ist nicht pruefbar "
+                f"tool_call vom Typ {_typname(call)!r} ist nicht pruefbar "
                 "und deshalb blockiert (fail-closed)."
             )
         unknown = sum(
@@ -1874,7 +1943,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             call_type, ALLOWED_TOOL_CALL_TYPES
         ):
             raise DatenschleuseBlocked(
-                f"tool_call mit nicht erlaubtem Typ (Typ {type(call_type).__name__!r}) "
+                f"tool_call mit nicht erlaubtem Typ (Typ {_typname(call_type)!r}) "
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
                 f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_TOOL_CALL_TYPES))}."
             )
@@ -1882,7 +1951,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         index = call.get("index")
         if index is not None and not isinstance(index, int):
             raise DatenschleuseBlocked(
-                f"tool_calls[].index vom Typ {type(index).__name__!r} ist kein "
+                f"tool_calls[].index vom Typ {_typname(index)!r} ist kein "
                 "Index -- blockiert (fail-closed)."
             )
 
@@ -1894,7 +1963,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
     def _validate_function_payload(function: Any, field: str) -> None:
         if not isinstance(function, dict):
             raise DatenschleuseBlocked(
-                f"{field} vom Typ {type(function).__name__!r} ist nicht pruefbar "
+                f"{field} vom Typ {_typname(function)!r} ist nicht pruefbar "
                 "und deshalb blockiert (fail-closed)."
             )
         unknown = sum(
