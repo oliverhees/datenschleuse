@@ -696,6 +696,77 @@ PAYLOAD_MAX_PROMPT_ITEMS = 64
 #: bewusst aenderbar.
 PAYLOAD_MAX_MESSAGES = 256
 
+# ===========================================================================
+# Analyzer-Call-Budget (DATENSCHLE-69, Runde 4, F3)
+# ===========================================================================
+# PAYLOAD_MAX_MESSAGES sass auf der FALSCHEN EINHEIT. Es begrenzt
+# Nachrichten -- aber eine einzelne Nachricht kann beliebig viele
+# Analyzer-Aufrufe kosten. GEMESSEN (Auditor, Runde 4, Request ging DURCH):
+#
+#     1 Message, 2000 Parts       ->   2 000 Calls   47,2 s
+#     tools[] mit 200             ->   1 400 Calls   33,5 s
+#     1 Message, 20 000 Parts     ->  20 000 Calls   ~8 min
+#     tools[] mit 20 000          -> 140 002 Calls   ~55 min
+#     20 000 tool_calls           ->  80 000 Calls   ~31 min
+#
+# Und PAYLOAD_MAX_MESSAGES multipliziert das noch: 256 x 2000 Parts sind
+# rund 3,4 STUNDEN Worker-Zeit aus EINEM Request. Die alte Blockmeldung
+# behauptete dabei "Jede Message kostet eine eigene Analyse" -- das war
+# schlicht falsch.
+#
+# BEWUSST KEINE drei neuen Einzelgrenzen (Parts, tools, tool_calls): die
+# schliessen drei Symptome und lassen die Ebene offen, die morgen dazukommt.
+# Begrenzt wird stattdessen die Einheit, die die Kosten WIRKLICH treibt --
+# der Analyzer-Aufruf. Das schliesst die Klasse.
+#
+# HERLEITUNG DER ZAHL -- was gemessen ist und was gesetzt ist:
+#
+#   GEMESSEN: 23,6 ms pro Analyzer-Aufruf (2 000 Aufrufe -> 47,2 s).
+#   GESETZT:  30 s als Obergrenze dafuer, wie lange ein EINZELNER Request
+#             einen Worker belegen darf. Das ist eine Betreiber-Toleranz,
+#             keine Messung -- von Oliver entschieden (Runde 4).
+#
+#   30 s / 23,6 ms = 1271 -> abgerundet 1200.
+#
+# Zur Groessenordnung: ein normaler Chat-Request mit fuenf Nachrichten kostet
+# rund zehn Aufrufe, also etwa eine Viertelsekunde. Er sieht das Budget nie.
+#
+# EHRLICH DAZU: seit dieser Runde wird der httpx-Client wiederverwendet
+# (frueher ein neuer pro Aufruf, also ein TCP-Handshake pro Analyse). Damit
+# ist die 23,6-ms-Grundlage zu pessimistisch, das Budget entspricht also
+# faktisch MEHR als 30 s. Die Zahl wird trotzdem NICHT spekulativ nachgezogen
+# -- eine Grenze anhand einer geschaetzten Verbesserung zu setzen waere
+# wieder eine Annahme mit dem Anschein einer Messung. Die Neumessung liegt
+# DATENSCHLE-79 bei (Regressionspruefung fuer den Deploy-Weg, dort entsteht
+# ohnehin ein Messaufbau mit Stub-Analyzer).
+PAYLOAD_MAX_ANALYZER_CALLS = 1200
+
+#: Betreiberseitig einstellbar -- eine Grenze, die reale Nutzung blockt und
+#: den Schalter nicht nennt, macht die Sitzung tot, ohne zu sagen was hilft.
+MAX_ANALYZER_CALLS_ENV = "DATENSCHLEUSE_MAX_ANALYZER_CALLS"
+
+#: Gemessene Kosten pro Aufruf. Steht als Konstante, weil die Blockmeldung
+#: sie nennt: eine Grenze ohne ihre Groessenordnung ist eine nackte Zahl.
+ANALYZER_CALL_MS = 23.6
+
+#: Das Budget des LAUFENDEN Requests. Ein ContextVar und keine Instanz-
+#: variable: die Guardrail-Instanz ist ueber alle gleichzeitigen Requests
+#: geteilt. Ein Zaehler auf ``self`` waere ein gemeinsamer Zaehler -- zwei
+#: parallele Anfragen wuerden sich gegenseitig das Budget wegnehmen.
+_ANALYZER_BUDGET: "contextvars.ContextVar" = contextvars.ContextVar(
+    "datenschleuse_analyzer_budget", default=None
+)
+
+
+class _AnalyzerBudget:
+    """Der Restbestand an Analyzer-Aufrufen fuer EINEN Request."""
+
+    __slots__ = ("rest", "grenze")
+
+    def __init__(self, grenze: int) -> None:
+        self.grenze = grenze
+        self.rest = grenze
+
 # --- 1) Gemeinsame Steuerparameter beider Routen ---------------------------
 # Werte sind der Name des Formpruefers (siehe _PAYLOAD_VALIDATORS).
 _COMMON_VALIDATED = {
@@ -1644,6 +1715,32 @@ APPROVAL_SECRET_HOWTO = (
 )
 
 
+def _validate_max_analyzer_calls(roh: Any) -> int:
+    """Prueft die Budget-Grenze. BEIM START, wie jede andere Betreiber-Zahl.
+
+    Ein stiller Rueckfall auf die Vorgabe waere hier besonders gefaehrlich:
+    der Betreiber, der die Grenze bewusst angehoben hat, bekaeme klammheimlich
+    wieder 1200 -- und wuerde den Block fuer einen Fehler halten.
+    """
+    if roh is None or roh == "":
+        return PAYLOAD_MAX_ANALYZER_CALLS
+    try:
+        wert = int(roh)
+    except (TypeError, ValueError):
+        raise DatenschleuseConfigError(
+            f"{MAX_ANALYZER_CALLS_ENV} ist keine ganze Zahl. Erwartet wird "
+            "die maximale Anzahl Analyzer-Aufrufe pro Request "
+            f"(Vorgabe: {PAYLOAD_MAX_ANALYZER_CALLS})."
+        ) from None
+    if wert <= 0:
+        raise DatenschleuseConfigError(
+            f"{MAX_ANALYZER_CALLS_ENV} muss groesser als 0 sein (war: {wert}). "
+            "Ein Wert <= 0 wuerde JEDEN Request blocken -- die Guardrail waere "
+            "faktisch aus, ohne dass es so aussieht."
+        )
+    return wert
+
+
 def _validate_approval_header_secret(roh: Any) -> str:
     """Prueft das Header-Geheimnis. BEIM START, nicht beim ersten Request.
 
@@ -2020,6 +2117,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
         approval_header_secret: Optional[str] = None,
+        max_analyzer_calls: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
         # Krypto-Konfiguration ZUERST und beim START (W2/W3). Ein
@@ -2096,6 +2194,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Der Vergleich bleibt auf Bytes konstantzeitig.
         self._approval_secret_bytes = self.approval_header_secret.encode("utf-8")
 
+        # --- Analyzer-Call-Budget (Runde 4, F3) -----------------------------
+        # Prioritaet wie ueberall: Argument > config.yaml (kwargs) > ENV.
+        _budget_roh = max_analyzer_calls
+        if _budget_roh is None:
+            _budget_roh = kwargs.pop("max_analyzer_calls", None)
+        if _budget_roh is None:
+            _budget_roh = os.getenv(MAX_ANALYZER_CALLS_ENV)
+        self.max_analyzer_calls = _validate_max_analyzer_calls(_budget_roh)
+
+        # Ein wiederverwendeter httpx-Client statt eines neuen pro Aufruf
+        # (F3): vorher kostete JEDE Analyse einen frischen TCP-Handshake.
+        # Lazy angelegt, damit der Konstruktor keinen laufenden Event-Loop
+        # braucht -- die Guardrail wird beim Proxy-Start gebaut, teils
+        # ausserhalb des Loops, in dem sie spaeter arbeitet.
+        self._httpx_client = None
+
         # --- Schutzklassen-Modell (IMMER aktiv, keine Konfigurationsoption) --
         # Laedt presidio/sensitivity-keywords.yml einmalig. Fail-closed beim
         # START: eine kaputte/fehlende Config wirft SensitivityConfigError und
@@ -2139,6 +2253,178 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 )
         super().__init__(**kwargs)
 
+    # ---- Analyzer-Call-Budget (DATENSCHLE-69, Runde 4, F3) ---------------
+    def _http_client(self) -> "httpx.AsyncClient":
+        """Der wiederverwendete HTTP-Client.
+
+        Vorher oeffnete ``_analyze`` pro Aufruf einen eigenen
+        ``AsyncClient`` -- also eine frische TCP-Verbindung (bei https
+        zusaetzlich einen TLS-Handshake) fuer JEDE einzelne Analyse. Bei
+        einem Request mit hunderten Fragmenten ist das der groessere Teil
+        der Wartezeit.
+        """
+        if self._httpx_client is None or self._httpx_client.is_closed:
+            self._httpx_client = httpx.AsyncClient(timeout=self.request_timeout)
+        return self._httpx_client
+
+    def _open_analyzer_budget(self) -> None:
+        """Setzt das Budget fuer DIESEN Request auf."""
+        _ANALYZER_BUDGET.set(_AnalyzerBudget(self.max_analyzer_calls))
+
+    def _spend_analyzer_call(self) -> None:
+        """Verbraucht einen Aufruf. Blockt, wenn nichts mehr da ist.
+
+        Der Backstop zur Vorab-Schaetzung. Beide zusammen, weil die
+        Schaetzung eine ZWEITE BESCHREIBUNG derselben Traversierung ist --
+        und zwei handgepflegte Beschreibungen laufen auseinander (dieselbe
+        Bauart wie F9). Diese hier kann nicht driften: sie sitzt an der
+        Engstelle und zaehlt, was wirklich passiert.
+        """
+        budget = _ANALYZER_BUDGET.get()
+        if budget is None:
+            # Kein offenes Budget -- z.B. der post_call-Pfad oder ein
+            # direkter Aufruf aus Werkzeugen. Nicht blocken: eine Grenze,
+            # die ausserhalb ihres Geltungsbereichs zuschlaegt, waere ein
+            # Fix, der einen anderen Defekt erzeugt.
+            return
+        if budget.rest <= 0:
+            raise DatenschleuseBlocked(
+                f"Diese Anfrage ueberschreitet das Budget von "
+                f"{budget.grenze} Analyseaufrufen -- blockiert "
+                "(fail-closed). Eine Anfrage darf einen Worker nicht "
+                "beliebig lange belegen. Der Betreiber kann die Grenze "
+                f"ueber {MAX_ANALYZER_CALLS_ENV} anheben."
+            )
+        budget.rest -= 1
+
+    def _enforce_analyzer_budget(self, data: Any, route: "_PayloadRoute") -> None:
+        """Die VORAB-Schranke: blockt die pathologische Payload zum Nulltarif.
+
+        Steht im Validate-Pfad, VOR der ersten Analyse -- eine Grenze, die
+        erst nach 20 000 Aufrufen zuschlaegt, verhindert genau das nicht,
+        wogegen sie gebaut ist.
+
+        In der Meldung stehen ausschliesslich ANZAHLEN und der Name des
+        Schalters, nie ein Wert aus der Payload (Gesetz 5).
+        """
+        if not isinstance(data, dict):
+            return
+        bedarf = self._count_analyzer_calls(data, route)
+        grenze = self.max_analyzer_calls
+        if bedarf > grenze:
+            sekunden = int(bedarf * ANALYZER_CALL_MS / 1000)
+            raise DatenschleuseBlocked(
+                f"Diese Anfrage wuerde {bedarf} Analyseaufrufe ausloesen, "
+                f"erlaubt sind {grenze} -- blockiert (fail-closed). Eine "
+                "einzelne Anfrage darf einen Worker nicht beliebig lange "
+                f"belegen (hier rund {sekunden} s bei "
+                f"{ANALYZER_CALL_MS} ms pro Aufruf). Der Betreiber kann die "
+                f"Grenze ueber {MAX_ANALYZER_CALLS_ENV} anheben."
+            )
+
+    # -- Die Schaetzung. Spiegelt die Traversierung des Maskierungspfads. --
+    # WICHTIG fuer den naechsten, der hier ein Feld ergaenzt: diese Zaehlung
+    # darf NIE ZU NIEDRIG liegen, sonst ist das Budget an der Stelle
+    # wirkungslos. Zu HOCH ist unbedenklich (blockt frueher). Genau das
+    # prueft test_analyzer_budget.py::TestSchaetzungDecktDieWirklichkeit --
+    # laeuft die Schaetzung vom Masker weg, wird der Test rot, statt dass
+    # der Betrieb still unsicher wird.
+    @classmethod
+    def _count_analyzer_calls(cls, data: Any, route: "_PayloadRoute") -> int:
+        if not isinstance(data, dict):
+            return 0
+        gesamt = 0
+        messages = data.get("messages")
+        if isinstance(messages, list):
+            for msg in messages:
+                if isinstance(msg, dict):
+                    gesamt += cls._count_message(msg)
+        for feld in route.masked:
+            if feld == route.required and feld == "messages":
+                continue
+            wert = data.get(feld)
+            if wert is None:
+                continue
+            if feld in ("suffix", "user", "prompt"):
+                gesamt += cls._count_text(wert)
+            elif feld == "stop":
+                gesamt += cls._count_node(wert)
+            else:
+                # tools / tool_choice / functions / function_call /
+                # response_format: verschachtelt, ueber _mask_json_node --
+                # dort kostet auch jeder SCHLUESSEL einen Aufruf. Plus EINS
+                # fuer den Verifikationsdurchlauf, den
+                # _mask_payload_structure auf dem Ergebnis faehrt
+                # (_verify_no_pii_left).
+                gesamt += cls._count_node(wert) + 1
+        return gesamt
+
+    @staticmethod
+    def _count_text(wert: Any) -> int:
+        """Ein Textfeld kostet genau dann einen Aufruf, wenn ``_analyze``
+        ihn wirklich macht -- leere/blanke Strings kehren dort sofort um."""
+        return 1 if isinstance(wert, str) and wert.strip() else 0
+
+    @classmethod
+    def _count_node(cls, node: Any, depth: int = 0) -> int:
+        """Spiegelt ``_mask_json_node``: Strings und Zahlen kosten je einen
+        Aufruf, dicts zusaetzlich einen pro SCHLUESSEL."""
+        if depth > MAX_JSON_DEPTH:
+            return 0  # tiefer blockt der Masker ohnehin
+        if isinstance(node, str):
+            return 1 if node.strip() else 0
+        if node is None or isinstance(node, bool):
+            return 0
+        if isinstance(node, (int, float)):
+            return 1
+        if isinstance(node, list):
+            return sum(cls._count_node(x, depth + 1) for x in node)
+        if isinstance(node, dict):
+            n = 0
+            for key, value in node.items():
+                n += cls._count_node(key, depth + 1)
+                n += cls._count_node(value, depth + 1)
+            return n
+        return 0
+
+    @classmethod
+    def _count_message(cls, msg: Dict[str, Any]) -> int:
+        n = 0
+        content = msg.get("content")
+        if isinstance(content, str):
+            n += cls._count_text(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    n += cls._count_text(part.get("text"))
+        for feld in ("name", "refusal", "reasoning_content"):
+            n += cls._count_text(msg.get(feld))
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if isinstance(call, dict):
+                    n += cls._count_function(call.get("function"))
+        n += cls._count_function(msg.get("function_call"))
+        return n
+
+    @classmethod
+    def _count_function(cls, function: Any) -> int:
+        if not isinstance(function, dict):
+            return 0
+        n = cls._count_text(function.get("name"))
+        roh = function.get("arguments")
+        if isinstance(roh, str) and roh.strip():
+            try:
+                geparst = json.loads(roh)
+            except Exception:
+                # Kein gueltiges JSON -> der Masker behandelt es als einen
+                # Text (oder blockt). Ein Aufruf ist die sichere Annahme.
+                return n + 1
+            # +1 fuer den Verifikationsdurchlauf auf dem maskierten Ergebnis
+            # (_mask_arguments -> _verify_no_pii_left).
+            n += cls._count_node(geparst) + 1
+        return n
+
     # ---- Presidio Analyzer (echte externe Abhaengigkeit) ------------------
     async def _analyze(self, text: str) -> List[Dict[str, Any]]:
         """Ruft Presidio Analyzer ``/analyze`` auf. Fail-closed: jeder Fehler
@@ -2146,12 +2432,17 @@ class DatenschleuseGuardrail(_GuardrailBase):
         eskaliert, damit KEIN unmaskierter Text durchgeht."""
         if not text or not text.strip():
             return []
+        # Der LAUFZEIT-Backstop (F3). Er sitzt an der Engstelle, durch die
+        # JEDER Aufruf muss, und kann deshalb nicht driften: er zaehlt, was
+        # passiert, nicht was jemand vorhergesehen hat. Die Vorab-Schaetzung
+        # im Validate-Pfad ist die schnellere, aber die zweitgenaue Schranke.
+        self._spend_analyzer_call()
         payload: Dict[str, Any] = {"text": text, "language": self.language}
         if self.score_threshold > 0:
             payload["score_threshold"] = self.score_threshold
         try:
-            async with httpx.AsyncClient(timeout=self.request_timeout) as client:
-                resp = await client.post(f"{self.analyzer_url}/analyze", json=payload)
+            client = self._http_client()
+            resp = await client.post(f"{self.analyzer_url}/analyze", json=payload)
             resp.raise_for_status()
             data = resp.json()
             if not isinstance(data, list):
@@ -2341,6 +2632,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
         self._validate_payload_shape(data, route)
         self._validate_messages_count(data)
+        # Das Analyzer-Call-Budget (Runde 4, F3). VOR der ersten Analyse und
+        # nach der Formpruefung: die Struktur muss gueltig sein, bevor man
+        # sie zaehlen kann. Oeffnet zugleich das Laufzeit-Budget, das
+        # ``_analyze`` bei jedem Aufruf verbraucht.
+        self._open_analyzer_budget()
+        self._enforce_analyzer_budget(data, route)
         # Die FORM des Logging-Schnappschusses vor jeder Maskierung
         # (Security-F1): was wir am Ende nicht neu bauen koennen, duerfen wir
         # gar nicht erst maskiert glauben.
@@ -2707,9 +3004,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if isinstance(messages, list) and len(messages) > PAYLOAD_MAX_MESSAGES:
             raise DatenschleuseBlocked(
                 f"messages enthaelt mehr als {PAYLOAD_MAX_MESSAGES} "
-                "Eintraege -- blockiert (fail-closed). Jede Message kostet "
-                "eine eigene Analyse; ein unbegrenztes Gespraech belegt den "
-                "Worker beliebig lange."
+                "Eintraege -- blockiert (fail-closed). Ein unbegrenztes "
+                "Gespraech belegt den Worker beliebig lange. Die eigentliche "
+                "Kostenbremse ist das Analyzer-Call-Budget "
+                f"({MAX_ANALYZER_CALLS_ENV}); diese Grenze hier begrenzt "
+                "zusaetzlich die Groesse des Gespraechs selbst."
             )
 
     @staticmethod
