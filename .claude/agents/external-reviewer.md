@@ -75,7 +75,11 @@ worthless as evidence either way.
 
 Never treat this as a broken chain, never report it as an error, and never switch
 models because of it. If you genuinely need to know which model answered, read the
-`x-model-used` header in the PAL MCP server's log
-(`pal-mcp-server/logs/mcp_server.log` auf Olivers Rechner — der Server gehoert
-**nicht** zu diesem Repository). Das ist die einzige belastbare Quelle; die
-Selbstauskunft des Modells ist keine.
+`x-model-used` header in the PAL MCP server's log.
+
+**Wo dieses Log liegt:** `logs/mcp_server.log` im Projekt `pal-mcp-server`.
+Das ist ein **Schwesterprojekt**, nicht Teil dieses Repositorys — relativ zum
+datenschleuse-Worktree existiert der Pfad nicht. Auf Olivers Rechner liegt es
+unter `ALICE/projekte/pal-mcp-server/logs/mcp_server.log`. Wer das Log nicht
+erreicht, hat schlicht keine belastbare Quelle — dann gilt: nicht raten und die
+Selbstauskunft des Modells erst recht nicht als Beleg nehmen.

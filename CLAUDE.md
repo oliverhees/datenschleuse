@@ -183,15 +183,19 @@ Community-Asset für die DACH-KI-Szene.
 Externe Reviews decken blinde Flecken auf, die ein Modell derselben Familie
 nicht sieht. Deshalb sind sie Pflicht — nicht auf Anforderung, nicht optional.
 
-- After completing any code change and before every commit, delegate to the
-  external-reviewer subagent. A task is NOT finished until this review ran.
-  Delegiert wird — der Lead führt den Review nicht selbst aus und behebt auch
-  nicht selbst (Gesetz 8). Fixes gehen an den zuständigen Teammate.
-- Critical und High werden sofort behoben, per Delegation. Medium und Low gehen
-  an Oliver zur Entscheidung. Maßgeblich ist immer die Projektskala, nicht die
-  Skala des externen Reviewers (siehe Severity-Abbildung).
-- Never skip the review silently. If the PAL MCP server or the external models
-  are unreachable, stop and tell Oliver explicitly.
+- Nach jeder Code-Änderung und vor jedem Commit wird an den
+  `external-reviewer` delegiert. Eine Aufgabe gilt erst als fertig, wenn
+  dieser Review gelaufen ist.
+- **Delegiert** wird: Der Lead führt den Review nicht selbst aus und behebt
+  auch nicht selbst (Gesetz 8). Fixes gehen an den zuständigen Teammate.
+- Critical und High werden sofort behoben, per Delegation. Medium und Low
+  gehen an Oliver zur Entscheidung. Maßgeblich ist immer die Projektskala,
+  nicht die Skala des externen Reviewers (siehe Severity-Abbildung).
+- Kein stillschweigendes Überspringen. Ist der PAL-MCP-Server nicht
+  erreichbar **oder** eines der Modelle, die für diesen Durchlauf vorgesehen
+  sind, wird angehalten und Oliver ausdrücklich informiert. Jedes einzelne
+  reicht: Läuft nur ein Modell (Standardfall), löst dessen Ausfall die
+  Meldepflicht bereits aus.
 
 ### Severity-Abbildung (bindend)
 
@@ -266,7 +270,7 @@ Security-Hotfix oder bei einem längeren Anbieterausfall. Die Aussetzung wird am
 Work Item dokumentiert: Grund, Umfang, und wann sie endet. Nur Oliver, nie ein
 Agent, nie stillschweigend.
 
-### Externe Modelle: Identitaets-Halluzination ist normal
+### Externe Modelle: Identitäts-Halluzination ist normal
 - Die externen Prüfmodelle behaupten auf Nachfrage, „Claude von Anthropic" zu
   sein — auf Deutsch, Englisch und Chinesisch. Das ist eine **halluzinierte
   Selbstauskunft**, kein Fehler und kein Umleiten auf Claude. Viele offene
@@ -277,4 +281,6 @@ Agent, nie stillschweigend.
 - Belastbar ist allein der Modell-Header in der Antwort des Anbieters, nie die
   Aussage des Modells. Welche Modelle konkret laufen, über welchen Anbieter und
   wo das Log dazu liegt, steht in `.claude/agents/external-reviewer.md` und am
-  Work Item DATENSCHLE-87 — bewusst nicht hier (Begründung dort, LOW-1).
+  Work Item DATENSCHLE-87 — bewusst nicht hier (Begründung dort, LOW-1). Das
+  Log gehört zum Schwesterprojekt `pal-mcp-server`; in diesem Repository ist es
+  nicht zu finden, und ein Pfad dorthin gehört deshalb auch nicht hierher.
