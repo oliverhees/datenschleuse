@@ -56,12 +56,17 @@ Hooks, gegen die sie testet, existieren im CI-Checkout nicht.
 > ausdrücklich dazu:
 >
 > ```
-> git show origin/feature/DATENSCHLE-79-stop-gate-worktree:test/test_stop_gate_worktree.py \
+> git show fe1253d2556bc94cbcfed2397ee1e85975bb7f07:test/test_stop_gate_worktree.py \
 >   > <klon>/test/test_stop_gate_worktree.py
 > cd <klon>
 > CI=true PYTHONPATH=litellm python3 -m unittest discover -s ./test \
 >   -p "test_stop_gate_worktree.py"
 > ```
+>
+> Bewusst an den **Commit-SHA** gepinnt, nicht an den Branchnamen: Wird
+> `feature/DATENSCHLE-79-stop-gate-worktree` umbenannt, rebased oder
+> verworfen, stirbt sonst der einzige Beleg dieses Dokuments. Ein SHA
+> kostet nichts und hält. (Stand des Belegs: `fe1253d`.)
 
 So gemessen in einem frischen Klon von `main`:
 
@@ -239,11 +244,12 @@ Die Bash-Suite ist damit *lauffähig* in CI, aber noch **nicht verdrahtet** —
 ein neuer Schritt im `test`-Job macht die Suite für jeden PR verbindlich;
 das ist eine Prozessentscheidung, keine Nebenwirkung dieses ADRs.
 
-Die naheliegende Sorge dagegen wurde geprüft und hat sich nicht bestätigt:
-Die Suite enthält zeitabhängige Fälle (`sleep 0.01` zwischen
-Marker-Zeitstempeln, Auswertung über `-nt`), die auf einem langsamen oder
-überbuchten Runner kippen könnten. Zehn aufeinanderfolgende Läufe im
-frischen Klon:
+Die naheliegende Sorge dagegen wurde **lokal** geprüft — was eine
+Runner-Messung ausdrücklich nicht ersetzt: Die Suite enthält
+zeitabhängige Fälle (`sleep 0.01` zwischen Marker-Zeitstempeln,
+Auswertung über `-nt`), die auf einem langsamen oder überbuchten Runner
+kippen könnten. Genau dort wurde nicht gemessen. Zehn aufeinanderfolgende
+Läufe im frischen Klon auf dieser Maschine:
 
 ```
 for i in $(seq 1 10); do
@@ -252,9 +258,10 @@ for i in $(seq 1 10); do
 done
 ```
 
-Ergebnis: **10 von 10 grün, kein einziger roter Lauf.** Das ist ein
-lokaler Befund, keine Runner-Messung — die Verdrahtung bleibt trotzdem
-ein eigenes Item, damit ein neu eingeführter Pflicht-Check bewusst
+Ergebnis: **10 von 10 grün, kein einziger roter Lauf.** Das widerlegt die
+Sorge nicht, es verschiebt nur die Beweislast: Wer die Suite verdrahtet,
+sollte die ersten Läufe auf dem Runner beobachten. Die Verdrahtung bleibt
+ohnehin ein eigenes Item, damit ein neu eingeführter Pflicht-Check bewusst
 beschlossen wird und nicht beiläufig entsteht.
 
 ### Was das externe Review aufgedeckt hat und hier NICHT gelöst wird
