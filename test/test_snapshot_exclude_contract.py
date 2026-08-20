@@ -111,22 +111,35 @@ def _extract_body_snapshot_exclude(source: str):
     sie abzuschreiben (der Fehler, der zu diesem Test gefuehrt hat), wird der
     Quelltext geparst.
 
-    Beherrscht beide bisher gesehenen Schreibweisen:
+    Beherrscht die real gesehenen Schreibweisen:
         _body_snapshot_exclude = {"a", "b"}
+        _body_snapshot_exclude: set = {"a", "b"}
         _body_snapshot_exclude = frozenset({"a", "b"}) | _ANDERE_MENGE
+        _body_snapshot_exclude = frozenset(["a", "b"])
+        _body_snapshot_exclude |= {"c"}
 
     Gibt ``None`` zurueck, wenn die Zuweisung nicht gefunden oder nicht
     ausgewertet werden kann. ``None`` heisst ausdruecklich "nicht gemessen"
     und fuehrt zum skip -- nie zu einem stillen Durchwinken.
+
+    ZWEI BAUART-ENTSCHEIDUNGEN, beide gegen dieselbe Gefahr:
+
+    1. **``NodeVisitor`` statt ``ast.walk``.** ``ast.walk`` laeuft in Breite,
+       nicht in Quelltextreihenfolge -- "die zuletzt gefundene Zuweisung" war
+       damit nicht die letzte im Quelltext. Bei zwei Zuweisungen wurde
+       womoeglich die falsche genommen, ohne dass es jemand merkt.
+
+    2. **Ein nicht lesbares ``|=`` macht die ganze Messung ungueltig.**
+       Naheliegend waere, die Erweiterung einfach zu ignorieren und die
+       Basismenge zurueckzugeben. Das waere die EINZIGE Fehlerform, die
+       nicht im Skip endet, sondern in einer falschen Zusicherung: eine zu
+       kleine gemessene Menge faerbt den Obermengen-Vertrag faelschlich
+       gruen. Zu klein ist hier gefaehrlicher als gar nicht.
     """
     baum = ast.parse(source)
 
-    # Alle einfachen Mengen-Zuweisungen einsammeln, damit ein ``A | B`` seine
-    # Namen aufloesen kann.
-    bekannt = {}
-
-    def als_menge(knoten):
-        if isinstance(knoten, ast.Set):
+    def als_menge(knoten, bekannt):
+        if isinstance(knoten, (ast.Set, ast.List, ast.Tuple)):
             werte = set()
             for element in knoten.elts:
                 if not isinstance(element, ast.Constant) or not isinstance(
@@ -135,38 +148,86 @@ def _extract_body_snapshot_exclude(source: str):
                     return None
                 werte.add(element.value)
             return werte
-        # frozenset({...}) / set({...})
+        # frozenset({...}) / set([...]) -- auch mit Listen-/Tupel-Argument
         if (
             isinstance(knoten, ast.Call)
             and isinstance(knoten.func, ast.Name)
             and knoten.func.id in ("frozenset", "set")
-            and len(knoten.args) == 1
         ):
-            return als_menge(knoten.args[0])
+            if not knoten.args:
+                return set()
+            if len(knoten.args) == 1:
+                return als_menge(knoten.args[0], bekannt)
+            return None
         if isinstance(knoten, ast.Name):
             return bekannt.get(knoten.id)
-        if isinstance(knoten, ast.BinOp) and isinstance(knoten.op, ast.BitOr):
-            links = als_menge(knoten.left)
-            rechts = als_menge(knoten.right)
+        if isinstance(knoten, ast.BinOp) and isinstance(
+            knoten.op, (ast.BitOr, ast.Add)
+        ):
+            links = als_menge(knoten.left, bekannt)
+            rechts = als_menge(knoten.right, bekannt)
             if links is None or rechts is None:
                 return None
             return links | rechts
         return None
 
-    gefunden = None
-    for knoten in ast.walk(baum):
-        if not isinstance(knoten, ast.Assign):
-            continue
-        for ziel in knoten.targets:
-            if not isinstance(ziel, ast.Name):
-                continue
-            wert = als_menge(knoten.value)
+    ZIEL = "_body_snapshot_exclude"
+
+    class Sammler(ast.NodeVisitor):
+        """Besucht in QUELLTEXTREIHENFOLGE."""
+
+        def __init__(self):
+            self.bekannt = {}
+            self.gefunden = None
+            self.ungueltig = False
+
+        def _setze(self, name, wert):
             if wert is None:
-                continue
-            bekannt[ziel.id] = wert
-            if ziel.id == "_body_snapshot_exclude":
-                gefunden = wert
-    return None if gefunden is None else frozenset(gefunden)
+                self.bekannt.pop(name, None)
+                if name == ZIEL:
+                    # Nicht lesbare Zuweisung -> Messung verwerfen.
+                    self.ungueltig = True
+                return
+            self.bekannt[name] = wert
+            if name == ZIEL:
+                self.gefunden = wert
+
+        def visit_Assign(self, knoten):
+            wert = als_menge(knoten.value, self.bekannt)
+            for ziel in knoten.targets:
+                if isinstance(ziel, ast.Name):
+                    self._setze(ziel.id, wert)
+            self.generic_visit(knoten)
+
+        def visit_AnnAssign(self, knoten):
+            if isinstance(knoten.target, ast.Name) and knoten.value is not None:
+                self._setze(
+                    knoten.target.id, als_menge(knoten.value, self.bekannt)
+                )
+            self.generic_visit(knoten)
+
+        def visit_AugAssign(self, knoten):
+            if not isinstance(knoten.target, ast.Name):
+                self.generic_visit(knoten)
+                return
+            name = knoten.target.id
+            basis = self.bekannt.get(name)
+            zusatz = als_menge(knoten.value, self.bekannt)
+            if basis is None or zusatz is None:
+                # Erweiterung nicht lesbar -> lieber gar keine Messung als
+                # eine zu kleine. Siehe Docstring, Punkt 2.
+                self._setze(name, None)
+            elif isinstance(knoten.op, (ast.BitOr, ast.Add)):
+                self._setze(name, basis | zusatz)
+            else:
+                self._setze(name, None)
+            self.generic_visit(knoten)
+
+    sammler = Sammler()
+    sammler.visit(baum)
+    if sammler.ungueltig or sammler.gefunden is None:
+        return None
+    return frozenset(sammler.gefunden)
 
 
 def _installiertes_litellm_exclude():
@@ -394,6 +455,63 @@ class TestExcludeExtractor(unittest.TestCase):
             _extract_body_snapshot_exclude(quelle),
             frozenset({"secret_fields", "api_key", "headers"}),
         )
+
+    def test_erweiterung_per_augassign_wird_mitgelesen(self):
+        """DIE gefaehrliche Richtung (Review-Befund W8).
+
+        Ein ``|=`` nach der Basiszuweisung wurde frueher nicht gelesen: der
+        Extraktor fand die Basis, verpasste die Erweiterung und meldete eine
+        ZU KLEINE Menge. Zu klein heisst, der Obermengen-Vertrag wird
+        faelschlich gruen -- als einzige Fehlerform endet diese nicht im
+        Skip, sondern in einer falschen Zusicherung.
+        """
+        quelle = (
+            "def f():\n"
+            '    _body_snapshot_exclude = {"secret_fields"}\n'
+            '    _body_snapshot_exclude |= {"api_key"}\n'
+        )
+        self.assertEqual(
+            _extract_body_snapshot_exclude(quelle),
+            frozenset({"secret_fields", "api_key"}),
+        )
+
+    def test_annotierte_zuweisung_wird_gelesen(self):
+        """``_body_snapshot_exclude: set = {...}`` ist ein AnnAssign."""
+        quelle = "def f():\n    _body_snapshot_exclude: set = {\"a\", \"b\"}\n"
+        self.assertEqual(
+            _extract_body_snapshot_exclude(quelle), frozenset({"a", "b"})
+        )
+
+    def test_frozenset_mit_listen_argument(self):
+        quelle = 'def f():\n    _body_snapshot_exclude = frozenset(["a", "b"])\n'
+        self.assertEqual(
+            _extract_body_snapshot_exclude(quelle), frozenset({"a", "b"})
+        )
+
+    def test_letzte_zuweisung_im_quelltext_gewinnt(self):
+        """Reihenfolge nach QUELLTEXT, nicht nach ``ast.walk``.
+
+        ``ast.walk`` laeuft in Breite, nicht in Quelltextreihenfolge -- bei
+        zwei Zuweisungen war damit nicht garantiert, dass die letzte gewinnt.
+        """
+        quelle = (
+            "def f():\n"
+            '    _body_snapshot_exclude = {"alt"}\n'
+            '    _body_snapshot_exclude = {"neu"}\n'
+        )
+        self.assertEqual(
+            _extract_body_snapshot_exclude(quelle), frozenset({"neu"})
+        )
+
+    def test_nicht_lesbares_augassign_macht_die_messung_ungueltig(self):
+        """Eine Erweiterung, die wir nicht lesen koennen, darf NICHT die
+        Basismenge zurueckgeben -- das waere wieder zu klein."""
+        quelle = (
+            "def f():\n"
+            '    _body_snapshot_exclude = {"secret_fields"}\n'
+            "    _body_snapshot_exclude |= irgendwas()\n"
+        )
+        self.assertIsNone(_extract_body_snapshot_exclude(quelle))
 
     def test_unauffindbare_zuweisung_meldet_none(self):
         """Nicht gefunden heisst ``None`` -- also skip, nicht "leere Menge,
