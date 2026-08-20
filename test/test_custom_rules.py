@@ -1549,3 +1549,288 @@ class TestPostScanErrorBlocksRequest(_RuleFileTestCase,
             treffer = await guard._analyze("Projekt Adlerflug laeuft")
         self.assertEqual(len(treffer), 1,
                          "Presidio-Maskierung wurde mitgerissen (ISC-26)")
+
+
+# ===========================================================================
+# 24. S1-R (Security-Audit, HIGH) — die Segmentpruefung allein traegt nur
+#     fuer KONTEXTFREIE Erkennung
+#
+# Die Zerlegung an den Fuellergrenzen rettet Namen, weil Presidio Namens-
+# Tokens EINZELN erkennt ("Anna" ist fuer sich PERSON). MUSTERBASIERTE
+# Recognizer koennen ihre Bruchstuecke prinzipbedingt nicht erkennen: eine
+# halbe Telefonnummer ist keine Telefonnummer.
+#
+#   "Nummer: +49 30<PERSON_0>901820"  ->  Probe "Nummer: +49 30 901820"
+#     _analyze(probe)      -> PHONE_NUMBER
+#     _analyze("+49 30")   -> []          <- Bruchstueck
+#     _analyze("901820")   -> []          <- Bruchstueck
+#   => alle Segmente leer -> als Artefakt verworfen -> 11 Ziffern im Klartext
+#
+# Der Absender tippt den Platzhalter SELBST in den Prompt; die Nummerierung
+# startet deterministisch bei 0. Durchlauf 1 findet die Nummer nicht, weil
+# der eingeklebte Platzhalter das Muster zerreisst. Das Netz findet sie im
+# Probe-String -- und verwirft genau diesen Fund.
+#
+# Zusaetzliches Kriterium: der VERKLEBTE KERN (Segmente ohne den
+# eingefuegten Whitespace aneinandergehaengt). Artefakt nur, wenn BEIDE
+# Pruefungen leer bleiben.
+# ===========================================================================
+# Musterbasierte Erkennung: matcht ueber den Trenner hinweg UND ohne ihn,
+# aber nie ein Bruchstueck. Genau das Verhalten echter Recognizer fuer
+# Telefonnummern, IBANs, IPs und Ticket-IDs.
+_PHONE_RE = re.compile(r"\+49[\s./-]?\d{2,5}[\s./-]?\d{5,9}")
+
+
+class TestPatternEntitiesSurviveSegmentation(_RuleFileTestCase,
+                                             unittest.IsolatedAsyncioTestCase):
+    async def _guard_mit_telefon(self):
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def presidio(text, payload=None):
+            return [{"entity_type": "PHONE_NUMBER", "start": m.start(),
+                     "end": m.end(), "score": 0.9}
+                    for m in _PHONE_RE.finditer(text)]
+
+        guard._presidio_analyze = presidio
+        return guard
+
+    async def test_telefonnummer_ueber_platzhalter_blockt(self):
+        """Der Live-Fall des Auditors. Bruchstuecke sind kein Fund, der
+        verklebte Kern ist einer."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard_mit_telefon()
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max Mustermann"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "Kontakt <PERSON_0>. Nummer: +49 30<PERSON_0>901820", masker)
+
+    async def test_bruchstuecke_sind_wirklich_kein_fund(self):
+        """Belegt die Praemisse des Findings: ohne den verklebten Kern haette
+        die Segmentpruefung hier nichts zu greifen."""
+        guard = await self._guard_mit_telefon()
+        self.assertEqual(await guard._presidio_analyze("+49 30"), [])
+        self.assertEqual(await guard._presidio_analyze("901820"), [])
+        self.assertTrue(await guard._presidio_analyze("+49 30 901820"))
+        self.assertTrue(await guard._presidio_analyze("+49 30901820"))
+
+    async def test_musterbasierte_eigene_regel_blockt_ebenso(self):
+        """Dieselbe Klasse auf der Regel-Seite: eine Server-/Ticket-ID mit
+        optionalem Trenner. Segmente leer, verklebter Kern ist ein Fund."""
+        self.write_rules([rule("srv", entity="Serverkennung", kind="regex",
+                               value=r"SRV-\d{3}\s*-\d{4}",
+                               examples=["Host SRV-123-4567 meldet sich"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine(text, payload=None):
+            return []
+
+        guard._presidio_analyze = keine
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("SRV-123<PERSON_0>-4567", masker)
+
+    async def test_reine_fuellerkette_bleibt_artefakt(self):
+        """Die Gegenprobe, die das Kombi-Kriterium NICHT aufweicht: ein Kern
+        aus lauter Fuellern hat keinen verklebten Rest. Er wird weiterhin
+        vor jeder Analyse verworfen."""
+        self.write_rules([rule("ws", entity="Formatierung", kind="regex",
+                               value=r"\s{3,}", examples=["a   b"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine(text, payload=None):
+            return []
+
+        guard._presidio_analyze = keine
+        masker = dg.Masker()
+        for i, name in enumerate(("Max", "Erika", "Anna")):
+            masker.reid_map[f"<PERSON_{i}>"] = name
+        await guard._verify_no_pii_left("<PERSON_0><PERSON_1><PERSON_2>",
+                                        masker)
+
+
+# ===========================================================================
+# 25. DoS-1 (Security-Audit, MEDIUM) — _build_probe ist quadratisch
+#
+# Die Vorpruefung "if text[i] in starts" haelt den Durchlauf nur linear,
+# solange das Anfangszeichen selten ist. Der Absender kontrolliert beides:
+# Textform und reid_map-Groesse. Gemessen: 200 KB "<x" mal 100000 mit 1000
+# Schluesseln -> 6,54 s (main: 0,072 s). Synchrone CPU-Arbeit im Event-Loop,
+# also fuer ALLE Nutzer -- exakt die Defektklasse, die dieser Branch als F2
+# selbst behoben hat.
+# ===========================================================================
+class TestProbeBuilderIsLinear(unittest.TestCase):
+    # Grosszuegig: die Regex-Variante liegt deutlich darunter, die
+    # quadratische Variante um ein Vielfaches darueber. Kein Mikro-Benchmark,
+    # sondern ein Riss-Detektor.
+    OBERGRENZE_SEKUNDEN = 1.0
+
+    def test_pathologischer_text_bleibt_schnell(self):
+        reid_map = {f"<PERSON_{i}>": f"Name{i}" for i in range(1000)}
+        text = "<x" * 100000  # 200 KB, jedes zweite Zeichen ist ein "<"
+
+        beginn = time.monotonic()
+        probe, fueller = dg._build_probe(text, reid_map)
+        dauer = time.monotonic() - beginn
+
+        # Kein Platzhalter passt wirklich -> Text bleibt unveraendert.
+        self.assertEqual(probe, text)
+        self.assertEqual(fueller, [])
+        self.assertLess(
+            dauer, self.OBERGRENZE_SEKUNDEN,
+            f"_build_probe braucht {dauer:.2f}s fuer 200 KB -- quadratisches "
+            f"Verhalten blockiert den Event-Loop fuer alle Nutzer (DoS-1)")
+
+    def test_positionen_bleiben_korrekt(self):
+        """Die Beschleunigung darf die Fuellerpositionen nicht verschieben --
+        auf ihnen beruht die gesamte Artefakt-Erkennung."""
+        reid_map = {"<PERSON_0>": "Max", "<PERSON_1>": "Erika",
+                    "<PERSON_10>": "Anna"}
+        text = "A<PERSON_0>B<PERSON_10>C<PERSON_1>"
+        probe, fueller = dg._build_probe(text, reid_map)
+
+        # Laengster Platzhalter zuerst: <PERSON_10> darf nicht als
+        # <PERSON_1> + "0" gelesen werden.
+        self.assertEqual(probe, "A B C ")
+        self.assertEqual(fueller, [(1, 2), (3, 4), (5, 6)])
+        for fs, fe in fueller:
+            self.assertEqual(probe[fs:fe], dg._PLACEHOLDER_PROBE_FILLER)
+
+
+# ===========================================================================
+# 26. DoS-2 (Security-Audit, MEDIUM) — das F2-Budget multipliziert sich
+#
+# _verify_no_pii_left machte EINEN _analyze-Aufruf, jetzt sind es
+# 1 + Summe(Segmente). Jeder setzt in _scan eine FRISCHE Frist. Das Budget,
+# dessen Sinn laut F2 ausdruecklich ist, "fuer den GESAMTEN Aufruf" zu
+# gelten, vervielfacht sich damit still. Der 16er-Deckel begrenzt pro
+# Treffer, nicht ueber alle Treffer eines Textes.
+# ===========================================================================
+class TestVerificationHasGlobalAnalyzeBudget(_RuleFileTestCase,
+                                             unittest.IsolatedAsyncioTestCase):
+    async def test_deckel_greift_ueber_alle_treffer(self):
+        """Viele Treffer, die je zwei Segmente erzeugen. Die Segmente sind
+        EINZELN kein Fund und der verklebte Kern auch nicht -- ohne Deckel
+        liefe das durch (und zwar mit sehr vielen Analyzer-Aufrufen). Mit
+        Deckel wird fail-closed geblockt."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        aufrufe = []
+
+        async def presidio(text, payload=None):
+            aufrufe.append(text)
+            # Nur der VOLLE Probe-String liefert Treffer, nie ein Segment.
+            if "|" not in text:
+                return []
+            return [{"entity_type": "PERSON", "start": m.start(),
+                     "end": m.end(), "score": 0.9}
+                    for m in re.finditer(r"a b", text)]
+
+        guard._presidio_analyze = presidio
+
+        masker = dg.Masker()
+        for i in range(60):
+            masker.reid_map[f"<PERSON_{i}>"] = f"Name{i}"
+        # 60 Treffer der Form "a b", jeder ueberspannt genau einen Fueller.
+        maskiert = "|" + "".join(f"a<PERSON_{i}>b " for i in range(60))
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(maskiert, masker)
+
+        self.assertLessEqual(
+            len(aufrufe), dg._MAX_VERIFY_ANALYZE_CALLS + 1,
+            f"{len(aufrufe)} Analyzer-Aufrufe fuer EINEN Verifikations"
+            f"durchlauf -- das F2-Budget gilt nicht mehr fuer den gesamten "
+            f"Aufruf (DoS-2)")
+
+    async def test_normalfall_bleibt_bei_einem_aufruf(self):
+        """Der Deckel darf den Normalbetrieb nicht verteuern: ohne Treffer
+        ueber einem Fueller bleibt es bei genau einem Analyzer-Aufruf."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        aufrufe = []
+
+        async def presidio(text, payload=None):
+            aufrufe.append(text)
+            return []
+
+        guard._presidio_analyze = presidio
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        await guard._verify_no_pii_left("Hallo <PERSON_0>, alles gut?", masker)
+        self.assertEqual(len(aufrufe), 1)
+
+
+# ===========================================================================
+# 27. Zwei Low aus dem Re-Audit
+# ===========================================================================
+class TestWhitespaceRuleIsExplicit(_RuleFileTestCase,
+                                   unittest.IsolatedAsyncioTestCase):
+    """Low: _filler_segments gibt bei leerem filler_spans sofort None. Damit
+    blockt derselbe reine Whitespace-Treffer OHNE Platzhalter im Text und
+    wird verworfen, sobald irgendwo einer steht. Das ist fail-closed und
+    gewollt -- aber es muss die Regel sein, die auch dasteht: ohne Fueller
+    haben WIR nichts eingefuegt, also ist jeder Fund der des Analyzers."""
+
+    async def _guard(self):
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def presidio(text, payload=None):
+            i = text.find("   ")
+            return ([] if i < 0 else
+                    [{"entity_type": "PERSON", "start": i, "end": i + 3,
+                      "score": 0.9}])
+
+        guard._presidio_analyze = presidio
+        return guard
+
+    async def test_ohne_platzhalter_blockt_der_whitespace_treffer(self):
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard()
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("a   b", dg.Masker())
+
+    async def test_mit_platzhaltern_ist_er_ein_artefakt(self):
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard()
+        masker = dg.Masker()
+        for i, name in enumerate(("Max", "Erika", "Anna")):
+            masker.reid_map[f"<PERSON_{i}>"] = name
+        await guard._verify_no_pii_left("<PERSON_0><PERSON_1><PERSON_2>",
+                                        masker)
+
+
+class TestStatKeyOnlyAdvancesAfterSuccess(_RuleFileTestCase):
+    """Low: _stat_key wurde VOR _load gesetzt. Entkommt _load eine Ausnahme
+    (realistisch: BrokenPipeError beim Loggen, wenn der Collector weg ist),
+    bleibt der Regelsatz dauerhaft stehen -- der naechste Aufruf sieht
+    key == _stat_key und laedt nie wieder. Stiller, permanenter Ausfall der
+    Hot-Reload-Zusage."""
+
+    def test_nach_ausnahme_wird_erneut_geladen(self):
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug")])
+        rs = cr.RuleSet(self.path)
+
+        versuche = []
+        echtes_load = rs._load
+
+        def load_das_beim_ersten_mal_reisst(key):
+            versuche.append(key)
+            if len(versuche) == 1:
+                raise BrokenPipeError("Log-Collector weg")
+            return echtes_load(key)
+
+        rs._load = load_das_beim_ersten_mal_reisst
+
+        with self.assertRaises(BrokenPipeError):
+            rs._reload_if_changed()
+        # Zweiter Anlauf MUSS erneut laden, sonst ist der Hot-Reload tot.
+        rs._reload_if_changed()
+        self.assertEqual(len(versuche), 2,
+                         "nach der Ausnahme wurde nie wieder geladen")
+        self.assertTrue(rs.active_rules, "Regelsatz blieb dauerhaft leer")
