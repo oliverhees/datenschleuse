@@ -226,5 +226,19 @@ kein Satz.
   fängt nicht `Nordwind-Logistik` oder `Nordwind GmbH`. Für Varianten entweder
   mehrere Begriffe anlegen oder ein Muster schreiben — und mit
   `--counter-example` absichern.
+- **Muster mit variablem Whitespace (`\s*`, `\s+`).** Ein Muster, das eine
+  beliebig große Lücke zwischen seinen Teilen erlaubt, kann auch dann noch
+  passen, wenn an dieser Stelle bereits ein Platzhalter eingesetzt wurde —
+  es greift dann über den Platzhalter hinweg. `Nord\s*wind` etwa passt nicht
+  nur auf `Nordwind` und `Nord wind`, sondern auch auf eine Stelle, an der
+  zwischen `Nord` und `wind` ein anderer Begriff ersetzt wurde. Die Anfrage
+  wird dann blockiert, obwohl nichts durchgerutscht ist. Das ist ein
+  sichtbarer, aber harmloser Fehlalarm — kein Leck, und wir nehmen ihn
+  bewusst in Kauf: eine blockierte Anfrage, die ihr seht, ist billiger als
+  eine durchgelassene, die ihr nicht seht. Die Blockmeldung nennt diesen Fall
+  ausdrücklich mit. Was ihr tun könnt: variable Whitespace-Muster sparsam
+  einsetzen, jedes mit `--counter-example` absichern und vor dem Ausrollen
+  `datenschleuse-rules test` über einen echten Beispieltext laufen lassen.
+  Deny-Listen — der Standardtyp — sind davon nicht betroffen.
 - **Erkennungsrate ist nie 100 %.** Eigene Regeln verschieben die Grenze
   deutlich, sie verschwinden lassen sie nicht.

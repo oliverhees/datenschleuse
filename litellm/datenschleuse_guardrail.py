@@ -1731,13 +1731,28 @@ class DatenschleuseGuardrail(_GuardrailBase):
             # "Digitalisierung Rathaus Muenchen" + "Frau Schmidt". Eine
             # Meldung, die dem Betreiber einen Code-Fehler unterstellt, waere
             # in diesen Faellen schlicht falsch.
+            # DRITTE URSACHE (QA-Finding): die beiden obigen sind Fehler, die
+            # WIR beheben muessten -- daraus kann der Betreiber nichts tun.
+            # Die praktisch wahrscheinlichste Ursache ist die dritte: ein
+            # eigenes Regex-Muster mit variablem Whitespace, das ueber einen
+            # eingesetzten Platzhalter hinweggreift (S1-R, bewusst
+            # akzeptiert). Sie ist die einzige, die er selbst loesen kann --
+            # und security-baseline.md bzw. ADR 0001, wo sie steht, liest er
+            # nie. Die Blockmeldung liest er. Also steht sie hier, mit dem
+            # Werkzeug dazu. WICHTIG: Konkreter werden darf diese Meldung nur
+            # ueber Kategorien und Werkzeugnamen. Kein Fundwert, kein
+            # Regelwert, kein Textausschnitt (Gesetz 5, DATENSCHLE-64/-57) --
+            # festgenagelt in TestBlockmeldungNenntDasEigeneMuster.
             raise DatenschleuseBlocked(
                 "Nach der Maskierung wurden weiterhin personenbezogene Daten "
                 f"erkannt ({', '.join(types)}) -- Request blockiert "
-                "(fail-closed). Ursache ist entweder eine Luecke im "
-                "Maskierungspfad oder ein Grenzfall der Erkennung, bei dem "
-                "erst der zweite Durchlauf anschlaegt. In beiden Faellen "
-                "gilt: im Zweifel nicht rauslassen."
+                "(fail-closed). Moegliche Ursachen: eine Luecke im "
+                "Maskierungspfad, ein Grenzfall der Erkennung, bei dem erst "
+                "der zweite Durchlauf anschlaegt, oder ein eigenes "
+                "Regex-Muster mit variablem Whitespace, das ueber einen "
+                "eingesetzten Platzhalter hinweggreift -- pruefen mit: "
+                "datenschleuse-rules test. In allen Faellen gilt: im Zweifel "
+                "nicht rauslassen."
             )
 
     async def _mask_arguments(
