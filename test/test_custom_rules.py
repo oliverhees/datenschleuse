@@ -1745,11 +1745,14 @@ class TestProbeBuilderIsLinear(unittest.TestCase):
 # ===========================================================================
 class TestVerificationHasGlobalAnalyzeBudget(_RuleFileTestCase,
                                              unittest.IsolatedAsyncioTestCase):
-    async def test_deckel_greift_ueber_alle_treffer(self):
-        """Viele Treffer, die je zwei Segmente erzeugen. Die Segmente sind
-        EINZELN kein Fund und der verklebte Kern auch nicht -- ohne Deckel
-        liefe das durch (und zwar mit sehr vielen Analyzer-Aufrufen). Mit
-        Deckel wird fail-closed geblockt."""
+    async def test_ein_aufruf_auch_bei_sechzig_treffern(self):
+        """DoS-2 ist mit dem Rueckbau der Heuristik gegenstandslos: der
+        Artefaktfilter entscheidet ohne Nachpruefung. Sechzig Treffer ueber
+        Fuellern kosten deshalb genau EINEN Analyzer-Aufruf -- und sie
+        blocken, weil ihr Kern Klartext enthaelt.
+
+        Der Test bleibt als Deckel-Ersatz stehen: er faellt, sobald jemand
+        wieder Nachpruef-Aufrufe einbaut."""
         self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
         guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
 
@@ -1757,7 +1760,6 @@ class TestVerificationHasGlobalAnalyzeBudget(_RuleFileTestCase,
 
         async def presidio(text, payload=None):
             aufrufe.append(text)
-            # Nur der VOLLE Probe-String liefert Treffer, nie ein Segment.
             if "|" not in text:
                 return []
             return [{"entity_type": "PERSON", "start": m.start(),
@@ -1775,15 +1777,14 @@ class TestVerificationHasGlobalAnalyzeBudget(_RuleFileTestCase,
         with self.assertRaises(dg.DatenschleuseBlocked):
             await guard._verify_no_pii_left(maskiert, masker)
 
-        self.assertLessEqual(
-            len(aufrufe), dg._MAX_VERIFY_ANALYZE_CALLS + 1,
+        self.assertEqual(
+            len(aufrufe), 1,
             f"{len(aufrufe)} Analyzer-Aufrufe fuer EINEN Verifikations"
-            f"durchlauf -- das F2-Budget gilt nicht mehr fuer den gesamten "
-            f"Aufruf (DoS-2)")
+            f"durchlauf -- das F2-Zeitbudget der Regel-Schicht gilt damit "
+            f"nicht mehr fuer den gesamten Aufruf (DoS-2)")
 
     async def test_normalfall_bleibt_bei_einem_aufruf(self):
-        """Der Deckel darf den Normalbetrieb nicht verteuern: ohne Treffer
-        ueber einem Fueller bleibt es bei genau einem Analyzer-Aufruf."""
+        """Auch ohne Treffer ueber einem Fueller: genau ein Aufruf."""
         self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
         guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
 
@@ -1805,7 +1806,7 @@ class TestVerificationHasGlobalAnalyzeBudget(_RuleFileTestCase,
 # ===========================================================================
 class TestWhitespaceRuleIsExplicit(_RuleFileTestCase,
                                    unittest.IsolatedAsyncioTestCase):
-    """Low: _filler_segments gibt bei leerem filler_spans sofort None. Damit
+    """Low: _is_filler_artifact gibt bei leerem filler_spans sofort False. Damit
     blockt derselbe reine Whitespace-Treffer OHNE Platzhalter im Text und
     wird verworfen, sobald irgendwo einer steht. Das ist fail-closed und
     gewollt -- aber es muss die Regel sein, die auch dasteht: ohne Fueller

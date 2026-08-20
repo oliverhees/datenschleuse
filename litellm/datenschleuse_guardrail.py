@@ -396,121 +396,86 @@ def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[i
     return "".join(teile), fueller
 
 
-# Obergrenze fuer die Zerlegung eines einzelnen Treffers (siehe
-# _filler_segments). Wird sie gerissen, gilt der Treffer als echt und blockt.
-# Fail-closed: lieber ein Fehlalarm als ein unbemerkter Durchlass.
-_MAX_FILLER_SEGMENTS = 16
+def _is_filler_artifact(probe: str, entity: Dict[str, Any],
+                        filler_spans: List[Tuple[int, int]]) -> bool:
+    r"""Ist dieser Treffer NACHWEISLICH erst durch die Neutralisierung
+    entstanden?
 
-# Obergrenze fuer die Analyzer-Aufrufe EINES Verifikationsdurchlaufs
-# (Security-Finding DoS-2). Der Deckel oben begrenzt einen einzelnen Treffer,
-# dieser den gesamten Text. Ist er erschoepft, gilt jeder weitere Treffer als
-# echt und der Request blockt -- fail-closed.
-_MAX_VERIFY_ANALYZE_CALLS = 32
+    Nachweislich heisst: sein Kern besteht ausschliesslich aus Zeichen, die
+    WIR eingefuegt haben. Steht auch nur ein Zeichen Klartext darin, wird der
+    Treffer behalten und der Request blockt.
 
+    WARUM SO GROB -- UND WARUM DAS DIE RICHTIGE ANTWORT IST
+    ------------------------------------------------------
+    Wir haben DREIMAL versucht, den Fehlalarmraum feiner zuzuschneiden, und
+    uns dabei jedes Mal ein Leck eingebaut, das erst ein Auditor fand:
 
-class _AnalyzeBudget:
-    """Zaehlt die Analyzer-Aufrufe eines Verifikationsdurchlaufs.
+    1. Filter nach ``entity_type``-Praefix (F10): blendete das Sicherheitsnetz
+       fuer alle eigenen Entitaeten aus -- ausgerechnet fuer die Werte, fuer
+       die es allein zustaendig ist.
+    2. Filter nach Span-Ueberlappung (S1): verwarf ``Anna <PERSON_0>
+       Mueller`` komplett, ohne die Teile zu pruefen.
+    3. Segmentpruefung plus verklebter Kern (S1-R, HIGH-1, HIGH-2): die
+       Duplikat-Entfernung machte aus vier Zifferngruppen zwei und liess
+       ganze Kreditkartennummern durch; der verklebte Kern loeschte den
+       Trenner und konnte mehrwortige Deny-Begriffe grundsaetzlich nicht
+       wiederfinden.
 
-    Security-Finding DoS-2: ``_verify_no_pii_left`` machte frueher EINEN
-    ``_analyze``-Aufruf. Mit der Segmentpruefung sind es
-    ``1 + Summe(Segmente)`` -- und jeder davon setzt in der Regel-Schicht
-    eine FRISCHE Frist. Das Zeitbudget, dessen Sinn laut Finding F2
-    ausdruecklich ist, "fuer den GESAMTEN Aufruf" zu gelten, vervielfachte
-    sich damit still. Der Deckel pro Treffer half nicht: er begrenzt nicht,
-    wie viele Treffer ein Text hat.
-    """
+    Der entscheidende Befund kam vom Pruefer: Diese ganze Heuristik wurde von
+    KEINEM Gegentest eingefordert. Sie kaufte ausschliesslich Fehlalarm-
+    Reduktion, die niemand verlangt hatte -- und war die Quelle aller drei
+    Lecks. Eine Optimierung auf Verdacht, die dreimal ein Loch gerissen hat,
+    ist ihren Preis nicht wert.
 
-    __slots__ = ("rest",)
+    Was bleibt, ist der Fall, der BEWEISBAR sicher ist: Der Kern besteht nur
+    aus Fuellern und Whitespace, es gibt also gar keinen Klartext, den man
+    herauslassen koennte. Das deckt den haeufigen Artefaktfall ab
+    (benachbarte Platzhalter werden zu einer Leerzeichenkette, auf die ein
+    Whitespace-Muster greift) -- und kostet keinen einzigen Analyzer-Aufruf.
 
-    def __init__(self, rest: int) -> None:
-        self.rest = rest
+    DER PREIS, BEWUSST GEZAHLT: Ein eigenes Regex-Muster, das ueber einen
+    Platzhalter hinweggreift (``Nord\s*wind`` auf ``Nord<PERSON_0>wind``),
+    blockt jetzt. Das ist ein SICHTBARER Fehlalarm statt eines stillen Lecks
+    -- und von aussen ist dieser Fall ohnehin nicht von der Konstruktion zu
+    unterscheiden, mit der man die Maskierung umgeht.
 
-    def nimm(self) -> bool:
-        """Einen Aufruf abbuchen. ``False`` heisst: Budget erschoepft."""
-        if self.rest <= 0:
-            return False
-        self.rest -= 1
-        return True
-
-
-def _filler_segments(probe: str, entity: Dict[str, Any],
-                     filler_spans: List[Tuple[int, int]]) -> Optional[List[str]]:
-    r"""Zerlegt den Kern eines Treffers an den Fuellergrenzen.
-
-    "Kern" heisst: ohne umgebenden Whitespace. Rueckgabe:
-
-    ``None``
-        Kein Artefakt-Verdacht -- der Treffer ist zu BEHALTEN. Entweder
-        beruehrt sein Kern gar keinen Fueller (``\s*Nordwind`` nimmt einen
-        davor liegenden Fueller nur als Randzeichen mit), oder sein Span ist
-        unlesbar bzw. degeneriert. Im Zweifel blocken.
-    ``[]``
-        Der Kern bestand nur aus Fuellern und Whitespace. Ohne die
-        Neutralisierung haette es diesen Treffer nicht gegeben: verwerfen.
-    ``[...]``
-        Die Klartext-Segmente zwischen den Fuellern, getrimmt und ohne
-        Duplikate. Der Aufrufer prueft sie EINZELN und VERKLEBT nach.
-
-    Security-Finding S1 (HIGH): Vorher lieferte diese Stelle ein blankes
-    "Artefakt: ja/nein" -- und verwarf den GESAMTEN Treffer, sobald
-    irgendein Fueller in seinem Kern lag. Damit ging ``Anna <PERSON_0>
-    Mueller`` im Klartext hinaus: der Analyzer findet den Namen ueber den
-    Fueller hinweg, und genau dieser Fund wurde als Artefakt abgetan.
+    AN DEN NAECHSTEN, DER HIER VERFEINERN WILL: Lies die Liste oben. Jede
+    Verfeinerung braucht einen Gegentest, der ohne sie FEHLSCHLAEGT. Gibt es
+    den nicht, kauft die Verfeinerung nichts und kostet erfahrungsgemaess ein
+    Leck.
     """
     if not filler_spans:
-        # Ohne Fueller haben WIR nichts in den Text eingefuegt. Dann kann
-        # dieser Treffer auch nicht durch unsere Ersetzung entstanden sein --
-        # egal wie er aussieht, er gehoert dem Analyzer und wird nicht
-        # angetastet. Das ist bewusst NICHT symmetrisch zum
-        # Whitespace-Zweig weiter unten: dort ist die Herkunft belegt, hier
-        # ist sie ausgeschlossen.
-        return None
+        # Ohne Fueller haben WIR nichts eingefuegt. Dann kann dieser Treffer
+        # auch nicht durch unsere Ersetzung entstanden sein -- er gehoert dem
+        # Analyzer und wird nicht angetastet.
+        return False
     try:
         start = int(entity["start"])
         end = int(entity["end"])
     except (KeyError, TypeError, ValueError):
         # Unlesbarer Treffer: NICHT als Artefakt abtun -- im Zweifel blocken.
-        return None
+        return False
     start = max(0, start)
     end = min(len(probe), end)
     if start >= end:
         # Security-Finding S3: verdrehte (start > end) und ausserhalb des
-        # Textes liegende Spans landeten frueher im selben Zweig wie ein
-        # reiner Whitespace-Treffer und galten als Artefakt. Das ist etwas
-        # anderes: hier wissen wir gar nichts ueber den Fund. Nicht
-        # schlucken -- im Zweifel blocken.
-        return None
-    while start < end and probe[start].isspace():
-        start += 1
-    while end > start and probe[end - 1].isspace():
-        end -= 1
-    if start >= end:
-        return []  # reiner Whitespace-Treffer
+        # Textes liegende Spans sind etwas anderes als ein Whitespace-
+        # Treffer -- hier wissen wir gar nichts. Nicht schlucken.
+        return False
 
-    innere = sorted((max(fs, start), min(fe, end))
-                    for fs, fe in filler_spans if fs < end and start < fe)
-    if not innere:
-        return None  # Fueller nur am Rand -> echter Rest
+    kern_start, kern_end = start, end
+    while kern_start < kern_end and probe[kern_start].isspace():
+        kern_start += 1
+    while kern_end > kern_start and probe[kern_end - 1].isspace():
+        kern_end -= 1
+    if kern_start < kern_end:
+        # Klartext im Kern -> koennte echte PII sein. Behalten und blocken.
+        return False
 
-    segmente: List[str] = []
-    cursor = start
-    for fs, fe in innere:
-        stueck = probe[cursor:fs].strip()
-        if stueck:
-            segmente.append(stueck)
-        cursor = max(cursor, fe)
-    stueck = probe[cursor:end].strip()
-    if stueck:
-        segmente.append(stueck)
-
-    # Duplikate kosten nur Analyzer-Aufrufe, reihenfolgestabil entfernen.
-    eindeutig = list(dict.fromkeys(segmente))
-    if len(eindeutig) > _MAX_FILLER_SEGMENTS:
-        # Ein Treffer, der ueber so viele Platzhalter laeuft, ist kein
-        # normaler Fehlalarm mehr. Statt beliebig viele Analyzer-Aufrufe zu
-        # starten: als echt behandeln und blocken.
-        return None
-    return eindeutig
+    # Der Kern ist leer. Artefakt ist er aber nur, wenn wir den Whitespace
+    # auch selbst erzeugt haben -- sonst stand er so im Text und der Fund
+    # gehoert dem Analyzer.
+    return any(fs < end and start < fe for fs, fe in filler_spans)
 
 
 class DatenschleuseBlocked(Exception):
@@ -1736,23 +1701,23 @@ class DatenschleuseGuardrail(_GuardrailBase):
         ``guard._analyze``); ein Wechsel des Aufrufs -- oder auch nur ein
         zusaetzlicher Parameter -- laesst zehn dieser Mocks ins Leere laufen.
 
-        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Diese Span-Pruefung durch einen
-        Typ- oder Praefix-Filter zu ersetzen sieht einfacher aus und bringt
-        Finding F10 zurueck. Der Unterschied ist nicht kosmetisch: Ein Filter
-        nach Typ entfernt auch ECHTE Funde, ein Filter nach Fueller-Herkunft
-        nur die Artefakte. Und sie durch ein blankes "Kern beruehrt Fueller
-        -> weg" zu ersetzen bringt Finding S1 zurueck (siehe
-        ``_is_filler_artifact``).
+        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Der Artefaktfilter darf NUR
+        verwerfen, was beweisbar unsere eigene Einfuegung ist. Jede feinere
+        Variante -- Filter nach Typ, nach blosser Span-Ueberlappung, nach
+        zerlegten und wieder verklebten Segmenten -- hat in dieser Reihenfolge
+        je ein Leck erzeugt (F10, S1, S1-R/HIGH-1/HIGH-2). Die Begruendung und
+        die Liste stehen ausfuehrlich an ``_is_filler_artifact``. Lies sie,
+        bevor du hier optimierst.
+
+        Genau EIN Analyzer-Aufruf pro Durchlauf. Der Filter entscheidet ohne
+        weitere Aufrufe, deshalb kann sich das Zeitbudget der Regel-Schicht
+        hier auch nicht vervielfachen (Finding DoS-2).
         """
         if not isinstance(text, str) or not text.strip():
             return
         probe, filler_spans = _build_probe(text, masker.reid_map)
-        budget = _AnalyzeBudget(_MAX_VERIFY_ANALYZE_CALLS)
-        leftovers = []
-        for e in await self._analyze(probe):
-            if not await self._is_filler_artifact(probe, e, filler_spans,
-                                                  budget):
-                leftovers.append(e)
+        leftovers = [e for e in await self._analyze(probe)
+                     if not _is_filler_artifact(probe, e, filler_spans)]
         if leftovers:
             types = sorted({str(e.get("entity_type")) for e in leftovers})
             # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
@@ -1774,86 +1739,6 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "erst der zweite Durchlauf anschlaegt. In beiden Faellen "
                 "gilt: im Zweifel nicht rauslassen."
             )
-
-    async def _is_filler_artifact(
-        self, probe: str, entity: Dict[str, Any],
-        filler_spans: List[Tuple[int, int]], budget: "_AnalyzeBudget"
-    ) -> bool:
-        r"""Ist dieser Treffer erst durch die Neutralisierung entstanden?
-
-        Security-Finding S1 (HIGH). Die Frage laesst sich NICHT an der
-        Ueberlappung allein entscheiden. Ein Fueller im Kern heisst nur, dass
-        die Neutralisierung den Treffer moeglicherweise ueberhaupt erst
-        ermoeglicht hat -- er kann trotzdem echte PII enthalten:
-
-            "Anna <PERSON_0> Mueller"  ->  Probe "Anna   Mueller"
-
-        Der Analyzer findet den Namen ueber den Fueller hinweg. Wer diesen
-        Treffer pauschal verwirft, laesst ``Anna Mueller`` im Klartext
-        hinaus -- und zwar fuer JEDEN Typ, nicht nur fuer die eigenen.
-
-        Also wird der Treffer an den Fuellergrenzen aufgeteilt und jedes
-        Segment EINZELN nachgeprueft. Ein Artefakt ist er nur, wenn kein
-        Segment fuer sich stehen bleibt:
-
-        - ``Nord\s*wind`` auf ``Nord<PERSON_0>wind``: ``Nord`` und ``wind``
-          sind einzeln kein Fund -> Artefakt, verwerfen.
-        - ``Anna``/``Mueller``: beide einzeln PERSON -> echter Fund, blocken.
-
-        Security-Finding S1-R (HIGH): Die Segmentpruefung ALLEIN traegt nur,
-        solange die Erkennung kontextfrei ist. Presidio erkennt Namens-Token
-        einzeln, deshalb funktioniert sie fuer ``Anna``/``Mueller``.
-        MUSTERBASIERTE Recognizer koennen ihre Bruchstuecke prinzipbedingt
-        nicht erkennen -- eine halbe Telefonnummer ist keine Telefonnummer:
-
-            "Nummer: +49 30<PERSON_0>901820" -> Probe "Nummer: +49 30 901820"
-              _analyze(probe)     -> PHONE_NUMBER
-              _analyze("+49 30")  -> []
-              _analyze("901820")  -> []
-
-        Alle Segmente leer, der Fund waere verworfen worden -- elf Ziffern im
-        Klartext. Deshalb wird zusaetzlich der VERKLEBTE KERN geprueft: die
-        Segmente ohne den eingefuegten Whitespace aneinandergehaengt
-        (``+49 30901820``). Artefakt ist der Treffer nur, wenn BEIDE
-        Pruefungen leer bleiben.
-
-        BEWUSSTE FOLGE (Entscheidung des Leads, gemessen im Testkorpus): ein
-        Muster wie ``Nord\s*wind`` matcht auch ``Nordwind`` und blockt damit
-        auf ``Nord<PERSON_0>wind`` wieder. Das ist ein sichtbarer Fehlalarm
-        statt eines stillen Lecks -- und ein Muster, das ueber einen
-        Platzhalter hinweggreift, ist genau die Konstruktion, mit der man die
-        Maskierung umgeht. Der reine Fuellerfall (Kern ohne jeden Klartext,
-        etwa ``\s{3,}`` ueber benachbarte Platzhalter) bleibt unberuehrt: er
-        wird ohne einen einzigen Analyzer-Aufruf verworfen.
-
-        Bewusst ueber ``_analyze`` und nicht ueber ``_presidio_analyze``: das
-        ist dieselbe Naht, die auch der erste Durchlauf nutzt (die eigenen
-        Regeln haengen dort mit drin) und an der die Tests dieses Moduls die
-        Erkennung ersetzen. Die Kandidaten enthalten keine Platzhalter mehr,
-        eine Rekursion in den Verifikationsdurchlauf gibt es also nicht.
-
-        Kosten: zusaetzliche Analyzer-Aufrufe NUR fuer Treffer, deren Kern
-        tatsaechlich einen Fueller enthaelt -- im Normalbetrieb keiner. Ueber
-        den gesamten Durchlauf deckelt sie ``budget`` (Finding DoS-2).
-        """
-        segmente = _filler_segments(probe, entity, filler_spans)
-        if segmente is None:
-            return False
-
-        kandidaten = list(segmente)
-        verklebt = "".join(segmente)
-        if verklebt and verklebt not in kandidaten:
-            kandidaten.append(verklebt)
-
-        for stueck in kandidaten:
-            if not budget.nimm():
-                # Budget erschoepft. Ungeprueft ist nicht dasselbe wie
-                # sauber: der Treffer gilt als echt und blockt.
-                return False
-            if await self._analyze(stueck):
-                # Ein Kandidat traegt fuer sich PII -> kein Artefakt.
-                return False
-        return True
 
     async def _mask_arguments(
         self, raw: Any, masker: Masker, requested_level: Any, approved: bool
