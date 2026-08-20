@@ -315,6 +315,52 @@ class StopGateWorktreeTest(unittest.TestCase):
             "Ohne scope.sh laesst das Gate einen roten Lauf durch — es ist "
             "dann lautlos abgeschaltet:\n" + out)
 
+    def test_unbeschreibbares_scopes_verzeichnis_oeffnet_das_gate_nicht(self):
+        """Kann das Markerverzeichnis nicht angelegt werden, darf der Pfad
+        nicht trotzdem zurueckgegeben werden.
+
+        Sonst laufen alle Schreibvorgaenge ins Leere, das Gate findet nichts
+        vor und haelt die Lane fuer sauber -- ein Fail-Open, das es vor der
+        Eingrenzung nicht gab (das Basisverzeichnis existierte immer).
+        """
+        scopes = os.path.join(self.s.projekt, ".claude", "scopes")
+        os.makedirs(scopes, exist_ok=True)
+        os.chmod(scopes, 0o555)
+        self.addCleanup(os.chmod, scopes, 0o755)
+
+        self.s.code_aenderung(self.b)
+        self.s.roter_lauf(self.b)
+
+        rc, out = self.s.stop(self.b)
+        self.assertEqual(
+            rc, 2,
+            "Unbeschreibbares scopes-Verzeichnis laesst einen roten Lauf "
+            "durch:\n" + out)
+
+    def test_aufgebrauchter_zaehler_oeffnet_die_lane_nicht_dauerhaft(self):
+        """Die Notbremse darf einmal pro Blockade greifen, nicht ein fuer alle Mal.
+
+        Das Gate gibt nach MAX_BLOCKS Ablehnungen frei, damit keine Session
+        haengenbleibt. Bleibt der Zaehler danach stehen, ist die Lane
+        dauerhaft offen: jeder weitere Stop liest den vollen Zaehler und
+        kommt beim ERSTEN Versuch durch -- ueber Session-Grenzen hinweg,
+        weil die Zaehlerdatei im Markerverzeichnis liegen bleibt.
+        """
+        self.s.code_aenderung(self.b)
+        self.s.roter_lauf(self.b)
+
+        letzter = None
+        for _ in range(10):
+            letzter, _out = self.s.stop(self.b)
+        self.assertEqual(letzter, 0, "Notbremse hat gar nicht ausgeloest")
+
+        # Neuer Stop, unveraendert roter Stand: die Blockade beginnt von vorn.
+        rc, out = self.s.stop(self.b)
+        self.assertEqual(
+            rc, 2,
+            "Der aufgebrauchte Zaehler laesst die Lane dauerhaft offen — "
+            "roter Lauf, und das Gate winkt sofort durch:\n" + out)
+
     # --- Der stille Fail-Open ---------------------------------------------
 
     def test_fremde_blocks_kaufen_uns_nicht_frei(self):
