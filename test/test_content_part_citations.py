@@ -616,6 +616,66 @@ class TestResponseCitationsAreReidentified(unittest.IsolatedAsyncioTestCase):
         # ``encrypted_index`` ist ein Provider-Token und wird NICHT angefasst.
         self.assertEqual(citation["encrypted_index"], "Eo8BCioIAhgBIiQyYjQ0OWJmZg==")
 
+    async def test_litellm_groups_citations_per_block_as_a_list_of_lists(self):
+        """Die ECHTE Struktur, am LiteLLM-Quellcode belegt (main @ 007bd43,
+        ``transformation.py``, Abschnitt ``## CITATIONS``):
+
+            citations.append([{**citation, "supported_text": ...} for ...])
+
+        Also eine LISTE VON LISTEN -- eine Sub-Liste je Text-Block, nicht
+        eine flache Zitat-Liste. Der erste Test dieser Klasse nimmt die
+        flache Form; die kommt so nur zustande, wenn genau ein Block
+        Zitate traegt. Beide Formen muessen halten.
+
+        Und: ``supported_text`` ist ein von LiteLLM ERFUNDENES Feld, das in
+        keiner Anthropic-Doku steht. Es traegt den VOLLEN Text des
+        stuetzenden Assistant-Blocks -- also denselben Freitext wie die
+        Antwort selbst. Wer nur die Anthropic-Feldnamen kennt, laesst hier
+        einen kompletten Antworttext-Klon mit rohen Platzhaltern stehen.
+        """
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        response = {"choices": [{"message": {
+            "content": f"Laut Akte ist {ph} zustaendig. Zweiter Absatz.",
+            "provider_specific_fields": {"citations": [
+                [{
+                    "type": "char_location",
+                    "cited_text": f"{ph} ist zustaendig.",
+                    "document_title": f"Akte {ph}",
+                    "document_index": 0,
+                    "start_char_index": 0,
+                    "end_char_index": 20,
+                    "supported_text": f"Laut Akte ist {ph} zustaendig.",
+                }],
+                [{
+                    "type": "page_location",
+                    "cited_text": f"Seite 2 nennt {ph}.",
+                    "document_title": None,
+                    "document_index": 0,
+                    "start_page_number": 2,
+                    "end_page_number": 3,
+                    "supported_text": "Zweiter Absatz.",
+                }],
+            ]},
+        }}]}
+        back = await guard.async_post_call_success_hook(
+            data=request_data, user_api_key_dict=None, response=response
+        )
+        gruppen = back["choices"][0]["message"][
+            "provider_specific_fields"]["citations"]
+
+        self.assertEqual(len(gruppen), 2)
+        erst, zweit = gruppen[0][0], gruppen[1][0]
+        self.assertEqual(erst["cited_text"], f"{_PII_NAME} ist zustaendig.")
+        self.assertEqual(erst["document_title"], f"Akte {_PII_NAME}")
+        self.assertEqual(
+            erst["supported_text"], f"Laut Akte ist {_PII_NAME} zustaendig."
+        )
+        self.assertEqual(zweit["cited_text"], f"Seite 2 nennt {_PII_NAME}.")
+        # ``document_title`` ist laut Schema nullable -- None bleibt None.
+        self.assertIsNone(zweit["document_title"])
+        self.assertEqual(zweit["start_page_number"], 2)
+
     async def test_a_response_without_citations_is_unchanged(self):
         """Die Erweiterung darf den bestehenden String-Pfad nicht stoeren."""
         guard = _guard()
