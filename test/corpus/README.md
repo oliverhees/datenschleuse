@@ -9,6 +9,7 @@ gegen einen festen Satz realistischer deutscher Texte gemessen wird.
 | Datei | Zweck |
 |-------|-------|
 | `de-pii-testkorpus.yaml` | Ground-Truth-Korpus: pro Case ein Text + die exakt erwarteten PII-Teilstrings. |
+| `../../presidio/de-stopwords.yml` | Nicht-PII-Wortliste: gemessene deutsche Alltagswörter, die das NER fälschlich meldet. Wird per `--stopwords` als Presidio-`allow_list` mitgeschickt. |
 | `../corpus-benchmark.py` | Benchmark-Runner: schickt den Korpus an Presidio, rechnet Recall/Precision. |
 | `benchmark-results.json` | Wird bei jedem Lauf (über)schrieben — strukturiertes Ergebnis mit UTC-Timestamp. |
 
@@ -73,24 +74,70 @@ sie fließen aber bewusst nicht in die Precision-Kennzahl ein.
 
 ## Zielwerte
 
-Für privacy-kritische Erkennung ist ein False Negative (übersehene PII, die
-ungeschützt ans LLM geht) **teurer** als ein False Positive (harmloser Text wird
-unnötig maskiert). Der Zielwert gewichtet Recall daher höher:
+Verbindlich ist `docs/foundation/erkennungsziel.md` (Grundbuch, Gesetz 12).
+Kurzfassung des dort begründeten Ziels:
 
-| Kennzahl | Ziel | Begründung |
-|----------|------|------------|
-| **Recall** (`must_detect`, gesamt) | **≥ 95 %** | Übersehene PII ist der teure Fehler — DSGVO-Risiko. |
-| **Precision** (aus Negativ-Fällen) | **≥ 90 %** | False Positives sind tolerierbar, aber Überschutz schadet der Nutzbarkeit. |
+| Kennzahl | Ziel |
+|----------|------|
+| **Recall** (`must_detect`, gesamt) | **≥ 95 %** |
+| **Recall** je Entity-Typ mit Support ≥ 3 | **≥ 90 %** |
+| **Störquote** (PII-freie Texte mit ≥ 1 Fehlalarm) | **≤ 10 %** |
+| **Precision** (aus Negativ-Fällen) | **≥ 90 %** |
 
-`known_gap`-Fälle zählen **nicht** gegen diese Ziele — sie sind der dokumentierte
-Backlog für zukünftige Recognizer.
+`known_gap`-Fälle zählen **nicht** gegen diese Ziele — sie sind der
+dokumentierte Backlog für zukünftige Recognizer.
+
+### Störquote — warum zusätzlich zur Precision
+
+`TP/(TP+FP)` mischt zwei Töpfe: die TP stammen aus Positiv-Fällen, die FP aus
+Negativ-Fällen. Die Precision lässt sich deshalb verbessern, indem man dem
+Korpus Positiv-Fälle hinzufügt — ohne dass ein einziger Fehlalarm verschwindet.
+Die Störquote ist dagegen immun und beantwortet die Frage, die für die
+Nutzbarkeit zählt: *In wie vielen PII-freien Texten stört die Erkennung?*
+
+### Warum der Negativ-Teil zweigeteilt ist
+
+`negativ-001..006` zielen auf die **Regex**-Recognizer (IBAN-, Telefon-, KFZ-,
+Aktenzeichen-, Firmen-Muster). `negativ-007..032` zielen auf die
+**statistische** Seite — das spaCy-NER, das PERSON/LOCATION/ORGANIZATION
+liefert. Die zweite Gruppe fehlte ursprünglich vollständig; deshalb meldete der
+Benchmark 100 % Precision, während DATENSCHLE-70 und -71 in Produktion sichtbar
+falsch lagen. Jeder Fall der zweiten Gruppe ist ein **gemessener** Treffer des
+laufenden Analyzers, kein vermuteter.
+
+### Warum `regex_flags` mitgeschickt werden
+
+Ohne den Parameter defaultet der Analyzer auf `DOTALL|MULTILINE|IGNORECASE`.
+Unter `MULTILINE` sind `^`/`$` Zeilen-Anker statt Vollspan-Anker — ein Span wie
+`"Zahlungsart\nLoewenstein"` würde dann komplett unterdrückt, samt echtem
+Nachnamen. Der Benchmark sendet die Flags deshalb explizit aus
+`de-stopwords.yml` und verweigert den Lauf, wenn sie dort fehlen.
+
+### Positiv-Kontrollen als Anti-Kriterium
+
+`person-004..014` enthalten echte Nachnamen in ASCII-Umschrift (`Mueller`,
+`Schroeder`, `Weiss`, `Kraemer`, `Baecker`) — also genau die Schreibweise, die
+in den Negativ-Fällen Fehlalarme auslöst. `person-012..014` kamen aus dem
+Security-Audit dazu: zweizeilige Label-Wert-Paare und „Nachname, Vorname", an
+denen die erste Fassung der Stoppwortliste echte Namen verloren hat. Sie sind die Gegenprobe: Jede
+Maßnahme gegen ASCII-Fehlalarme MUSS diese Namen weiterhin erkennen. Fällt hier
+einer aus, ist die Maßnahme falsch — unabhängig davon, wie gut die
+Precision-Zahl danach aussieht.
 
 ### Aktueller Stand: Ziel nicht erreicht
 
 Das Precision-Ziel ist **rot**. Der Korpus beprobte auf der Negativ-Seite lange
 nur die Regex-Recognizer (IBAN, Telefon, KFZ, Aktenzeichen, Firma) — die
-statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **66,2 %**
-bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört).
+statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **67,5 %**
+bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört). **Das
+ist der ausgelieferte Zustand** — vier von fünf PII-freien Texten werden gestört.
+
+Mit der Nicht-PII-Wortliste (`presidio/de-stopwords.yml`) steigt die Precision
+ohne Recall-Verlust auf **81,8 %** bei **37,5 %** Störquote (12 von 32). Diese
+Zahlen sind gemessen und die Liste liegt im Repo, aber der Guardrail sendet sie
+nicht an Presidio — sie beschreiben den **erreichbaren**, nicht den
+ausgelieferten Zustand (siehe „Aufruf"). Beide Gates bleiben in beiden Fällen
+verfehlt.
 
 Der gemeldete **Recall von 100 % ist ebenfalls kein Qualitätsbeleg**:
 `de_core_news_lg` gibt für PERSON in seinen eigenen Metadaten 92,02 % Recall an.
@@ -98,11 +145,12 @@ Ein Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
 Evaluationsmenge, ist zu leicht. Die Härtung des Korpus ist ein eigenes Work
 Item.
 
-Das eingecheckte `benchmark-results.json` stammt noch aus einem Lauf mit
-unvollständig beprobter Negativ-Seite und zeigt deshalb zu gute
-Precision-Werte. Es wird hier bewusst nicht von Hand korrigiert — es ist ein
-Maschinen-Artefakt und wird durch einen echten Lauf ersetzt, nicht durch eine
-Handeintragung. Bis dahin ist es kein Beleg.
+Das eingecheckte `benchmark-results.json` ist der Lauf **mit** Wortliste über
+alle 82 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
+Störquote 37,5 %, `bestanden: false`). Es wird ausschließlich durch einen
+echten Lauf ersetzt, nie von Hand editiert — eine Handeintragung wäre keine
+Korrektur. Damit hat der ausgelieferte Zustand (ohne Liste) derzeit kein
+eingechecktes Artefakt; wer ihn belegen will, fährt Lauf 3 selbst.
 
 ## Aufruf
 
@@ -116,9 +164,23 @@ docker compose up presidio-analyzer
 # 2. Abhängigkeiten installieren (einmalig)
 pip install -r test/requirements.txt
 
-# 3. Benchmark laufen lassen
+# 3. Benchmark laufen lassen — Rohzustand des Analyzers
 python3 test/corpus-benchmark.py
+
+# 4. ... und mit der Nicht-PII-Wortliste: der ERREICHBARE Zustand.
+#    Nicht der ausgelieferte — der Guardrail sendet die Liste noch nicht.
+python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
 ```
+
+> **Welche Zahl beschreibt den heutigen Betrieb?** Die aus Lauf 3 (ohne Liste):
+> Störquote **81,2 %**. Der Lauf mit Liste (37,5 %) beschreibt den Zustand
+> **nach** der in `docs/foundation/erkennungsziel.md` §7 spezifizierten
+> Guardrail-Änderung, die noch nicht umgesetzt ist. Wer die 37,5 % als
+> Betriebszustand liest, liest sie falsch.
+
+**Pflicht bei jeder Recognizer- oder Listen-Änderung:** beide Läufe vorher und
+nachher, beide Seiten vergleichen. Eine Precision-Verbesserung ohne
+Recall-Nachweis ist keine Verbesserung, sondern eine unbelegte Behauptung.
 
 Der Runner druckt einen Report auf stdout und schreibt zusätzlich
 `test/corpus/benchmark-results.json`.
@@ -132,6 +194,8 @@ Der Runner druckt einen Report auf stdout und schreibt zusätzlich
 | `--output` | `test/corpus/benchmark-results.json` | Alternativer Report-Pfad. |
 | `--timeout` / `PRESIDIO_TIMEOUT_SECONDS` | `30` | Netzwerk-Timeout pro Request (s). |
 | `--overlap-ratio` / `OVERLAP_MIN_RATIO` | `0.5` | Mindest-Overlap-Anteil für einen Treffer. |
+| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei. Misst den **erreichbaren** Zustand — der Guardrail sendet die Liste noch nicht (§7). |
+| `--no-stopwords` | _(Default)_ | Explizit ohne Liste messen; markiert den Vorher-Lauf in Skripten sichtbar. |
 
 ## Exit-Codes
 

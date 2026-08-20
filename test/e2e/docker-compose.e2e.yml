@@ -10,7 +10,10 @@ name: datenschleuse-e2e
 services:
   # Mitschneidender Upstream-Tap: LiteLLM -> [tap] -> Ollama.
   ds-e2e-tap:
-    image: python:3.12-slim
+    # Tag PLUS Digest (DATENSCHLE-59 §1). Der Tap sieht im Klartext, was die
+    # Datenschleuse nach oben schickt -- gerade an dieser Stelle wollen wir
+    # wissen, welches Image das war.
+    image: python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
     container_name: ds-e2e-tap
     command: ["python", "-u", "/app/tap.py"]
     environment:

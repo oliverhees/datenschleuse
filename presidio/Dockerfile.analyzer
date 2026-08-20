@@ -1,5 +1,12 @@
 # Presidio Analyzer mit deutschem spaCy-Sprachmodell
 # Das Standard-Image bringt nur Englisch mit, fuer deutsche Namen/Orte brauchen wir de_core_news_lg.
-FROM mcr.microsoft.com/presidio-analyzer:latest
+#
+# BASIS-IMAGE: Versions-Tag PLUS Digest (DATENSCHLE-59).
+# Vorher `:latest` -- ein rollender Tag. `latest` und `2.2.362` zeigten am
+# 2026-08-19 auf denselben Digest; festgenagelt wird trotzdem der Digest, weil
+# nur er unveraenderlich ist. Tags sind verschiebbar.
+#
+# UPDATE-VERFAHREN: docs/foundation/supply-chain.md ("Digest-Update").
+FROM mcr.microsoft.com/presidio-analyzer:2.2.362@sha256:286e3fa7f3a7426e775e8564fe1870f1ba8f999d3ab8bbb8cc46a44355d9d6e9
 
 RUN python -m spacy download de_core_news_lg

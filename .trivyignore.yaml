@@ -1,0 +1,30 @@
+# Dokumentierte CVE-Ausnahmen (DATENSCHLE-59).
+#
+# Regeln — ohne die wird diese Datei zum Mülleimer, in dem jeder unbequeme
+# Fund verschwindet:
+#
+#  1. Ein Eintrag braucht IMMER `id`, `statement` und `expired_at`.
+#  2. `statement` sagt, WARUM der Fund uns nicht trifft — nicht, dass er
+#     nervt. Gute Begründung: "Der verwundbare Codepfad (X.y()) wird von der
+#     Datenschleuse nicht aufgerufen." Keine Begründung: "false positive",
+#     "nicht relevant", "später".
+#  3. `expired_at` ist Pflicht und liegt höchstens 90 Tage in der Zukunft.
+#     Danach wird der Fund wieder blockierend — eine Ausnahme ist eine
+#     Vertagung, keine Freigabe.
+#  4. Jeder Eintrag nennt das Plane-Work-Item, unter dem die Ausnahme
+#     entschieden wurde. Ausnahmen der Stufe High/Critical genehmigt nach
+#     Gesetz 5 ausschließlich Oliver.
+#  5. Nichts wird hier eingetragen, um einen roten PR grün zu bekommen. Der
+#     Normalfall bei einem blockierenden Fund ist: Dependency hochziehen oder
+#     Image-Digest aktualisieren (docs/foundation/supply-chain.md §1).
+#
+# Beispiel (auskommentiert, damit es nicht versehentlich greift):
+#
+#   vulnerabilities:
+#     - id: CVE-2026-12345
+#       statement: >-
+#         Betrifft nur den XML-Parser von <paket>; die Datenschleuse ruft
+#         ausschliesslich die JSON-Pfade auf. Nachgewiesen in DATENSCHLE-XX.
+#       expired_at: 2026-11-17   # DATENSCHLE-XX, freigegeben von Oliver
+
+vulnerabilities: []
