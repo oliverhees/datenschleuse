@@ -54,7 +54,34 @@ if ! git cat-file -e "${PR_HEAD}^{commit}" 2>/dev/null; then
   exit 1
 fi
 
-CODE_CHANGED=$(git diff --name-only "$BASE"..."$PR_HEAD" -- . ':(exclude).gates' ':(exclude)docs' ':(exclude)*.md' | wc -l)
+# Der Doku-Ausschluss ist INHALTSBASIERT, nicht pfadbasiert (DATENSCHLE-76).
+#
+# Bis dahin stand hier ':(exclude)docs' ':(exclude)*.md'. Beides war zu weit:
+#   - ':(exclude)docs' schloss den GESAMTEN Teilbaum aus -- jeden Dateityp,
+#     nicht nur Markdown.
+#   - ':(exclude)*.md' griff repoweit auf jeder Tiefe, weil git-Pathspecs
+#     ohne :(glob) ihr '*' auch ueber '/' matchen lassen.
+# Damit waren docs/scripts/evil.py und litellm/sneaky.md fuer diesen Zaehler
+# unsichtbar: der Check meldete "nur Doku" und las die Verdicts nie.
+#
+# Die Regel lautet jetzt: Doku ist *.md in der Repo-WURZEL und *.md unterhalb
+# von docs/ (beliebig tief). Sonst nichts. Kein Dateityp ausser .md, kein
+# anderer Ort. Das ':(glob)'-Magic ist noetig, damit '*' an '/' haltmacht.
+#
+# Gedeckt durch die Historie: alle Doku-only-Commits dieses Repos fallen in
+# genau diese zwei Formen. Der engere Filter kostet also keinen realen
+# Doku-PR. Wo er doch einmal zu streng ist -- etwa bei einem Bild unter
+# docs/assets/ -- verlangt er ein Audit statt eines durchzulassen. Ein Gate,
+# das falsch blockt, kostet eine Runde; eines, das falsch durchlaesst,
+# kostet die Zusage.
+#
+# Gleiches Muster bei .gates: dort liegen ausschliesslich Verdicts. Ein
+# ':(exclude).gates' haette ein '.gates/evil.py' mit ausgeblendet, also wird
+# hier -- und beim Inhaltsvergleich unten -- nur '*.json' ausgenommen.
+CODE_CHANGED=$(git diff --name-only "$BASE"..."$PR_HEAD" -- . \
+  ':(exclude,glob).gates/*.json' \
+  ':(exclude,glob)docs/**/*.md' \
+  ':(exclude,glob)*.md' | wc -l)
 if [ "$CODE_CHANGED" -eq 0 ]; then
   echo "Nur Doku/Gates geaendert — keine Verdicts noetig. ✅"
   exit 0
@@ -70,8 +97,20 @@ for GATE in $REQUIRED; do
   if [ ! -f "$FILE" ]; then
     echo "❌ Verdict fehlt: $GATE"; FAIL=1; continue
   fi
-  VERDICT=$(python3 -c "import json;print(json.load(open('$FILE'))['verdict'])")
-  PINNED=$(python3 -c "import json;print(json.load(open('$FILE'))['commit'])")
+  # Ein unlesbares Verdict ist kein Verdict. Fail-closed war es vorher schon
+  # (set -e brach ab), aber als roher Python-Traceback -- das passt nicht zum
+  # Meldungsstil der uebrigen Faelle und verschweigt, welches Gate klemmt.
+  if ! META=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["verdict"])
+print(d["commit"])
+' "$FILE" 2>/dev/null); then
+    echo "❌ $GATE: $FILE ist kein lesbares Verdict (kaputtes JSON oder Feld fehlt) — erneutes Audit noetig."
+    FAIL=1; continue
+  fi
+  VERDICT=$(printf '%s\n' "$META" | sed -n 1p)
+  PINNED=$(printf '%s\n' "$META" | sed -n 2p)
   if [ "$VERDICT" != "pass" ]; then
     echo "❌ $GATE: Verdict ist '$VERDICT'"; FAIL=1; continue
   fi
@@ -92,7 +131,7 @@ for GATE in $REQUIRED; do
   # .gates/ ausgenommen. Ein Commit, der .gates UND Code aendert, faellt hier
   # auf — der Vergleich sieht Inhalt, nicht die Form der Commits. Damit gibt
   # es keine Tarnung als Gate-Commit.
-  GEAENDERT=$(git diff --name-only "$PINNED" "$PR_HEAD" -- . ':(exclude).gates')
+  GEAENDERT=$(git diff --name-only "$PINNED" "$PR_HEAD" -- . ':(exclude,glob).gates/*.json')
   if [ -n "$GEAENDERT" ]; then
     ANZAHL=$(printf '%s\n' "$GEAENDERT" | wc -l)
     echo "❌ $GATE: $ANZAHL Datei(en) seit dem Audit geaendert (gepinnt: ${PINNED:0:8}) — erneutes Audit noetig."

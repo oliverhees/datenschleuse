@@ -34,8 +34,16 @@
   `.gates/<gate>.json` und committet es. Der CI-Check `gates`
   (`.github/scripts/check-laufzettel.sh`) erzwingt vor dem Merge:
   pass-Verdicts vorhanden UND der Inhalt der PR-Spitze ist — außerhalb
-  von `.gates/` — identisch mit dem gepinnten Stand.
-  Doku-only-PRs sind ausgenommen.
+  von `.gates/*.json` — identisch mit dem gepinnten Stand.
+  Doku-only-PRs sind ausgenommen — und zwar in genau diesem Umfang:
+  **`*.md` in der Repo-Wurzel und `*.md` unterhalb von `docs/` (beliebig
+  tief).** Sonst nichts. Kein anderer Dateityp unter `docs/` (also kein
+  `.js`, `.ts`, `.png`, keine Konfiguration), und keine `.md` an anderer
+  Stelle im Baum (etwa `test/corpus/README.md`). Beides zählt als Code
+  und verlangt Verdicts. Unter `.gates/` ist nur `*.json` ausgenommen.
+  Die Grenze ist so eng gezogen, weil ein Gate, das falsch blockt, eine
+  Runde kostet — eines, das falsch durchlässt, die Zusage. Reale
+  Doku-PRs dieses Repos fallen ausnahmslos in die zwei erlaubten Formen.
 - Geprüft wird **Inhalt, nicht Commit-Anzahl** (DATENSCHLE-76). Zwei
   Gründe:
   - `HEAD` ist im `pull_request`-Job nicht die PR-Spitze, sondern
@@ -66,6 +74,14 @@
   `.github/scripts/` und haben Tests wie jeder andere Code auch.
 - Umsetzung: `test/test_gates_laufzettel.py` baut synthetische Repos mit
   der echten CI-Topologie (Probe-Merge, fremde Merges auf main) nach.
+- Die Regel gilt auch für die Umgebung, in der ein Gate läuft: Der Fetch
+  des Basis-Branches erfolgt **ohne `--depth`**. Ein `git fetch --depth=N`
+  macht ein vollständiges Repo nachträglich shallow; an der Shallow-Grenze
+  verweigert git die Traversierung, und bei mehr als N Commits Divergenz
+  endet der Inhaltsvergleich in `fatal: keine Merge-Basis`. Der Test dazu
+  baut 250 Commits Divergenz auf — bewusst tiefer als das früher genutzte
+  Fenster, denn deckt N die ganze Historie ab, entsteht gar keine Grenze
+  und die Regression bliebe unentdeckt.
 
 ## 4. Auditor-Isolation (Blindprüfung)
 - Problem: Ein Prüfer im Kontext des Erbauers prüft Absichten statt Code.

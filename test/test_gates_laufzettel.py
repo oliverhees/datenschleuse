@@ -95,6 +95,27 @@ class Szenario:
         git(self.up, "push", "-q", "origin", "main")
         git(self.up, "checkout", "-q", aktuell)
 
+    def tiefe_historie_auf_main(self, n=250):
+        """Verlaengert main um n Commits, ohne den Worktree anzufassen.
+
+        `git commit-tree` haengt Commits direkt an den Objektspeicher (250
+        Stueck in ~0.5 s). Gebraucht wird das fuer den --depth-Test: die
+        Shallow-Falle schnappt erst zu, wenn die Divergenz groesser ist als
+        das gefetchte Fenster.
+        """
+        tree = git(self.up, "rev-parse", "main^{tree}")
+        parent = git(self.up, "rev-parse", "main")
+        env = dict(os.environ,
+                   GIT_AUTHOR_NAME="Schmiede", GIT_AUTHOR_EMAIL="team@datenschleuse.test",
+                   GIT_COMMITTER_NAME="Schmiede", GIT_COMMITTER_EMAIL="team@datenschleuse.test")
+        for i in range(n):
+            parent = subprocess.run(
+                ["git", "commit-tree", tree, "-p", parent, "-m", "[DATENSCHLE-99] fremd %d" % i],
+                cwd=self.up, check=True, capture_output=True, text=True, env=env,
+            ).stdout.strip()
+        git(self.up, "update-ref", "refs/heads/main", parent)
+        git(self.up, "push", "-q", "-f", "origin", "main")
+
     def pruefe(self, pr_branch, als_merge_ref=True):
         """Simuliert den gates-Job. als_merge_ref=True == echtes actions/checkout."""
         git(self.up, "push", "-q", "-f", "origin", pr_branch)
@@ -296,28 +317,38 @@ class LaufzettelCheckTest(unittest.TestCase):
 
     # --- F2: Regression zum entfernten --depth ------------------------------
 
-    def test_fetch_laesst_das_repo_vollstaendig(self):
+    def test_tiefe_divergenz_bricht_den_check_nicht(self):
         """c95220f entfernte `--depth` beim Fetch des Basis-Branches.
 
-        Der Grund ist nicht kosmetisch: ein einziges `git fetch --depth=N`
-        macht ein vollstaendiges Repo NACHTRAEGLICH shallow (empirisch
-        geprueft: is-shallow-repository springt dabei von false auf true).
-        An der Shallow-Grenze verliert git die Elterninformation; bei
-        Branches mit mehr als N Commits Divergenz enden die Vorfahren- und
-        Inhaltsvergleiche dieses Skripts in `fatal: keine Merge-Basis`.
+        Der Grund ist nicht kosmetisch. Ein einziges `git fetch --depth=N`
+        macht ein vollstaendiges Repo NACHTRAEGLICH shallow. An der
+        Shallow-Grenze verweigert git die Traversierung -- auch fuer Objekte,
+        die lokal laengst da sind. Ist die Divergenz groesser als N, endet
+        der Dreipunkt-Vergleich dieses Skripts in:
 
-        Geprueft wird der Repo-Zustand nach dem Lauf, nicht der Skripttext:
-        die Zusicherung faellt fuer JEDES wieder eingefuegte --depth=N,
-        unabhaengig von N.
+            fatal: origin/main...<sha>: keine Merge-Basis
+
+        Reproduziert mit main = fork + 250 Commits und --depth=200.
+
+        Genau diese Topologie baut der Test nach. Er prueft das Endsymptom,
+        nicht den Skripttext -- und er ist bewusst tiefer als das frueher
+        verwendete Fenster von 200, sonst faengt er die Regression nicht:
+        deckt N die ganze Historie ab, entsteht gar keine Shallow-Grenze.
         """
         pr = self._pr_mit_vollstaendigem_laufzettel()
+        self.s.tiefe_historie_auf_main()
         rc, out = self.s.pruefe(pr)
-        self.assertEqual(rc, 0, out)
-        shallow = git(self.s.ci_dir, "rev-parse", "--is-shallow-repository")
+        self.assertNotIn(
+            "Merge-Basis", out,
+            "Shallow-Grenze beim Fetch (--depth wieder da?):\n" + out)
+        self.assertNotIn("merge base", out.lower(), out)
         self.assertEqual(
-            shallow, "false",
-            "Der Fetch hat das Repo shallow gemacht (--depth wieder da?) — "
-            "Vorfahrenvergleiche brechen dann bei tiefer Divergenz ab.")
+            rc, 0,
+            "Tiefe Divergenz auf main darf den Check nicht sprengen:\n" + out)
+        self.assertEqual(
+            git(self.s.ci_dir, "rev-parse", "--is-shallow-repository"), "false",
+            "Der Fetch hat das Repo shallow gemacht — Vorfahrenvergleiche "
+            "brechen dann bei tiefer Divergenz ab.")
 
     # --- F3: kaputtes Verdict meldet sich im Hausstil -----------------------
 
