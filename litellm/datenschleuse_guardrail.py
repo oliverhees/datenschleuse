@@ -318,13 +318,17 @@ _ALLOWED_CALL_TYPES_HINT = ", ".join(sorted(ALLOWED_CALL_TYPES))
 #
 # Warum ein ungepruefte Top-Level-Feld ein Leck ist und nicht nur eine
 # Unsauberkeit -- empirisch belegt gegen litellm 1.97.0:
-#   * ``litellm.utils.get_non_default_completion_params`` (utils.py:3576)
-#     filtert die Top-Level-Keys gegen ``litellm.types.utils.all_litellm_params``.
-#     Alles, was NICHT in dieser Liste steht, wird an den Provider gereicht.
+#   * ``litellm.utils.get_non_default_completion_params`` (utils.py, dort als
+#     Funktionsdefinition zu finden -- in 1.97.0 Zeile 9255) filtert die
+#     Top-Level-Keys gegen ``litellm.types.utils.all_litellm_params``. Alles,
+#     was NICHT in dieser Liste steht, wird an den Provider gereicht.
 #   * Benannte OpenAI-Parameter gehen direkt hinaus -- ``suffix`` z.B. ueber
 #     ``main.py:7154`` in die Provider-Params.
-#   * Alles Uebrige landet in ``extra_body`` (``utils.py:4422``) und geht
-#     ebenso hinaus; ``_ensure_extra_body_is_safe`` filtert dort nichts
+#   * Alles Uebrige landet in ``extra_body``
+#     (``utils.py``::``add_provider_specific_params_to_optional_params``, in
+#     1.97.0 ab Zeile 4410) und geht ebenso hinaus;
+#     ``_ensure_extra_body_is_safe``
+#     (``litellm_core_utils/llm_request_utils.py:6``) filtert dort nichts
 #     Sicherheitsrelevantes.
 # Ein unbekanntes Top-Level-Feld ist damit ein vollwertiger Ausgangskanal.
 #
@@ -467,15 +471,31 @@ PAYLOAD_ROUTES = {
 # ``data``, BEVOR der Guardrail-Hook laeuft. Sie duerfen deshalb nicht als
 # "unbekanntes Client-Feld" blocken -- sonst blockt jeder echte Request.
 #
-# Jeder Eintrag steht in ``litellm.types.utils.all_litellm_params`` (1.97.0).
-# Damit filtert ``get_non_default_completion_params`` sie heraus: sie
-# erreichen den Provider NICHT -- weder als benannter Parameter noch ueber
-# ``extra_body``. Genau das ist die Rechtfertigung, sie nicht zu maskieren.
+# KRITERIUM (geschaerft nach dem zweiten Security-Gate). Ein Key darf hier
+# nur stehen, wenn er den Provider auf KEINEM Weg erreicht -- nicht im Body,
+# nicht als HTTP-Header, nicht ueber Verbindungs-Konfiguration.
 #
-# ACHTUNG, bewusst NICHT hier drin: ``extra_headers``. Es wird zwar ebenfalls
-# vom Proxy gesetzt, steht aber nicht in all_litellm_params und geht als
-# HTTP-Header an den Provider -- also ein Freitext-Kanal. Es blockt (siehe
-# KNOWN_UNSUPPORTED_PAYLOAD_FIELDS).
+# Die erste Fassung dieser Liste prueft nur die erste Bedingung: "steht in
+# ``litellm.types.utils.all_litellm_params``, wird also von
+# ``get_non_default_completion_params`` (utils.py, Funktionsdefinition) aus
+# den Provider-Parametern gefiltert". Das ist NOTWENDIG, aber nicht
+# HINREICHEND -- und genau diese Verwechslung war ein High-Finding:
+# ``headers`` steht in all_litellm_params und geht trotzdem hinaus, nur eben
+# als HTTP-Header statt im Body (``main.py:5029``:
+# ``headers = kwargs.get("headers") or extra_headers``, danach
+# ``headers=headers`` in jeden Provider-Handler).
+#
+# Deshalb wird die Liste nicht mehr aus einer Namensliste abgeleitet, sondern
+# GEMESSEN: ein mitschneidender Provider-Server, ein echter
+# ``litellm.completion``-Aufruf pro Key, Pruefung des kompletten ausgehenden
+# HTTP-Requests auf Header UND Body. Ergebnis gegen 1.97.0: von 37 Keys
+# erreichen genau drei den Provider -- sie stehen in
+# PAYLOAD_FIELDS_TRANSPORT_CHANNELS und blocken.
+#
+# ACHTUNG, bewusst NICHT hier drin: ``extra_headers`` und sein aelterer
+# Zwillingsname ``headers`` -- derselbe Kanal, zwei Namen. Dass der eine
+# geblockt war und der andere passierte, war kein Abwaegen, sondern ein
+# uebersehener Alias.
 #
 # BEKANNTE GRENZE dieser Liste, damit sie niemand fuer mehr haelt, als sie
 # ist: "erreicht den Provider nicht" heisst NICHT "ist harmlos". ``metadata``
@@ -496,9 +516,7 @@ PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     "litellm_call_id",
     "litellm_logging_obj",
     "litellm_disabled_callbacks",
-    "provider_specific_header",
     "allowed_model_region",
-    "headers",
     "cache",
     "caching",
     "ttl",
@@ -513,7 +531,6 @@ PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     # Routing-/Betriebsschalter, die litellm selbst auswertet.
     "base_model",
     "custom_llm_provider",
-    "model_list",
     "model_info",
     "fallbacks",
     "context_window_fallback_dict",
@@ -526,6 +543,34 @@ PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     "preset_cache_key",
     "id",
 })
+
+#: GEMESSENE Ausgangskanaele jenseits des Bodys (litellm 1.97.0). Jeder
+#: dieser Keys erfuellt das alte, zu enge Kriterium -- er steht in
+#: all_litellm_params -- und erreicht den Provider trotzdem. Sie stehen
+#: deshalb ausdruecklich NICHT auf der Passier-Liste, sondern blocken.
+#:
+#: Als eigene Konstante, damit die Test-Suite die Trennung erzwingen kann
+#: und ein spaeterer Beitrag sie nicht versehentlich zurueckschiebt.
+PAYLOAD_FIELDS_TRANSPORT_CHANNELS = frozenset({
+    # ``headers``/``extra_headers`` landen im selben dict und gehen als
+    # HTTP-Header auf die Leitung. Der Proxy setzt ``headers`` nur, wenn der
+    # Betreiber ``forward_client_headers_to_llm_api`` ausdruecklich
+    # einschaltet -- die Standard-Installation ist davon nicht betroffen.
+    # Und genau dieses Feature IST ein PII-Ausgangskanal: es reicht
+    # Client-HTTP-Header ungeprueft ans Modell weiter.
+    "headers",
+    "extra_headers",
+    # ``provider_specific_header.extra_headers`` wird provider-abhaengig in
+    # dieselben HTTP-Header gemischt
+    # (ProviderSpecificHeaderUtils.get_provider_specific_headers).
+    "provider_specific_header",
+    # Eigener Fund beim Nachmessen: die Deployment-Eintraege von
+    # ``model_list`` tragen eigene ``litellm_params.extra_headers`` -- und
+    # die landen ebenfalls auf der Leitung. Ein Client hat an der
+    # Routing-Konfiguration ohnehin nichts zu suchen.
+    "model_list",
+})
+
 
 # --- 3) Bekannt, aber nicht behandelt -> blockt, wird aber benannt ---------
 # "Was du nicht behandelst, blockt -- und wird benannt." Diese Felder gibt es
@@ -545,6 +590,14 @@ KNOWN_UNSUPPORTED_PAYLOAD_FIELDS = frozenset({
     # Geht als HTTP-Header bzw. als roher Body-Zusatz an den Provider und
     # damit komplett an der Payload-Pruefung vorbei:
     "extra_headers",
+    # Derselbe HTTP-Header-Kanal wie extra_headers, nur der aeltere Name --
+    # und die beiden landen in litellm im selben dict. Dass hier frueher nur
+    # einer der beiden Namen stand, war der Defekt.
+    "headers",
+    "provider_specific_header",
+    # Routing-/Verbindungs-Konfiguration: die Deployment-Eintraege tragen
+    # eigene extra_headers und gehen damit auf die Leitung.
+    "model_list",
     "extra_body",
     "deployment_id",
     "include_server_side_tool_invocations",
@@ -671,6 +724,19 @@ for _route in (CHAT_PAYLOAD_ROUTE, TEXT_PAYLOAD_ROUTE):
     if _fehlend:  # pragma: no cover - Import-Zeit-Zusicherung
         raise RuntimeError(f"Payload-Register ohne Formpruefer: {_fehlend}")
 del _route
+
+# Ein gemessener Transportkanal darf NIE auf der Passier-Liste landen. Als
+# Import-Zeit-Zusicherung, nicht nur als Test: dieser Fehler war einmal ein
+# High-Finding und soll beim naechsten Mal gar nicht erst startbar sein.
+_durchgerutscht = sorted(
+    PAYLOAD_FIELDS_TRANSPORT_CHANNELS & PAYLOAD_FIELDS_INFRASTRUCTURE
+)
+if _durchgerutscht:  # pragma: no cover - Import-Zeit-Zusicherung
+    raise RuntimeError(
+        "Diese Keys erreichen den Provider und duerfen nicht ungeprueft "
+        f"passieren: {_durchgerutscht}"
+    )
+del _durchgerutscht
 
 
 # ===========================================================================

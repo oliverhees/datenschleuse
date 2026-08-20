@@ -868,16 +868,34 @@ class TestInfrastructureClaimHoldsAtRuntime(unittest.TestCase):
     def test_kriterium_allein_genuegt_nicht(self):
         """Bewusst als Test formuliert, weil genau diese Annahme der Defekt
         war: 'steht in all_litellm_params' ist NOTWENDIG, nicht HINREICHEND.
-        Die bekannten Transportkanaele stehen dort und gehen trotzdem raus."""
+
+        Der Nachweis ist die Schnittmenge: es gibt Transportkanaele, die das
+        alte Kriterium ERFUELLEN und trotzdem hinausgehen. Waere die Menge
+        leer, waere das alte Kriterium tragfaehig gewesen.
+
+        ``extra_headers`` gehoert ausdruecklich NICHT dazu -- es stand nie in
+        all_litellm_params. Genau deshalb wurde es von Anfang an korrekt
+        geblockt, waehrend sein Zwillingsname ``headers`` durchrutschte. Der
+        Unterschied zwischen beiden ist die ganze Lehre aus dem Finding.
+        """
         from litellm.types.utils import all_litellm_params
 
+        erfuellen_altes_kriterium = sorted(
+            dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS & set(all_litellm_params)
+        )
+        self.assertTrue(
+            erfuellen_altes_kriterium,
+            "Kein Transportkanal erfuellt das alte Kriterium -- dann waere es "
+            "tragfaehig gewesen und dieser Test haette keinen Gegenstand.",
+        )
+        self.assertIn("headers", erfuellen_altes_kriterium)
+        self.assertNotIn("extra_headers", set(all_litellm_params))
+
+    def test_jeder_transportkanal_blockt(self):
         for feld in dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS:
             with self.subTest(feld=feld):
-                self.assertIn(
-                    feld, all_litellm_params,
-                    f"{feld} erfuellt das alte Kriterium -- und ist trotzdem "
-                    "ein Ausgangskanal. Deshalb blockt es.",
-                )
+                self.assertIn(feld, dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS)
+                self.assertNotIn(feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE)
 
 
 # ===========================================================================
