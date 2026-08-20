@@ -1,7 +1,7 @@
 {
   "gate": "security",
-  "verdict": "pass",
-  "commit": "02579065651fdb13ba7987f2e678c8894fb8ee9a",
+  "verdict": "fail",
+  "commit": "9f0af9ca527ec1f080c2c46f68885923475a2b7b",
   "branch": "HEAD",
-  "timestamp": "2026-08-20T18:21:06Z"
+  "timestamp": "2026-08-20T18:32:51Z"
 }
