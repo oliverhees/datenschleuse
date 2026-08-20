@@ -79,12 +79,20 @@ Geschwisterfelder liefen ungeprüft daran vorbei.
 Warum ein ungeprüftes Top-Level-Feld ein echter Ausgangskanal ist — empirisch
 gegen litellm 1.97.0 belegt, nicht angenommen:
 
-- `get_non_default_completion_params` (`utils.py:3576`) filtert die
-  Top-Level-Keys gegen `litellm.types.utils.all_litellm_params`.
+- `get_non_default_completion_params` (`utils.py`, Funktionsdefinition — in
+  1.97.0 Zeile 9255) filtert die Top-Level-Keys gegen
+  `litellm.types.utils.all_litellm_params`.
 - Was **nicht** in dieser Liste steht, geht an den Provider: benannte
   OpenAI-Parameter direkt (`suffix` über `main.py:7154`), alles Übrige über
-  `extra_body` (`utils.py:4422`). `_ensure_extra_body_is_safe` filtert dort
-  nichts Sicherheitsrelevantes.
+  `extra_body` (`utils.py`::`add_provider_specific_params_to_optional_params`,
+  in 1.97.0 ab Zeile 4410). `_ensure_extra_body_is_safe`
+  (`litellm_core_utils/llm_request_utils.py:6`) filtert dort nichts
+  Sicherheitsrelevantes.
+- **Das genügt aber nicht als Kriterium.** Der Body ist nur einer von
+  mehreren Wegen nach draußen — siehe die Regel zum Transport-Umschlag unten.
+  Belegstellen werden ab jetzt auf **Funktionsdefinitionen** bezogen, nicht
+  auf Rumpfzeilen: ein Beleg muss nachschlagbar bleiben, auch wenn sich in
+  der Datei darüber etwas verschiebt.
 
 Verbindliches Register (Quelle: `CHAT_PAYLOAD_ROUTE` / `TEXT_PAYLOAD_ROUTE` /
 `PAYLOAD_FIELDS_INFRASTRUCTURE` / `KNOWN_UNSUPPORTED_PAYLOAD_FIELDS` in
@@ -107,11 +115,30 @@ Regeln dazu:
 - **Ein Feld gilt erst als behandelt, wenn belegt ist, was mit ihm passiert** —
   maskiert *oder* validiert, jeweils mit eigenem Test. „Steht im Register" ohne
   Behandlung ist eine falsche Zusage.
-- **Infrastruktur-Keys brauchen einen Beleg, keine Vermutung.** Ein Key darf
-  nur dann unmaskiert passieren, wenn nachgewiesen ist, dass er den Provider
-  nicht erreicht (Kriterium: Eintrag in `all_litellm_params` der eingesetzten
-  litellm-Version). `extra_headers` erfüllt das ausdrücklich **nicht** — es
-  geht als HTTP-Header hinaus und blockt deshalb.
+- **Infrastruktur-Keys brauchen einen Beleg, keine Vermutung — und der Beleg
+  ist eine Messung, keine Namensliste.** Ein Key darf nur dann unmaskiert
+  passieren, wenn nachgewiesen ist, dass er den Provider auf **keinem** Weg
+  erreicht: nicht im Body, nicht als HTTP-Header, nicht über
+  Verbindungs-Konfiguration. Nachweisverfahren: mitschneidender Server an der
+  Stelle des Providers, ein echter `completion()`-Aufruf pro Key, Prüfung des
+  gesamten ausgehenden Requests auf Header **und** Body.
+- **Der Eintrag in `all_litellm_params` ist notwendig, nicht hinreichend.**
+  Genau diese Verwechslung war ein High-Finding: `headers` steht dort und geht
+  trotzdem hinaus, als HTTP-Header (`main.py:5029`). Die gemessenen
+  Ausgangskanäle stehen in `PAYLOAD_FIELDS_TRANSPORT_CHANNELS` und blocken:
+  `headers`, `extra_headers`, `provider_specific_header`, `model_list`.
+- **Zwei Namen für denselben Kanal müssen dieselbe Behandlung bekommen.**
+  `extra_headers` war korrekt geblockt, `headers` — der ältere Name, der in
+  LiteLLM im selben dict landet — passierte. Das war kein Abwägen, sondern ein
+  übersehener Alias. Bei jedem neuen Eintrag ist deshalb zu prüfen, ob es
+  einen Zweitnamen für dieselbe Sache gibt.
+- **Der Beleg wird in der Suite festgehalten, nicht nur im Commit.** Eine
+  Laufzeitprüfung verifiziert, dass die Infrastruktur-Liste weiterhin
+  Teilmenge von `all_litellm_params` der *installierten* litellm-Version ist.
+  Verlässt ein Key diese Liste bei einem Upgrade, schlägt der Test an, statt
+  dass der Key still zum Provider-Kanal wird. Eine Import-Zeit-Zusicherung
+  verhindert zusätzlich, dass ein gemessener Transportkanal je wieder auf der
+  Passier-Liste landet — das Modul startet dann nicht mehr.
 - **Mehrdeutigkeit blockt in beide Richtungen.** Ein Body, der zugleich
   `messages` und `prompt` trägt, passt auf zwei Routen und wird geblockt —
   egal, über welche der beiden Routen er hereinkommt. Vorher war diese Regel
@@ -145,11 +172,16 @@ Historie derselben Lücke — der Grund für diese Regel:
 - DATENSCHLE-69: die **Route** selbst — siehe „Allowlist-Prinzip für Routen"
 - DATENSCHLE-69 (zweite Runde): die **Top-Level-Felder des Payloads** — die
   Route war registriert, ihre Felder nicht. Siehe den gleichnamigen Abschnitt.
+- DATENSCHLE-69 (dritte Runde): der **Transport-Umschlag** — die Felder waren
+  registriert, aber das Kriterium prüfte nur den Body. `headers` ging als
+  HTTP-Header hinaus.
 
-Sechsmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
+Siebenmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
 still durch. Deshalb wird auf jeder Ebene **einmal vollständig erfasst** statt
 Fall für Fall entdeckt. Und deshalb ist nach dem Schließen einer Ebene die
-erste Frage, welche Ebene darüber oder darunter dieselbe Bauart hat.
+erste Frage, welche Ebene darüber oder darunter dieselbe Bauart hat — und die
+zweite, ob das *Kriterium* der geschlossenen Ebene wirklich alle Wege abdeckt
+oder nur den, an den man zuerst gedacht hat.
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
 `MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und

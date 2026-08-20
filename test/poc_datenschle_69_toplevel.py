@@ -129,6 +129,32 @@ async def main():
                      bool(roh) or len(set(ergebnisse.values())) != 1,
                      f"roh in: {roh}" if roh else "")
 
+    # --- Transport-Umschlag (Security-Gate 2) -----------------------------
+    # Diese Keys stehen alle in litellms all_litellm_params -- sie erfuellen
+    # also das ALTE, zu enge Kriterium ("nicht im Body") -- und gehen trotzdem
+    # hinaus, als HTTP-Header auf der Leitung. Gemessen mit einem
+    # mitschneidenden Provider-Server gegen echtes litellm 1.97.0.
+    print()
+    for label, extra in (
+        ("acompletion, headers(PII)",
+         {"headers": {"x-notiz": f"Patient {NAME}, IBAN {IBAN}"}}),
+        ("acompletion, provider_specific_header(PII)",
+         {"provider_specific_header": {"custom_llm_provider": "openai",
+                                       "extra_headers": {"x-notiz": IBAN}}}),
+        ("acompletion, model_list[].extra_headers(PII)",
+         {"model_list": [{"model_name": "gpt-4o", "litellm_params": {
+             "model": "openai/gpt-4o",
+             "extra_headers": {"x-notiz": IBAN}}}]}),
+    ):
+        data = {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                **extra}
+        try:
+            out = await call(data, "acompletion")
+            flat = outgoing(out)
+            leaks += verdict(label, IBAN in flat or NAME in flat, "durchgelaufen")
+        except dg.DatenschleuseBlocked:
+            verdict(label, False, "geblockt")
+
     print()
     print("ERGEBNIS:", "ALLE PoCs DICHT" if leaks == 0 else f"{leaks} LECK(S) OFFEN")
     return 1 if leaks else 0

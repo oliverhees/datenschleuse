@@ -183,11 +183,9 @@ kann: du hältst deinen Verkehr für geschützt, und er war es nie.
 | jede künftige LiteLLM-Route | ⛔ blockiert, bis sie bewusst aufgenommen wird |
 
 **„Geprüft" heißt genau das und nicht mehr:** jedes Feld, das eine geprüfte
-Route hinausschickt, steht in einem Register und ist dort einer von zwei
-Behandlungen zugeordnet — maskiert (Freitext) oder auf seine Form validiert
-(Steuerparameter ohne Text). Ein Feld, das in keiner der beiden Listen steht,
-wird **geblockt**, nicht durchgereicht. Der `call_type` sagt nämlich nur,
-*welche* Route spricht, nicht *wie* ihr Body aussieht: die Route zu
+Route hinausschickt, steht in einem Register und ist dort einer Behandlung
+zugeordnet — maskiert, validiert oder blockiert. Der `call_type` sagt nämlich
+nur, *welche* Route spricht, nicht *wie* ihr Body aussieht: die Route zu
 registrieren und die Felder dieser Route ungeprüft zu lassen wäre derselbe
 Defekt eine Ebene tiefer.
 
@@ -196,12 +194,28 @@ Defekt eine Ebene tiefer.
 | `messages` / `prompt`, `suffix`, `stop`, `user` | maskiert |
 | `tools`, `tool_choice`, `functions`, `function_call`, `response_format` | strukturerhaltend maskiert (Beschreibungen, Enum-Werte, Schema-Texte) |
 | `model`, `temperature`, `top_p`, `n`, `seed`, `stream`, `stream_options`, `max_tokens`, `logit_bias`, Penalties … | auf Form validiert, unverändert weitergereicht |
-| `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `extra_headers`, `extra_body`, Prompt-Management-Felder | ⛔ blockiert — noch kein eigenes Register |
+| LiteLLM-interne Felder: `metadata`, `proxy_server_request`, `cache`, `ttl`, `tags`, `litellm_*` … | passieren **ungeprüft** — siehe die Einschränkung unten |
+| `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `headers`, `extra_headers`, `provider_specific_header`, `model_list`, `extra_body`, Prompt-Management-Felder | ⛔ blockiert — noch kein eigenes Register |
 | jedes unbekannte Feld | ⛔ blockiert |
 
 Wer eines der blockierten Felder braucht, bekommt eine Fehlermeldung, die das
 Feld beim Namen nennt. Das ist Absicht: ein sichtbarer Block ist einem
 unsichtbaren Leck vorzuziehen. Jedes dieser Felder ist ein eigenes Arbeitspaket.
+
+**Die vierte Gruppe ehrlich gesagt:** LiteLLM legt selbst rund drei Dutzend
+Felder in die Anfrage, bevor die Datenschleuse sie sieht — Sitzungs-IDs,
+Cache-Schalter, Abrechnungs-Metadaten. Die werden **nicht maskiert**. Die
+Rechtfertigung dafür ist nicht „sie sehen harmlos aus", sondern eine Messung:
+Wir haben einen mitschneidenden Server an die Stelle des LLM-Anbieters gesetzt
+und für jedes dieser Felder geprüft, ob es die Anfrage überhaupt verlässt —
+im Body **oder** als HTTP-Header. Drei taten es und stehen deshalb oben in der
+Block-Zeile (`headers`, `provider_specific_header`, `model_list`).
+
+Was das für dich heißt: Diese Felder erreichen den LLM-Anbieter nicht — wohl
+aber das **Logging** deiner eigenen LiteLLM-Instanz. Wer dort PII hineinschreibt
+(etwa in `metadata`), bekommt sie nicht zum Modell, möglicherweise aber ins Log.
+Die Datenschleuse schützt den Weg nach draußen, nicht den Weg ins Logfile;
+Letzteres ist ein eigenes, noch offenes Arbeitspaket.
 
 **Was das praktisch heißt:** Clients, die das Anthropic-Format (`/v1/messages`)
 oder die Responses-API sprechen, bekommen aktuell eine klare Fehlermeldung
