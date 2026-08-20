@@ -76,7 +76,11 @@ Regeln dazu:
 - **Verifikationsdurchlauf auf dem Ergebnis.** Der fertig maskierte
   `arguments`-String geht erneut durch den Analyzer; findet der dort noch
   Entitäten, wird blockiert. Alle anderen Prüfungen sind pfadgebunden —
-  diese greift unabhängig davon, welchen Weg ein Wert genommen hat.
+  diese ist die einzige, die einen Wert unabhängig von seinem Weg noch
+  einmal ansieht. Sie ist deshalb ein zusätzliches Netz, keine Garantie:
+  vor der Prüfung werden bekannte Platzhalter neutralisiert, und Treffer,
+  die nachweislich erst durch diese Neutralisierung entstehen, werden
+  verworfen (siehe „bekannte Grenzen").
 - **JSON muss eindeutig sein.** Doppelte Schlüssel (`json.loads` behält still
   den letzten Wert, der erste wird nie geprüft) und nicht standardkonforme
   Konstanten (`NaN`, `Infinity`) werden abgelehnt, nicht interpretiert.
@@ -121,7 +125,22 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
   erkennt „Digitalisierung" als LOCATION und übersieht „Rathaus Muenchen",
   der Verifikationsdurchlauf findet es dann. **Kein Code-Fehler.** Die
   Blockmeldung nennt deshalb beide möglichen Ursachen und unterstellt keine.
-- **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String.
+- **Neutralisierung der Platzhalter — und ihre Kehrseite.** Damit die
+  Erkennung nicht die Platzhalter selbst für Namen hält, werden sie vor der
+  Prüfung durch ein neutrales Zeichen ersetzt. Diese Ersetzung kann eigene
+  Treffer erzeugen, die es im echten Text nie gab: ein Muster, das über
+  Whitespace hinweggreift, passt danach plötzlich. Solche Treffer werden
+  verworfen — aber nur, wenn sie es nachweislich sind. Dazu wird der Treffer
+  an den Ersetzungsgrenzen aufgeteilt und jedes Stück einzeln erneut geprüft;
+  bleibt eines für sich ein Fund, wird blockiert. Der Filter hängt damit an
+  der **Herkunft** eines Treffers, nicht an seinem Typ und nicht an einer
+  bloßen Überlappung. Beide einfacheren Varianten haben in Audits jeweils
+  echte Funde mit ausgeblendet (F10, S1) — wer hier vereinfacht, öffnet das
+  Netz wieder. Regressionstests: `test/test_custom_rules.py`, Abschnitte 17
+  und 20.
+- **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String, plus
+  je einen pro Segment für die wenigen Treffer, die tatsächlich über eine
+  Ersetzung laufen. Im Normalbetrieb entsteht keiner davon.
 - **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
   vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
 
