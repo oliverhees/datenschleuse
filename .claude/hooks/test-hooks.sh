@@ -261,6 +261,158 @@ else
 fi
 
 echo
+echo "=== pre-egress.sh — nichts verlaesst die Maschine ungeprueft ==="
+
+# Der Check sitzt vor einem Egress an einen Drittanbieter (externer Review,
+# DATENSCHLE-87). Faellt er aus, muss der Egress ausfallen -- nicht der
+# Check. Das ist dieselbe Fehlerklasse wie das fehlende jq in
+# DATENSCHLE-80: ein Gate, dessen Werkzeug fehlt, meldete dort gruen.
+
+PRE_EGRESS="$HOOKS_DIR/pre-egress.sh"
+BASH_BIN=$(command -v bash)
+
+# Legt ein PATH-Verzeichnis an, das GENAU die Werkzeuge enthaelt, die
+# pre-egress.sh braucht. gitleaks kommt nur hinein, wenn der Fall es
+# verlangt.
+#
+# WARUM der Umweg ueber ein eigenes PATH statt eines vorangestellten Stubs:
+# Auf einem Rechner MIT installiertem gitleaks liefe der Fall "Werkzeug
+# fehlt" sonst gegen das echte Binary. Der Test waere gruen, ohne je
+# geprueft zu haben, was er zu pruefen vorgibt -- genau die Sorte Pruefung,
+# gegen die dieser Check gebaut wird.
+egress_env() {   # <modus: fehlt | unbrauchbar | <exitcode>>  -> PATH-Verzeichnis
+  local modus="$1" dir t p
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/egresspath.XXXXXXXX")
+  for t in bash env mktemp rm mkdir cat grep git; do
+    p=$(command -v "$t") || { printf 'FEHLENDES_WERKZEUG_%s' "$t"; return 1; }
+    ln -sf "$p" "$dir/$t"
+  done
+  case "$modus" in
+    fehlt) : ;;
+    unbrauchbar)
+      # Vorhanden, aber weder 'dir' noch 'detect' nutzbar (fremde/alte Version).
+      printf '#!/bin/sh\necho "stub: unbekanntes Kommando" >&2\nexit 1\n' \
+        > "$dir/gitleaks"
+      chmod +x "$dir/gitleaks" ;;
+    *)
+      # --help beantwortet die Versionsprobe mit 0, alles andere mit <modus>.
+      { printf '#!/bin/sh\n'
+        printf 'for a in "$@"; do [ "$a" = "--help" ] && exit 0; done\n'
+        printf 'echo "stub gitleaks: $*" >&2\n'
+        printf 'exit %s\n' "$modus"
+      } > "$dir/gitleaks"
+      chmod +x "$dir/gitleaks" ;;
+  esac
+  printf '%s' "$dir"
+}
+
+egress_exit() {  # <modus> <argument...>  -> Exit-Code von pre-egress.sh
+  local modus="$1"; shift
+  local pdir; pdir=$(egress_env "$modus") || { echo "STUB_FEHLER"; return; }
+  PATH="$pdir" "$BASH_BIN" "$PRE_EGRESS" "$@" >/dev/null 2>&1
+  echo $?
+}
+
+egress_payload() {  # <inhalt> -> Pfad einer Nutzlast-Datei
+  local f; f=$(mktemp "${TMPDIR:-/tmp}/egresspayload.XXXXXXXX")
+  printf '%s\n' "$1" > "$f"
+  printf '%s' "$f"
+}
+
+DIFF_SAUBER='diff --git a/README.md b/README.md
+index 1111111..2222222 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,2 @@
+-alte Zeile
++neue Zeile'
+
+DIFF_UMGEBUNGSDATEI='diff --git a/.env b/.env
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/.env
+@@ -0,0 +1 @@
++PLATZHALTER=nicht-echt'
+
+DIFF_BEISPIELDATEI='diff --git a/.env.example b/.env.example
+index 1111111..2222222 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1 +1,2 @@
+ PLATZHALTER=
++ZWEITER_PLATZHALTER='
+
+DIFF_SCHLUESSELDATEI='diff --git a/deploy/server.pem b/deploy/server.pem
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/deploy/server.pem
+@@ -0,0 +1 @@
++nicht-echtes-schluesselmaterial'
+
+P_SAUBER=$(egress_payload "$DIFF_SAUBER")
+
+assert_eq "2" "$(egress_exit fehlt "$P_SAUBER")" \
+  "Fehlt gitleaks, wird NICHT gesendet (kein Werkzeug heisst gestoppt, nicht durch)"
+
+assert_eq "2" "$(egress_exit unbrauchbar "$P_SAUBER")" \
+  "gitleaks vorhanden, aber unbrauchbar -> geblockt"
+
+assert_eq "2" "$(egress_exit 1 "$P_SAUBER")" \
+  "gitleaks meldet einen Fund -> geblockt"
+
+assert_eq "2" "$(egress_exit 2 "$P_SAUBER")" \
+  "gitleaks bricht mit Fehler ab -> geblockt (Fehler ist kein Freibrief)"
+
+assert_eq "0" "$(egress_exit 0 "$P_SAUBER")" \
+  "Sauberer Diff und gruener Scan -> darf gesendet werden"
+
+assert_eq "2" "$(egress_exit 0 "$(egress_payload "$DIFF_UMGEBUNGSDATEI")")" \
+  "Umgebungsdatei im Diff -> geblockt, auch wenn der Scanner gruen meldet"
+
+assert_eq "2" "$(egress_exit 0 "$(egress_payload "$DIFF_SCHLUESSELDATEI")")" \
+  "Schluesseldatei (.pem) im Diff -> geblockt"
+
+assert_eq "0" "$(egress_exit 0 "$(egress_payload "$DIFF_BEISPIELDATEI")")" \
+  "Beispiel-Umgebungsdatei (.env.example) ist kein Schluesselmaterial -> erlaubt"
+
+# Regression gegen die Fehlerklasse aus ADR-0004 Befund 7: guard.sh blockte
+# dreimal an der blossen ERWAEHNUNG eines verbotenen Begriffs im Fliesstext.
+# Ein Diff, der selbst Diff-Text enthaelt (etwa diese Testsuite), traegt im
+# Rumpf Zeilen wie "++++ b/…". Wer stumpf auf die Kopfzeilen-Form matcht,
+# blockt hier grundlos -- und ein Waechter, der grundlos anschlaegt, wird
+# weggeklickt.
+DIFF_IM_DIFF='diff --git a/test/beispiel.txt b/test/beispiel.txt
+index 1111111..2222222 100644
+--- a/test/beispiel.txt
++++ b/test/beispiel.txt
+@@ -1,1 +1,5 @@
+ Beispielhafter Diff-Text in einer Testdatei:
++diff --git a/.env b/.env
++--- /dev/null
+++++ b/.env
++PLATZHALTER=nicht-echt'
+
+assert_eq "0" "$(egress_exit 0 "$(egress_payload "$DIFF_IM_DIFF")")" \
+  "Diff-Text IM Rumpf eines Diffs blockt nicht (Erwaehnung ist kein Pfad)"
+
+assert_eq "2" "$(egress_exit 0 "${TMPDIR:-/tmp}/gibt-es-nicht-$$.diff")" \
+  "Nicht lesbare Nutzlast -> geblockt statt stillschweigend leer geprueft"
+
+assert_eq "2" "$(egress_exit 0 "$(egress_payload '')")" \
+  "Leere Nutzlast im Dateimodus -> geblockt (die Ermittlung ist schiefgegangen)"
+
+# Standardmodus ohne Argument bildet den Diff selbst. Ausserhalb eines
+# Git-Baums kann er das nicht -- dann darf er nicht "nichts gefunden,
+# also sauber" melden.
+KEIN_REPO=$(mktemp -d "${TMPDIR:-/tmp}/egressnorepo.XXXXXXXX")
+PDIR=$(egress_env 0)
+( cd "$KEIN_REPO" && PATH="$PDIR" "$BASH_BIN" "$PRE_EGRESS" >/dev/null 2>&1 )
+assert_eq "2" "$?" \
+  "Standardmodus ausserhalb eines Git-Baums -> geblockt, nicht leer durchgewinkt"
+
+echo
 if [ "$FAILED" -eq 0 ]; then
   echo "Ran $((PASSED+FAILED)) tests"
   echo "OK"
