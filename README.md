@@ -175,12 +175,33 @@ kann: du hältst deinen Verkehr für geschützt, und er war es nie.
 
 | Route | Status |
 |---|---|
-| `/v1/chat/completions` | ✅ geschützt (inkl. Tool-Calls, Multimodal, Streaming) |
-| `/v1/completions` | ✅ geschützt |
+| `/v1/chat/completions` | ✅ geprüft (inkl. Tool-Calls, Multimodal, Streaming) |
+| `/v1/completions` | ✅ geprüft |
 | `/v1/messages` (Anthropic-Format) | ⛔ blockiert — noch nicht unterstützt |
 | `/v1/responses` (OpenAI Responses) | ⛔ blockiert — noch nicht unterstützt |
 | Embeddings, Bilder, Audio, Moderation, Rerank, Passthrough … | ⛔ blockiert |
 | jede künftige LiteLLM-Route | ⛔ blockiert, bis sie bewusst aufgenommen wird |
+
+**„Geprüft" heißt genau das und nicht mehr:** jedes Feld, das eine geprüfte
+Route hinausschickt, steht in einem Register und ist dort einer von zwei
+Behandlungen zugeordnet — maskiert (Freitext) oder auf seine Form validiert
+(Steuerparameter ohne Text). Ein Feld, das in keiner der beiden Listen steht,
+wird **geblockt**, nicht durchgereicht. Der `call_type` sagt nämlich nur,
+*welche* Route spricht, nicht *wie* ihr Body aussieht: die Route zu
+registrieren und die Felder dieser Route ungeprüft zu lassen wäre derselbe
+Defekt eine Ebene tiefer.
+
+| Feld-Gruppe | Behandlung |
+|---|---|
+| `messages` / `prompt`, `suffix`, `stop`, `user` | maskiert |
+| `tools`, `tool_choice`, `functions`, `function_call`, `response_format` | strukturerhaltend maskiert (Beschreibungen, Enum-Werte, Schema-Texte) |
+| `model`, `temperature`, `top_p`, `n`, `seed`, `stream`, `stream_options`, `max_tokens`, `logit_bias`, Penalties … | auf Form validiert, unverändert weitergereicht |
+| `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `extra_headers`, `extra_body`, Prompt-Management-Felder | ⛔ blockiert — noch kein eigenes Register |
+| jedes unbekannte Feld | ⛔ blockiert |
+
+Wer eines der blockierten Felder braucht, bekommt eine Fehlermeldung, die das
+Feld beim Namen nennt. Das ist Absicht: ein sichtbarer Block ist einem
+unsichtbaren Leck vorzuziehen. Jedes dieser Felder ist ein eigenes Arbeitspaket.
 
 **Was das praktisch heißt:** Clients, die das Anthropic-Format (`/v1/messages`)
 oder die Responses-API sprechen, bekommen aktuell eine klare Fehlermeldung

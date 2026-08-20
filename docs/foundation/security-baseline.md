@@ -38,8 +38,8 @@ geändert, nie einzeln):
 
 | Route | `call_type` | Payload | Verhalten |
 |---|---|---|---|
-| `/v1/chat/completions` | `acompletion`, `completion` | `messages[]` | vollständig geprüft (Feld-Register unten) |
-| `/v1/completions` | `atext_completion` | `prompt` | vollständig geprüft, Rückweg über `choices[].text` |
+| `/v1/chat/completions` | `acompletion`, `completion` | `messages[]` | geprüft im Umfang der beiden Register unten |
+| `/v1/completions` | `atext_completion` | `prompt` | geprüft im Umfang der beiden Register unten, Rückweg über `choices[].text` |
 | `/v1/messages` (Anthropic) | `anthropic_messages` | eigenes Schema | **blockiert** |
 | `/v1/responses` | `aresponses` | eigenes Schema | **blockiert** |
 | Embeddings, Bild, Audio, Moderation, Rerank, Batch, Vector Store, MCP, Passthrough, Google GenAI | siehe Register | jeweils eigenes Schema | **blockiert** |
@@ -68,6 +68,67 @@ als unterstützt zu führen, ohne ihre Struktur tatsächlich zu maskieren, wäre
 derselbe Defekt noch einmal — nur dokumentiert falsch. Aufnahme jeweils als
 eigenes Work Item.
 
+## Allowlist-Prinzip für die Top-Level-Felder des Payloads (bindend)
+
+Die Route zu registrieren genügt nicht. Der `call_type` sagt nur, **welche**
+Route spricht — die **Felder** ihres Bodys sind eine eigene Ebene, und sie war
+die sechste Fundstelle derselben Fehlerklasse (DATENSCHLE-69, zweite Runde):
+das Trägerfeld (`messages`/`prompt`) lief durch die Maskierung, seine
+Geschwisterfelder liefen ungeprüft daran vorbei.
+
+Warum ein ungeprüftes Top-Level-Feld ein echter Ausgangskanal ist — empirisch
+gegen litellm 1.97.0 belegt, nicht angenommen:
+
+- `get_non_default_completion_params` (`utils.py:3576`) filtert die
+  Top-Level-Keys gegen `litellm.types.utils.all_litellm_params`.
+- Was **nicht** in dieser Liste steht, geht an den Provider: benannte
+  OpenAI-Parameter direkt (`suffix` über `main.py:7154`), alles Übrige über
+  `extra_body` (`utils.py:4422`). `_ensure_extra_body_is_safe` filtert dort
+  nichts Sicherheitsrelevantes.
+
+Verbindliches Register (Quelle: `CHAT_PAYLOAD_ROUTE` / `TEXT_PAYLOAD_ROUTE` /
+`PAYLOAD_FIELDS_INFRASTRUCTURE` / `KNOWN_UNSUPPORTED_PAYLOAD_FIELDS` in
+`litellm/datenschleuse_guardrail.py` — Code und Tabelle werden gemeinsam
+geändert, nie einzeln):
+
+| Gruppe | Felder | Behandlung |
+|---|---|---|
+| Trägerfeld + Freitext | `messages`, `prompt`, `suffix`, `stop`, `user` | maskiert, über **denselben** Masker und dasselbe `reid_map` |
+| Strukturierter Freitext | `tools`, `tool_choice`, `functions`, `function_call`, `response_format` | strukturerhaltend maskiert (JSON-Knoten-Masker, inkl. Tiefenbegrenzung und Verifikationsdurchlauf) |
+| Steuerparameter | `model`, `temperature`, `top_p`, `n`, `seed`, `stream`, `stream_options`, `max_tokens`, `max_completion_tokens`, `logprobs`, `logit_bias`, Penalties, `best_of`, `echo`, `service_tier`, `reasoning_effort`, `store`, `parallel_tool_calls` … | auf Form validiert, unverändert weitergereicht |
+| Infrastruktur | `metadata`, `proxy_server_request`, `secret_fields`, `litellm_*`, `cache`, `ttl`, `tags`, `headers`, `api_*` … | passieren — jeder Eintrag steht in `all_litellm_params` und erreicht den Provider nachweislich nicht |
+| Bekannt, nicht behandelt | `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `safety_identifier`, `extra_headers`, `extra_body`, Prompt-Management-Felder | **blockiert**, beim Namen genannt |
+| Alles Übrige | — | **blockiert**, nur als Fingerprint genannt |
+
+Regeln dazu:
+- **Ein Feld steht in genau einer Liste.** Was in keiner steht, blockt. Ein
+  neues Feld der OpenAI-API erzwingt damit eine bewusste Entscheidung im
+  Register statt lautlos ein Leck zu öffnen.
+- **Ein Feld gilt erst als behandelt, wenn belegt ist, was mit ihm passiert** —
+  maskiert *oder* validiert, jeweils mit eigenem Test. „Steht im Register" ohne
+  Behandlung ist eine falsche Zusage.
+- **Infrastruktur-Keys brauchen einen Beleg, keine Vermutung.** Ein Key darf
+  nur dann unmaskiert passieren, wenn nachgewiesen ist, dass er den Provider
+  nicht erreicht (Kriterium: Eintrag in `all_litellm_params` der eingesetzten
+  litellm-Version). `extra_headers` erfüllt das ausdrücklich **nicht** — es
+  geht als HTTP-Header hinaus und blockt deshalb.
+- **Mehrdeutigkeit blockt in beide Richtungen.** Ein Body, der zugleich
+  `messages` und `prompt` trägt, passt auf zwei Routen und wird geblockt —
+  egal, über welche der beiden Routen er hereinkommt. Vorher war diese Regel
+  nur bei der Text-Route umgesetzt.
+- **Fehlt das Trägerfeld, blockt der Request.** Ohne `messages` bzw. `prompt`
+  gibt es keinen Anwendertext zu prüfen — der Rest des Bodys ginge trotzdem
+  hinaus.
+- **Typprüfung im Validate-Pfad, nie im Mask-Pfad** (siehe unten). Ein
+  registriertes Feld mit falschem Typ ist derselbe Defekt wie ein unbekanntes
+  Feld: niemand hat den Inhalt geprüft.
+- **Der QI-Layer ist Teil des Verarbeitungspfads, nicht optional.** Ein
+  Text-Slot, den die Generalisierung nicht bedienen kann, blockt. Ein still
+  übersprungener Slot lässt Quasi-Identifier in **voller Auflösung** hinaus,
+  weil der Masker sie bewusst dem QI-Layer überlässt. Ein fail-closed-Block aus
+  dem QI-Layer darf deshalb nicht vom defensiven Fehler-Handler geschluckt
+  werden, der gewöhnliche QI-Fehler bewusst toleriert.
+
 ## Allowlist-Prinzip für eingehende Nachrichten (bindend)
 
 Jede Ebene einer eingehenden Chat-Message wird nach Allowlist behandelt:
@@ -82,10 +143,13 @@ Historie derselben Lücke — der Grund für diese Regel:
   `tool_calls[].function.arguments` (für agentische Clients der Normalfall)
 - DATENSCHLE-65: die **Feldebene innerhalb eines Parts**
 - DATENSCHLE-69: die **Route** selbst — siehe „Allowlist-Prinzip für Routen"
+- DATENSCHLE-69 (zweite Runde): die **Top-Level-Felder des Payloads** — die
+  Route war registriert, ihre Felder nicht. Siehe den gleichnamigen Abschnitt.
 
-Fünfmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
+Sechsmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
 still durch. Deshalb wird auf jeder Ebene **einmal vollständig erfasst** statt
-Fall für Fall entdeckt.
+Fall für Fall entdeckt. Und deshalb ist nach dem Schließen einer Ebene die
+erste Frage, welche Ebene darüber oder darunter dieselbe Bauart hat.
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
 `MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
