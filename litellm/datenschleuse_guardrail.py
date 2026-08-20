@@ -240,7 +240,14 @@ _ALLOWED_FIELDS_HINT = ", ".join(sorted(ALLOWED_MESSAGE_FIELDS))
 
 # 1) MASKIERT: freier Text, der ans Zielmodell geht -> Presidio + Masker.
 PART_FIELDS_MASKED = {
-    "text": ("text",),
+    # ``citations`` steht bewusst HIER und nicht bei den validierten Feldern,
+    # obwohl seine Struktur streng validiert wird: es TRAEGT Freitext
+    # (``cited_text``, ``document_title``) und dieser Freitext geht durch
+    # Presidio + Masker. Wer im Register nachschlaegt, ob ein Feld ein
+    # Textkanal ans Modell ist, muss hier fuendig werden -- unter "erreicht
+    # den Provider unveraendert" waere es schlicht falsch einsortiert.
+    # Details siehe _validate_citations / _mask_citations.
+    "text": ("text", "citations"),
     # Bild-Parts tragen keinen Text. Ihre Nutzlast laeuft ueber die
     # Bild-Policy (redact/block/pass), nicht ueber den Masker.
     "image_url": (),
@@ -275,6 +282,93 @@ ALLOWED_PART_TYPES = frozenset(ALLOWED_PART_FIELDS)
 IMAGE_URL_ALLOWED_FIELDS = frozenset({"url", "detail"})
 IMAGE_URL_DETAILS = frozenset({"auto", "low", "high"})
 
+# ===========================================================================
+# CITATIONS-REGISTER (DATENSCHLE-65)
+# ===========================================================================
+# Anthropic haengt an Assistant-Text-Bloecke ein ``citations``-Array. Schickt
+# ein Client die History zurueck -- der Normalfall im Multi-Turn -- traegt die
+# Assistant-Nachricht dieses Feld. Bis hierher blockte es als unbekanntes
+# Part-Feld und riss damit die GANZE Folgeanfrage mit. Das war eine
+# Regression aus genau diesem Work Item.
+#
+# Warum MASKIEREN und nicht durchreichen: ``cited_text`` ist wortwoertlicher
+# Dokumentinhalt, ``document_title`` der vom Nutzer vergebene Dokumenttitel
+# ("Arztbrief_Mustermann.pdf"). Beides ist Freitext und kann PII tragen --
+# also derselbe Weg wie jeder andere Text: Presidio + Masker.
+#
+# Warum nicht BLOCKEN, sobald ``cited_text`` da ist: das Feld ist im
+# Request-Schema PFLICHT (Anthropic Messages API, TextCitationParam) und
+# wird beim Echo ausdruecklich zurueckerwartet -- die Doku haelt sogar fest,
+# dass es dabei nicht auf die Input-Tokens zaehlt. Eine Allowlist, die es
+# blockt, laesst die Regression fuer jeden realen Zitat-Nutzer bestehen und
+# waere nur im kuenstlichen Testfall gruen.
+#
+# Warum trotzdem eine ENGE Struktur-Validierung obendrauf: alles, was nicht
+# Freitext ist, sind Indizes -- und ein ungeprueftes Indexfeld waere der
+# bequemste Schmuggelkanal des Zitats. Gleiche Bauart wie cache_control.
+
+# 1) MASKIERT: Freitext im Zitat -> Presidio + Masker (siehe _mask_citations).
+CITATION_FIELDS_MASKED = {
+    "char_location": ("cited_text", "document_title"),
+    "page_location": ("cited_text", "document_title"),
+    "content_block_location": ("cited_text", "document_title"),
+}
+
+# 2) INDIZES: reine Zahlen, muessen den Provider unveraendert erreichen,
+#    sonst zeigt das Zitat auf die falsche Stelle.
+CITATION_INDEX_FIELDS = {
+    "char_location": ("document_index", "start_char_index", "end_char_index"),
+    "page_location": ("document_index", "start_page_number", "end_page_number"),
+    "content_block_location": (
+        "document_index", "start_block_index", "end_block_index",
+    ),
+}
+
+ALLOWED_CITATION_FIELDS = {
+    citation_type: frozenset(
+        ("type",) + CITATION_FIELDS_MASKED[citation_type]
+        + CITATION_INDEX_FIELDS[citation_type]
+    )
+    for citation_type in CITATION_FIELDS_MASKED
+}
+ALLOWED_CITATION_TYPES = frozenset(ALLOWED_CITATION_FIELDS)
+
+# Die beiden uebrigen Zitat-Typen der Messages-API. Sie blocken bewusst:
+#   search_result_location      -- traegt ``source``/``title`` als Freitext
+#   web_search_result_location  -- traegt ``url``/``title`` als Freitext UND
+#                                  ``encrypted_index``, das den Provider
+#                                  byte-identisch erreichen muss
+# Beide entstehen ausschliesslich aus Part-Typen (``search_result``,
+# Web-Search-Ergebnisse), die die Datenschleuse ohnehin am Part-TYP blockt.
+# Ein Verarbeitungspfad hier waere toter Code mit offenem Freitext-Kanal.
+# Eintragen ist eine bewusste Entscheidung mit Work Item -- nicht nebenbei.
+KNOWN_UNSUPPORTED_CITATION_TYPES = frozenset({
+    "search_result_location",
+    "web_search_result_location",
+})
+
+# ``file_id`` gibt es NUR response-seitig; das Request-Schema kennt es nicht.
+# Ein schema-konformer Client schickt es nie. Durchlassen hiesse, einen
+# weiteren opaken String-Kanal zu oeffnen, ohne dass irgendetwas ihn braucht.
+KNOWN_UNSUPPORTED_CITATION_FIELDS = frozenset({"file_id"})
+
+# Jedes Zitat kostet bis zu zwei Analyzer-Durchlaeufe. Vor DATENSCHLE-65
+# blockte ``citations`` und kostete null -- die Grenze gehoert deshalb mit
+# der Oeffnung zusammen, sonst ist eine lange Liste ein Lastkanal (F7).
+MAX_CITATIONS_PER_PART = 1000
+
+# Indizes sind Positionen in einem Dokument. Eine Obergrenze macht das Feld
+# als Zahlenkanal weitgehend unbrauchbar (Telefonnummern sind groesser),
+# ohne realistische Dokumente einzuschraenken. Ehrlich bleibt: eine KURZE
+# Zahl bleibt eine Zahl -- das schliesst der Deckel nicht.
+MAX_CITATION_INDEX = 1_000_000_000
+
+_ALLOWED_CITATION_TYPES_HINT = ", ".join(sorted(ALLOWED_CITATION_TYPES))
+_ALLOWED_CITATION_FIELDS_HINT = {
+    citation_type: ", ".join(sorted(fields))
+    for citation_type, fields in ALLOWED_CITATION_FIELDS.items()
+}
+
 # Part-Felder, die es bei realen Providern gibt, die die Datenschleuse aber
 # (noch) NICHT behandelt. Sie blocken wie jedes unbekannte Feld -- werden in
 # der Meldung aber beim Namen genannt, damit ein Betreiber nicht per
@@ -283,8 +377,10 @@ IMAGE_URL_DETAILS = frozenset({"auto", "low", "high"})
 #
 # Bewusst EINMAL vollstaendig erfasst statt Feld fuer Feld entdeckt:
 #   OpenAI      -- input_audio, file, refusal (Assistant-Output-Part)
-#   Anthropic   -- source, citations, title, context, thinking, signature,
+#   Anthropic   -- source, title, context, thinking, signature,
 #                  data, id, name, input, content, is_error, tool_use_id
+#                  (``citations`` stand hier ebenfalls und ist mit
+#                  DATENSCHLE-65 ins Register gewandert -- siehe unten)
 #   Google/Vertex (ueber LiteLLM) -- inline_data, file_data, function_call,
 #                  function_response, thought, video_metadata
 #   LiteLLM     -- provider_specific_fields, index, partial
@@ -297,7 +393,6 @@ KNOWN_UNSUPPORTED_PART_FIELDS = frozenset({
     "file",
     "refusal",
     "source",
-    "citations",
     "title",
     "context",
     "thinking",
@@ -1023,6 +1118,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             part["text"] = masker.mask(original, direct)
                             turn_qi.extend(self._extract_qi_values(original, qi))
                             text_slots.append((part, "text"))
+                            # Zitate desselben Parts: Freitext maskieren,
+                            # Indizes unangetastet lassen (DATENSCHLE-65).
+                            # DERSELBE Masker wie der Textpfad -- ein
+                            # zweites Mapping wuerde die Re-Identifikation
+                            # auf dem Rueckweg ins Leere laufen lassen.
+                            await self._mask_citations(
+                                part, masker, requested_level, approved,
+                            )
                             continue
                         # Unerreichbar, solange Register und Verarbeitung
                         # zusammenpassen: _validate_part_shape hat jeden
@@ -1280,6 +1383,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     "pruefbare Nutzlast und ist deshalb blockiert "
                     "(fail-closed)."
                 )
+            DatenschleuseGuardrail._validate_citations(part.get("citations"))
         else:
             DatenschleuseGuardrail._validate_image_url_container(part.get("image_url"))
 
@@ -1378,6 +1482,141 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "bekannter Wert -- blockiert (fail-closed). Erlaubt: "
                 f"{', '.join(sorted(CACHE_CONTROL_TTLS))}."
             )
+
+    @staticmethod
+    def _validate_citation_index(value: Any, field: str) -> None:
+        """Ein Zitat-Index ist eine nicht-negative Ganzzahl in plausibler
+        Groessenordnung -- oder gar nicht da.
+
+        ``bool`` wird ZUERST abgefangen: in Python ist ``True`` ein ``int``,
+        ein blosses ``isinstance(value, int)`` liesse also ``True`` als Index
+        durch. Genau die Sorte stiller Durchlass, die dieses Guardrail schon
+        zweimal als Security-Befund gesehen hat."""
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DatenschleuseBlocked(
+                f"{field} vom Typ {type(value).__name__!r} ist kein "
+                "Zitat-Index -- als ungepruefter Kanal blockiert "
+                "(fail-closed). Erlaubt ist nur eine Ganzzahl."
+            )
+        if value < 0 or value > MAX_CITATION_INDEX:
+            raise DatenschleuseBlocked(
+                f"{field} liegt ausserhalb des zulaessigen Bereichs "
+                f"(0 bis {MAX_CITATION_INDEX}) und ist damit keine "
+                "plausible Dokumentposition -- blockiert (fail-closed)."
+            )
+
+    @staticmethod
+    def _validate_citations(value: Any) -> None:
+        """``citations`` ist ein Zitat-Array, kein freier Container.
+
+        Zweigeteilt wie das Part-Register eine Ebene hoeher: die Freitext-
+        Felder (``cited_text``, ``document_title``) werden spaeter maskiert,
+        die Indizes muessen unveraendert durch -- und werden deshalb HIER
+        eng geprueft. Blocken statt still ueberspringen: nach dieser Methode
+        ist garantiert, dass ``_mask_citations`` nur noch auf Listen von
+        Dicts mit bekanntem Typ und Strings in den Textfeldern trifft. Ein
+        ``isinstance``-Guard im Verarbeitungspfad waere wieder ein stiller
+        Durchlass (Lehre aus F1).
+
+        Gesetz 5: keine Meldung enthaelt Client-Werte. Ausgegeben werden nur
+        Anzahl, Python-Typname, Fingerprint und konstante Listen. Ein Name
+        aus einer unserer Konstanten ist kein Client-Wert -- er wird nur
+        genannt, WEIL er gleich der Konstante ist.
+        """
+        if value is None:
+            return
+        if not isinstance(value, list):
+            raise DatenschleuseBlocked(
+                f"citations vom Typ {type(value).__name__!r} ist kein "
+                "Zitat-Array -- blockiert (fail-closed). Erlaubt ist nur "
+                "eine Liste von Zitat-Objekten."
+            )
+        if len(value) > MAX_CITATIONS_PER_PART:
+            raise DatenschleuseBlocked(
+                f"citations enthaelt {len(value)} Eintraege und "
+                f"ueberschreitet die zulaessige Obergrenze "
+                f"({MAX_CITATIONS_PER_PART}) -- blockiert (fail-closed)."
+            )
+
+        for citation in value:
+            if not isinstance(citation, dict):
+                raise DatenschleuseBlocked(
+                    f"Zitat vom Typ {type(citation).__name__!r} ist nicht "
+                    "pruefbar und deshalb blockiert (fail-closed). Erlaubt "
+                    "sind nur Zitat-Objekte."
+                )
+
+            citation_type = citation.get("type")
+            if (
+                not isinstance(citation_type, str)
+                or citation_type not in ALLOWED_CITATION_TYPES
+            ):
+                # citation_type ist voll client-kontrolliert und darf nie roh
+                # in die Meldung. Genannt wird er NUR, wenn er exakt einem
+                # Wert unserer Konstante entspricht -- dann ist der
+                # ausgegebene String unsere Konstante, nicht der Request.
+                if (
+                    isinstance(citation_type, str)
+                    and citation_type in KNOWN_UNSUPPORTED_CITATION_TYPES
+                ):
+                    grund = (
+                        f"Zitat-Typ '{citation_type}' traegt Freitext- bzw. "
+                        "Provider-Token-Felder, fuer die es keinen "
+                        "geprueften Pfad gibt"
+                    )
+                else:
+                    grund = (
+                        "Zitat-Typ "
+                        f"({type(citation_type).__name__}) ist der "
+                        "Datenschleuse nicht bekannt"
+                    )
+                raise DatenschleuseBlocked(
+                    f"{grund} -- blockiert (fail-closed). Geprueft werden "
+                    f"ausschliesslich: {_ALLOWED_CITATION_TYPES_HINT}."
+                )
+
+            allowed = ALLOWED_CITATION_FIELDS[citation_type]
+            unknown = [key for key in citation if key not in allowed]
+            if unknown:
+                benannt = sorted(
+                    key for key in unknown
+                    if isinstance(key, str)
+                    and key in KNOWN_UNSUPPORTED_CITATION_FIELDS
+                )
+                fremd = [key for key in unknown if key not in benannt]
+                teile = []
+                if benannt:
+                    teile.append(
+                        "bekannt, aber nicht im Register: " + ", ".join(benannt)
+                    )
+                if fremd:
+                    teile.append(
+                        "unbekannt (Fingerprint): "
+                        + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                    )
+                diagnose = "; ".join(teile)
+                _LOG.warning(
+                    "Zitat blockiert -- ungepruefte Felder [%s]. Werte "
+                    "werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+                )
+                raise DatenschleuseBlocked(
+                    f"Zitat enthaelt {len(unknown)} Feld(er), die die "
+                    f"Datenschleuse nicht prueft ({diagnose}) -- deshalb "
+                    "blockiert (fail-closed). Geprueft werden "
+                    f"ausschliesslich: "
+                    f"{_ALLOWED_CITATION_FIELDS_HINT[citation_type]}."
+                )
+
+            for field in CITATION_FIELDS_MASKED[citation_type]:
+                DatenschleuseGuardrail._validate_text_field(
+                    citation.get(field), f"citations[].{field}"
+                )
+            for field in CITATION_INDEX_FIELDS[citation_type]:
+                DatenschleuseGuardrail._validate_citation_index(
+                    citation.get(field), f"citations[].{field}"
+                )
 
     @staticmethod
     def _validate_opaque_id(value: Any, field: str) -> None:
@@ -1495,6 +1734,34 @@ class DatenschleuseGuardrail(_GuardrailBase):
         entities = await self._analyze(text)
         self._enforce_sensitivity(text, entities, requested_level, approved)
         return masker.mask(text, entities)
+
+    async def _mask_citations(
+        self, part: Dict[str, Any], masker: Masker,
+        requested_level: Any, approved: bool,
+    ) -> None:
+        """Maskiert die Freitext-Felder der Zitate eines Text-Parts und
+        laesst die Indizes unveraendert.
+
+        Voraussetzung ist ``_validate_citations``: danach ist ``citations``
+        entweder None/leer oder eine Liste von Dicts mit bekanntem Typ,
+        deren Textfelder Strings (oder None) sind. Deshalb steht hier KEINE
+        ``isinstance``-Pruefung -- die gehoert in den Validierungspfad und
+        blockt dort, statt hier still zu ueberspringen.
+
+        ``document_title`` ist laut Schema ausdruecklich nullable; ein
+        fehlendes oder None-Feld traegt keinen Text und wird uebersprungen.
+        """
+        citations = part.get("citations")
+        if not citations:
+            return
+        for citation in citations:
+            for field in CITATION_FIELDS_MASKED[citation["type"]]:
+                value = citation.get(field)
+                if value is None:
+                    continue
+                citation[field] = await self._mask_text_value(
+                    value, masker, requested_level, approved,
+                )
 
     async def _mask_json_node(
         self,

@@ -43,9 +43,10 @@ geändert, nie einzeln):
 | Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
 | tool_call | `function` | `id`, `type`, `index` | blockiert |
 | function | `name`, `arguments` | — | blockiert |
-| content-Part `text` | `text` | `type`, `cache_control` | blockiert |
+| content-Part `text` | `text`, `citations` (nur die Freitext-Felder, s.u.) | `type`, `cache_control` | blockiert |
 | content-Part `image_url` | — | `type`, `image_url` (nach Image-Policy), `cache_control` | blockiert |
 | `image_url`-Container | — | `url`, `detail` | blockiert |
+| `citations[]` (nur `char_location`, `page_location`, `content_block_location`) | `cited_text`, `document_title` | `type`, `document_index`, die beiden Positions-Indizes | blockiert |
 
 Die Part-Ebene ist damit auf **beiden** Achsen geschlossen: Allowlist für den
 Part-**Typ** (DATENSCHLE-57) und Allowlist für die **Felder** innerhalb eines
@@ -58,6 +59,40 @@ dessen Zusatzfelder die Bild-Policy unverändert überlebten.
 maskiert** — Anthropic-Clients hängen den Marker an Content-Blöcke, ein Block
 wäre Client-Breakage. Er trägt keinen Freitext (geschlossene Wertemengen für
 `type` und `ttl`), deshalb gilt er für Text- **und** Bild-Parts.
+
+`citations` ist der eine Fall, der **beides** ist: Struktur validiert, Inhalt
+maskiert. Anthropic hängt das Array an Assistant-Text-Blöcke; schickt ein
+Client die Historie zurück — der Normalfall im Multi-Turn — trägt die
+Assistant-Nachricht es. Seine Freitext-Felder `cited_text` (wörtlicher
+Dokumentinhalt) und `document_title` (der vom Nutzer vergebene Titel, etwa
+`Arztbrief_Mustermann.pdf`) laufen deshalb durch den Masker wie jeder andere
+Text; die Indizes bleiben unverändert, sonst zeigt das Zitat nach der
+Schleuse auf eine andere Stelle.
+
+Warum nicht einfach blockieren, sobald `cited_text` da ist: das Feld ist im
+Request-Schema der Messages-API **Pflicht** und wird beim Echo ausdrücklich
+zurückerwartet. Eine Allowlist, die es blockt, lässt jede reale
+Multi-Turn-Anfrage mit Zitaten weiter scheitern — fail-closed wäre das dem
+Namen nach, praktisch wäre es eine Dauerstörung.
+
+Bewusst **nicht** zugelassen sind die beiden übrigen Zitat-Typen
+`search_result_location` und `web_search_result_location`: sie tragen
+`source`, `url` und `title` als Freitext sowie `encrypted_index`, das den
+Provider byte-identisch erreichen muss. Beide entstehen nur aus Part-Typen,
+die die Datenschleuse ohnehin am Typ blockt. Ebenso blockt `file_id` — es
+existiert nur antwortseitig, ein schema-konformer Client sendet es nie.
+
+Zwei Grenzen, die für Betreiber zählen:
+- Die Zitat-Indizes beziehen sich auf das Dokument **wie gesendet**, also auf
+  die maskierte Fassung. Ändert ein Platzhalter die Länge, zeigen
+  `start_char_index`/`end_char_index` im re-identifizierten Klartext nicht
+  mehr exakt auf dieselbe Stelle. `page_location` und die Block-Index-Typen
+  sind davon nicht betroffen.
+- Die Re-Identifikation deckt Zitate im **Antwort**-Pfad nicht ab. Sie
+  entstehen dort nur aus `document`-Parts, und die blockt die Datenschleuse
+  am Part-Typ — der Fall kann durch diesen Proxy also nicht auftreten. Wird
+  der `document`-Typ je zugelassen, gehört dieser Pfad (inklusive des
+  Streaming-Events `citations_delta`) mit demselben Work Item nachgezogen.
 
 **„Validiert" heißt Struktur, nicht Inhalt.** In der Tabelle bedeutet
 „validiert" ausschließlich: das Feld hat den erwarteten Typ und — wo eine

@@ -308,12 +308,19 @@ class TestPartBlockMessageLeaksNothing(unittest.IsolatedAsyncioTestCase):
         """Kriterium 5: bekannte Provider-Felder werden beim Namen genannt
         (konstantes Vokabular aus der Guardrail, nie aus dem Request), damit
         ein Betreiber nicht per Trial-and-Error gegen die Allowlist raten
-        muss. ``citations`` ist ein echtes Anthropic-Part-Feld."""
+        muss. ``thinking`` ist ein echtes Anthropic-Part-Feld.
+
+        Beispiel-Feld gewechselt (DATENSCHLE-65): hier stand ``citations``.
+        Das Feld ist inzwischen im Register (validiert + Freitext maskiert,
+        siehe ``test_content_part_citations.py``) und damit als Beispiel
+        fuer ein NICHT registriertes Feld untauglich. Die gepruefte Zusage
+        ist unveraendert -- nur an einem Feld gezeigt, das sie noch trifft.
+        """
         guard = _guard()
-        content = [{"type": "text", "text": "hi", "citations": [{"x": 1}]}]
+        content = [{"type": "text", "text": "hi", "thinking": "..."}]
         with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
             await _run_pre_call(guard, content)
-        self.assertIn("citations", str(ctx.exception))
+        self.assertIn("thinking", str(ctx.exception))
 
 
 class TestRegressionKnownGoodPartsStillWork(unittest.IsolatedAsyncioTestCase):
