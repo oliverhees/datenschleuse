@@ -141,12 +141,24 @@ schalten.
 
 ### Was leichter wird
 
-- **Die Deckungslücke ist geschlossen.** In einem frischen Klon dieses
-  Branches liegt `.claude/hooks/` vor; die Stop-Gate-Tests finden ihre
-  Skripte und prüfen wirklich, statt zu überspringen.
+- **Die Deckungslücke ist geschlossen — gemessen, nicht behauptet.**
+  Derselbe Lauf wie oben, diesmal in einem frischen Klon dieses Branches
+  von GitHub, wieder mit `CI=true`:
+
+  | | vorher (`main`) | nachher (dieser Branch) |
+  |---|---|---|
+  | Ergebnis | `OK (skipped=14)` | `OK` |
+  | übersprungen | 14 von 18 | **0 von 18** |
+  | Laufzeit | 0,001 s | **4,047 s** |
+
+  Die Laufzeit ist dabei der ehrlichste Wert: 0,001 s ist die Zeit, die
+  ein Überspringen kostet. Die vier Sekunden danach sind echte
+  Subprozesse gegen echte `git worktree`-Auscheckungen.
 - **Die Bash-Testsuite kann in CI laufen.** `.claude/hooks/test-hooks.sh`
   (26 Fälle) braucht nur `bash`, `jq` und `git` — alles auf
-  `ubuntu-latest` vorhanden. Sie war bisher schlicht nicht im Checkout.
+  `ubuntu-latest` vorhanden. Verifiziert im frischen Klon, ohne gesetztes
+  `CLAUDE_PROJECT_DIR`: `Ran 26 tests / OK`, Exit 0. Sie war bisher
+  schlicht nicht im Checkout.
 - **Ein Klon bringt die Gates mit.** Wer das Repository klont, bekommt die
   Verfassung *und* ihre Durchsetzung — Voraussetzung für die geplante
   Open-Source-Veröffentlichung.
@@ -190,8 +202,15 @@ Zwei Nebenwirkungen, die daraus folgen:
 ### Offen
 
 Die Bash-Suite ist damit *lauffähig* in CI, aber noch **nicht verdrahtet** —
-`ci.yml` ruft sie nicht auf. Das ist bewusst ein eigenes Work Item: Ein
-neuer Schritt im `test`-Job macht die Suite für jeden PR verbindlich, und
-ihre zeitabhängigen Fälle (`sleep 0.01` zwischen Marker-Zeitstempeln)
-sollten vorher auf Flakiness geprüft werden. Ein neu eingeführter Check,
-der sporadisch rot wird, wird weggeklickt — siehe die Begründung zu Befund 1.
+`ci.yml` ruft sie nicht auf. Das ist bewusst ein eigenes Work Item, denn
+ein neuer Schritt im `test`-Job macht die Suite für jeden PR verbindlich;
+das ist eine Prozessentscheidung, keine Nebenwirkung dieses ADRs.
+
+Die naheliegende Sorge dagegen wurde geprüft und hat sich nicht bestätigt:
+Die Suite enthält zeitabhängige Fälle (`sleep 0.01` zwischen
+Marker-Zeitstempeln, Auswertung über `-nt`), die auf einem langsamen oder
+überbuchten Runner kippen könnten. Zehn aufeinanderfolgende Läufe im
+frischen Klon: **10 von 10 grün, kein einziger roter Lauf.** Das ist ein
+lokaler Befund, keine Runner-Messung — die Verdrahtung bleibt trotzdem
+ein eigenes Item, damit ein neu eingeführter Pflicht-Check bewusst
+beschlossen wird und nicht beiläufig entsteht.
