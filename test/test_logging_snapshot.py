@@ -142,20 +142,23 @@ def as_proxy_would(body):
 
 
 def snapshot_of(out):
-    """Der Logging-Schnappschuss als durchsuchbarer String.
+    """Der Logging-Schnappschuss als durchsuchbarer String -- VOLLSTAENDIG.
 
-    Das Re-Id-Mapping wird herausgefiltert -- nicht weil es dort hingehoert,
-    sondern weil es ein EIGENER Befund ist (F4: die Klartext-Zuordnungstabelle
-    im Logging-Kanal) mit eigenem Test in test_reid_map_transport.py. Ein
-    Test, eine Aussage: dieser hier misst ausschliesslich, ob die NUTZFELDER
-    den Rebinding-Defekt noch haben.
+    Hier wurde das Re-Id-Mapping herausgefiltert, mit Verweis auf "einen
+    eigenen Test in test_reid_map_transport.py". Diese Datei EXISTIERTE
+    NICHT. Der Filter verwies also auf eine leere Stelle: die gruene Suite
+    konnte den Klartext im Schnappschuss gar nicht finden, weil sie genau
+    an der Stelle wegsah, an der er stand.
+
+    Beides ist behoben. Die Datei gibt es jetzt (sie misst den Transport des
+    Mappings), und der Filter hier ist weg -- seit Security-F4 reist das
+    Mapping versiegelt, es gibt also nichts mehr auszunehmen.
+
+    Lehre, die den Filter ueberlebt: eine Ausnahme in einer Messung ist eine
+    Behauptung. Sie braucht einen Beleg, der wirklich existiert -- sonst ist
+    sie ein blinder Fleck mit Fussnote.
     """
     body = out.get("proxy_server_request", {}).get("body")
-    if isinstance(body, dict) and isinstance(body.get("metadata"), dict):
-        body = dict(body)
-        body["metadata"] = {
-            k: v for k, v in body["metadata"].items() if k != dg.REID_MAP_KEY
-        }
     return json.dumps(body, ensure_ascii=False, default=str)
 
 
@@ -299,12 +302,10 @@ class TestLoggingSnapshotNoPlaintext(unittest.IsolatedAsyncioTestCase):
         out = await self._run(as_proxy_would(body), "acompletion")
         snap = out["proxy_server_request"]["body"]
         self.assertEqual(snap["user"], out["user"])
-        # Nur die NUTZFELDER: dass ``metadata`` mit dem Re-Id-Mapping im
-        # Schnappschuss ebenfalls nichts im Klartext zu suchen hat, ist ein
-        # eigener Befund (F4) und hat seinen eigenen Test -- siehe
-        # test_reid_map_transport.py. Ein Test, eine Aussage.
-        ohne_meta = {k: v for k, v in snap.items() if k != "metadata"}
-        self.assertNotIn(_NAME, json.dumps(ohne_meta, ensure_ascii=False))
+        # Der KOMPLETTE Schnappschuss, ``metadata`` eingeschlossen. Die
+        # frueher hier ausgenommene Klartext-Zuordnung gibt es nicht mehr:
+        # das Mapping reist seit Security-F4 versiegelt.
+        self.assertNotIn(_NAME, json.dumps(snap, ensure_ascii=False, default=str))
 
 
 class TestLoggingSnapshotShape(unittest.IsolatedAsyncioTestCase):

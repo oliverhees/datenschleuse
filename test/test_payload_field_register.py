@@ -122,19 +122,19 @@ def _plain(value):
     Bewusst grob: ein Leck ist ein Leck, egal in welchem Feld der Klartext
     am Ende steht. Genau diese Grobheit hat die F1/F3-PoCs gefunden.
 
-    EINE Ausnahme, und nur diese: ``metadata[REID_MAP_KEY]``. Dort MUSS der
-    Klartext stehen -- das Mapping ist der Rueckweg, ohne den die Antwort
-    nicht re-identifiziert werden kann. Es ist kein Ausgangskanal:
-    ``metadata`` steht in litellms ``all_litellm_params`` und wird von
-    ``get_non_default_completion_params`` herausgefiltert, erreicht den
-    Provider also nicht. Genau deshalb steht ``metadata`` im Register unter
-    PAYLOAD_FIELDS_INFRASTRUCTURE und nicht unter den maskierten Feldern.
+    KEINE Ausnahme mehr -- seit Security-F4 auch nicht fuer
+    ``metadata[REID_MAP_KEY]``.
+
+    Die alte Ausnahme stuetzte sich darauf, dass das Mapping dort im
+    Klartext stehen MUESSE (Rueckweg fuer die Re-Identifikation) und
+    ``metadata`` den Provider ohnehin nicht erreiche. Der zweite Teil stimmt
+    weiterhin -- aber "erreicht den Provider nicht" heisst nicht "ist
+    harmlos": ``metadata`` geht an litellms Logging-Callbacks. Der erste
+    Teil ist entfallen, weil das Mapping jetzt versiegelt reist.
+
+    Ohne die Ausnahme misst dieser Test den kompletten Payload -- Mapping
+    eingeschlossen.
     """
-    if isinstance(value, dict) and isinstance(value.get("metadata"), dict):
-        value = dict(value)
-        value["metadata"] = {
-            k: v for k, v in value["metadata"].items() if k != dg.REID_MAP_KEY
-        }
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
@@ -189,7 +189,7 @@ class TestF1TextRouteSiblingFields(_HookCase):
             "suffix": f" -- gezeichnet {_NAME}",
         }
         out = await self.assert_no_leak(data, "atext_completion")
-        reid = out["metadata"][dg.REID_MAP_KEY]
+        reid = dg.open_reid_map(out["metadata"][dg.REID_MAP_KEY])
         platzhalter = [p for p, v in reid.items() if v == _NAME]
         self.assertEqual(
             len(platzhalter), 1, "derselbe Name muss EINEN Platzhalter haben"

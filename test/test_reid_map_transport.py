@@ -260,12 +260,31 @@ class TestReidMapSchutzeigenschaften(unittest.TestCase):
     def test_abgelaufenes_token_wird_nicht_geoeffnet(self):
         """TTL: ein altes Mapping ist wertlos, nicht bloss unschoen.
 
-        Fernet traegt den Zeitstempel im Token und prueft ihn beim
+        Fernet traegt den Zeitstempel IM Token und prueft ihn beim
         Entschluesseln -- kein eigener Ablauf-Mechanismus noetig, der
         vergessen werden koennte.
+
+        Gemessen wird mit einem echt gealterten Token (``encrypt_at_time``)
+        statt mit ``ttl_seconds=0``: Fernet vergleicht ``zeitstempel + ttl <
+        jetzt``, ein frisches Token ist bei ttl=0 also NICHT abgelaufen. Ein
+        Test mit ttl=0 haette hier gruen ausgesehen, ohne den Ablauf je
+        gemessen zu haben.
         """
-        token = dg.seal_reid_map({"<PERSON_0>": _NAME})
-        self.assertEqual(dg.open_reid_map(token, ttl_seconds=0), {})
+        import time
+
+        klartext = json.dumps({"<PERSON_0>": _NAME}).encode("utf-8")
+        alt = (
+            dg._reid_fernet()
+            .encrypt_at_time(klartext, int(time.time()) - 7200)
+            .decode("ascii")
+        )
+        # Frisch genug -> lesbar. Ohne diese Gegenprobe koennte der Test
+        # gruen sein, weil das Token schlicht kaputt ist.
+        self.assertEqual(
+            dg.open_reid_map(alt, ttl_seconds=10800), {"<PERSON_0>": _NAME}
+        )
+        # Zu alt -> kein Mapping.
+        self.assertEqual(dg.open_reid_map(alt, ttl_seconds=3600), {})
 
     def test_kaputtes_token_liefert_leeres_mapping_statt_klartext(self):
         """Fehlerrichtung: kann nicht geoeffnet werden -> KEINE

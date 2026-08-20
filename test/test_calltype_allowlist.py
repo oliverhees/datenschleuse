@@ -37,7 +37,6 @@ Ausfuehren (aus dem Repo-Root):
     python3 -m unittest discover -s ./test -p "test_calltype_allowlist.py" -v
 """
 
-import copy
 import os
 import sys
 import unittest
@@ -158,17 +157,17 @@ def _flatten(value):
 def _leaks_plaintext(payload):
     """True, wenn der Klartext-Wert IRGENDWO im ausgehenden Payload steht.
 
-    Ausgenommen ist genau EIN Ort: das eigene Platzhalter->Klartext-Mapping
-    unter ``metadata[REID_MAP_KEY]``. Dort MUSS der Klartext stehen -- das ist
-    der Speicher, aus dem die Re-Identifikation auf dem Rueckweg den Wert
-    zurueckholt. Er ist ein LiteLLM-interner Metadaten-Key und geht nicht an
-    den Provider. Wuerde der Test ihn mitzaehlen, waere jede erfolgreiche
-    Maskierung als Leck markiert und der Test wertlos."""
-    payload = copy.deepcopy(payload)
-    if isinstance(payload, dict):
-        meta = payload.get("metadata")
-        if isinstance(meta, dict):
-            meta.pop(dg.REID_MAP_KEY, None)
+    OHNE AUSNAHME -- und das ist seit Security-F4 neu.
+
+    Hier stand fruehr eine Ausnahme fuer ``metadata[REID_MAP_KEY]`` mit der
+    Begruendung, dort MUESSE der Klartext stehen, weil das Mapping der
+    Rueckweg fuer die Re-Identifikation ist. Die Praemisse ist entfallen:
+    das Mapping reist versiegelt (``seal_reid_map``), der Rueckweg
+    funktioniert trotzdem. Eine Ausnahme, die nichts mehr ausnimmt, ist nur
+    noch ein blinder Fleck -- also weg damit.
+
+    Der Test misst damit jetzt auch das Mapping mit. Genau das konnte er
+    vorher nicht, und genau dort ist der Klartext gestanden."""
     return any(_IBAN in text for text in _flatten(payload))
 
 
@@ -348,7 +347,7 @@ class TestTextCompletionReturnPath(unittest.IsolatedAsyncioTestCase):
 
     async def test_non_streaming_text_choice_is_reidentified(self):
         guard = _guard()
-        data = {"metadata": {dg.REID_MAP_KEY: {"<IBAN_CODE_0>": _IBAN}}}
+        data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<IBAN_CODE_0>": _IBAN})}}
         response = {"choices": [{"text": "Konto <IBAN_CODE_0> ist gedeckt."}]}
         out = await guard.async_post_call_success_hook(
             data=data, user_api_key_dict=None, response=response
@@ -359,7 +358,7 @@ class TestTextCompletionReturnPath(unittest.IsolatedAsyncioTestCase):
         """Der Platzhalter bricht mitten durch einen Chunk -- dasselbe
         Sliding-Window wie im Chat-Kanal muss auch hier greifen."""
         guard = _guard()
-        request_data = {"metadata": {dg.REID_MAP_KEY: {"<IBAN_CODE_0>": _IBAN}}}
+        request_data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<IBAN_CODE_0>": _IBAN})}}
         chunks = [
             {"choices": [{"text": "Konto <IBAN_"}]},
             {"choices": [{"text": "CODE_0> ist"}]},

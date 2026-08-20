@@ -184,7 +184,7 @@ class TestToolCallArgumentsAreMasked(unittest.IsolatedAsyncioTestCase):
         ]
         out = await _run_pre_call(guard, messages)
 
-        reid_map = out["metadata"][dg.REID_MAP_KEY]
+        reid_map = dg.open_reid_map(out["metadata"][dg.REID_MAP_KEY])
         self.assertEqual(reid_map, {"<PERSON_0>": "Max Mustermann"})
         user_msg = next(m for m in out["messages"] if m.get("role") == "user")
         self.assertIn("<PERSON_0>", user_msg["content"])
@@ -365,7 +365,7 @@ def _response_with_tool_call(arguments, refusal=None):
 class TestPostCallReidentification(unittest.IsolatedAsyncioTestCase):
     async def test_tool_call_arguments_are_reidentified(self):
         guard = _guard()
-        data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": "Max Mustermann"}}}
+        data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_0>": "Max Mustermann"})}}
         response = _response_with_tool_call(json.dumps({"kunde": "<PERSON_0>"}))
 
         out = await guard.async_post_call_success_hook(
@@ -380,7 +380,7 @@ class TestPostCallReidentification(unittest.IsolatedAsyncioTestCase):
         -- der Tool-Aufruf waere beim Client unbrauchbar."""
         guard = _guard()
         original = 'Max "Maxi" Mustermann'
-        data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": original}}}
+        data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_0>": original})}}
         response = _response_with_tool_call(json.dumps({"kunde": "<PERSON_0>"}))
 
         out = await guard.async_post_call_success_hook(
@@ -391,7 +391,7 @@ class TestPostCallReidentification(unittest.IsolatedAsyncioTestCase):
 
     async def test_refusal_is_reidentified(self):
         guard = _guard()
-        data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": "Max Mustermann"}}}
+        data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_0>": "Max Mustermann"})}}
         response = _response_with_tool_call(
             json.dumps({"a": 1}), refusal="Zu <PERSON_0> sage ich nichts."
         )
@@ -433,7 +433,7 @@ class TestStreamingToolCallReidentification(unittest.IsolatedAsyncioTestCase):
         das Problem, fuer das ReidStreamProcessor gebaut wurde, nur eben im
         ``arguments``-Kanal statt in ``delta.content``."""
         guard = _guard()
-        request_data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": "Max Mustermann"}}}
+        request_data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_0>": "Max Mustermann"})}}
         chunks = [_delta_chunk('{"kunde": "<PER'), _delta_chunk('SON_0>"}')]
 
         collected = ""
@@ -667,7 +667,7 @@ class TestProviderFields(unittest.IsolatedAsyncioTestCase):
 
     async def test_reasoning_content_is_reidentified(self):
         guard = _guard()
-        data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": "Max Mustermann"}}}
+        data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_0>": "Max Mustermann"})}}
         response = {"choices": [{"message": {
             "role": "assistant", "content": "Fertig.",
             "reasoning_content": "Ich habe <PERSON_0> geprueft."}}]}
@@ -752,7 +752,7 @@ class TestStreamingReasoningReidentification(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, chunks, reid_map):
         guard = _guard()
-        request_data = {"metadata": {dg.REID_MAP_KEY: reid_map}}
+        request_data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map(reid_map)}}
         out = []
         async for chunk in guard.async_post_call_streaming_iterator_hook(
             user_api_key_dict=None, response=_async_gen(chunks), request_data=request_data
@@ -817,7 +817,7 @@ class TestContentTailDoesNotDuplicate(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, chunks, reid_map):
         guard = _guard()
-        request_data = {"metadata": {dg.REID_MAP_KEY: reid_map}}
+        request_data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map(reid_map)}}
         out = []
         async for chunk in guard.async_post_call_streaming_iterator_hook(
             user_api_key_dict=None, response=_async_gen(chunks), request_data=request_data

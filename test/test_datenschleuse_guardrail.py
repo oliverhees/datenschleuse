@@ -212,7 +212,7 @@ class TestMasker(unittest.TestCase):
 class TestStreamingHook(unittest.IsolatedAsyncioTestCase):
     async def test_hook_reidentifies_split_placeholder(self):
         guard = dg.DatenschleuseGuardrail()
-        request_data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_1>": "Max Mustermann"}}}
+        request_data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_1>": "Max Mustermann"})}}
 
         # Platzhalter ueber Chunk-Grenze gesplittet:
         chunks = [
@@ -246,7 +246,7 @@ class TestStreamingHook(unittest.IsolatedAsyncioTestCase):
     async def test_hook_reads_litellm_metadata_key(self):
         """Mapping auch unter 'litellm_metadata' auffindbar."""
         guard = dg.DatenschleuseGuardrail()
-        request_data = {"litellm_metadata": {dg.REID_MAP_KEY: {"<LOCATION_0>": "Weimar"}}}
+        request_data = {"litellm_metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<LOCATION_0>": "Weimar"})}}
         chunks = [make_chunk("Ort: <LOCA"), make_chunk("TION_0>.")]
         out = []
         async for c in guard.async_post_call_streaming_iterator_hook(
@@ -282,7 +282,7 @@ class TestPreCallHook(unittest.IsolatedAsyncioTestCase):
             user_api_key_dict=None, cache=None, data=data, call_type="completion"
         )
         self.assertEqual(out["messages"][1]["content"], "<PERSON_0> braucht Hilfe.")
-        self.assertEqual(out["metadata"][dg.REID_MAP_KEY], {"<PERSON_0>": "Max Mustermann"})
+        self.assertEqual(dg.open_reid_map(out["metadata"][dg.REID_MAP_KEY]), {"<PERSON_0>": "Max Mustermann"})
 
     async def test_pre_call_fail_closed_blocks_on_analyzer_error(self):
         """Fail-closed: wenn der Analyzer nicht erreichbar ist, MUSS der Request
@@ -393,7 +393,7 @@ class TestPreCallHook(unittest.IsolatedAsyncioTestCase):
 class TestSuccessHook(unittest.IsolatedAsyncioTestCase):
     async def test_success_hook_replaces_content(self):
         guard = dg.DatenschleuseGuardrail()
-        data = {"metadata": {dg.REID_MAP_KEY: {"<PERSON_0>": "Max Mustermann"}}}
+        data = {"metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({"<PERSON_0>": "Max Mustermann"})}}
         message = types.SimpleNamespace(content="Hallo <PERSON_0>!")
         choice = types.SimpleNamespace(message=message)
         response = types.SimpleNamespace(choices=[choice])
@@ -556,7 +556,7 @@ class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
         out = await guard.async_pre_call_hook(
             user_api_key_dict=None, cache=None, data=data, call_type="completion"
         )
-        reid_map = out["metadata"][dg.REID_MAP_KEY]
+        reid_map = dg.open_reid_map(out["metadata"][dg.REID_MAP_KEY])
         notice_text = out["messages"][0]["content"]
 
         # Vorbedingung des Befunds: es gibt ueberhaupt zwei echte Personen-
@@ -600,7 +600,7 @@ class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
         )
         masked = out["messages"][-1]["content"]
         self.assertEqual(masked, "<PERSON_0> und <PERSON_1> und <PERSON_0>.")
-        self.assertEqual(out["metadata"][dg.REID_MAP_KEY],
+        self.assertEqual(dg.open_reid_map(out["metadata"][dg.REID_MAP_KEY]),
                          {"<PERSON_0>": "Maria Meier", "<PERSON_1>": "Thomas Schneider"})
 
 

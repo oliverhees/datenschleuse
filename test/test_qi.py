@@ -364,7 +364,7 @@ class TestGuardrailQiIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("84028", content)
         self.assertIn("Region Bayern", content)
         # Re-Id-Map enthaelt NUR den direkten Identifier, nicht die QI:
-        reid = out["metadata"][dg.REID_MAP_KEY]
+        reid = dg.open_reid_map(out["metadata"][dg.REID_MAP_KEY])
         self.assertEqual(reid, {"<PERSON_0>": "Max Mustermann"})
 
     async def test_qi_error_does_not_block_direct_masking(self):
