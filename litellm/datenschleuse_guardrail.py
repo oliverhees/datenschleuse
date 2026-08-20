@@ -149,6 +149,138 @@ except Exception:  # pragma: no cover
 # Key, unter dem wir unser eigenes Platzhalter->Klartext-Mapping ablegen.
 REID_MAP_KEY = "datenschleuse_reid_map"
 
+# ===========================================================================
+# Re-Id-Mapping: versiegelter Transport (DATENSCHLE-69, Security-F4)
+# ===========================================================================
+# Das Mapping ist die vollstaendige Zuordnung Platzhalter -> ORIGINALWERT und
+# damit das dichteste PII-Objekt im ganzen Request -- dichter als der Payload,
+# weil es die Werte ohne umgebenden Text auflistet.
+#
+# Es lag bisher als Klartext-dict in ``metadata``. ``metadata`` ist aber KEIN
+# privater Kanal: litellm reicht es an seine Logging-Callbacks weiter
+# (StandardLoggingPayload, langfuse, s3, datadog ...). Damit stand die
+# Klartext-Tabelle im Log -- gegen Gesetz 5 und gegen die Zusage in
+# CLAUDE.md: "Mapping verschluesselt + lokal + TTL".
+#
+# WARUM DAS AUCH DEN SNAPSHOT-BEFUND (F1) SCHLIESST: litellms
+# Logging-Schnappschuss ist eine FLACHE Kopie und haelt dieselbe
+# ``metadata``-Referenz. Alles, was wir dort hineinlegen, steht sofort auch
+# im Schnappschuss -- egal, wie sorgfaeltig der Neubau ihn behandelt. Man
+# kann das Symptom behandeln (beim Neubau flach kopieren und den Key
+# herausnehmen); dann bleibt der Kanal zu den Callbacks offen. Oder man legt
+# den Klartext gar nicht erst hinein. Das hier ist die zweite Variante.
+#
+# VORBILD: ``QiStateStore`` (litellm/qi_state.py) macht dasselbe fuer den
+# QI-Session-State -- Fernet, lokaler Schluessel, TTL.
+#
+# BEWUSST KEIN STORE: der QI-State ist sessionuebergreifend und braucht
+# deshalb SQLite. Das Re-Id-Mapping ist REQUEST-gebunden -- es lebt vom
+# pre_call bis zum Ende der (ggf. gestreamten) Antwort und wird danach nie
+# wieder gebraucht. Ein Store waere hier zusaetzliche Mechanik mit eigener
+# Ablauf- und Aufraeum-Logik, also eine neue Fehlerquelle. Das versiegelte
+# Token reist im Request selbst mit; Fernet traegt den Zeitstempel in sich
+# und prueft die TTL beim Oeffnen. Nichts zum Aufraeumen, nichts, was
+# volllaufen kann.
+REID_KEY_ENV = "DATENSCHLEUSE_REID_KEY"
+REID_TTL_ENV = "DATENSCHLEUSE_REID_TTL"
+
+#: Lebensdauer eines versiegelten Mappings. Grosszuegig genug fuer lange
+#: Streaming-Antworten, kurz genug, dass ein abgefangenes Token nicht
+#: dauerhaft brauchbar ist. Deutlich kuerzer als die 24 h des QI-States --
+#: das Mapping wird nur waehrend EINER Antwort gebraucht.
+DEFAULT_REID_TTL_SECONDS = 60 * 60  # 1 h
+
+_REID_FERNET = None
+
+
+def _reid_fernet():
+    """Der Fernet-Schluessel fuer das Mapping -- lazy und prozesslokal.
+
+    Schluesselherkunft, in dieser Reihenfolge:
+
+    1. ``DATENSCHLEUSE_REID_KEY``, falls der Betreiber ihn setzt.
+    2. Sonst: EINMALIG beim ersten Gebrauch erzeugt, nur im Prozess-Speicher.
+
+    Warum ein erzeugter Schluessel hier die richtige Vorgabe ist und kein
+    fail-closed wie beim QI-Store: das Mapping muss NICHT ueber einen
+    Neustart hinweg lesbar sein. Ein prozesslokaler Zufallsschluessel ist
+    fuer request-gebundene Daten sogar die STAERKERE Eigenschaft -- ein Log,
+    das nach einem Neustart gelesen wird, ist endgueltig nicht mehr
+    aufloesbar. Und er kostet den Betreiber keine Schluesselverwaltung fuer
+    etwas, das eine Stunde lebt.
+
+    Der Import ist lazy, damit das Modul ohne ``cryptography`` importierbar
+    bleibt (die Test-Suite laeuft ohne litellm; das Paket selbst ist in
+    requirements-guardrail.txt eine harte Laufzeit-Abhaengigkeit). Fehlt es
+    zur Laufzeit, schlaegt das Versiegeln fehl und der Request blockt --
+    fail-closed, kein unverschluesselter Weiterbetrieb.
+    """
+    global _REID_FERNET
+    if _REID_FERNET is None:
+        from cryptography.fernet import Fernet
+
+        roh = os.getenv(REID_KEY_ENV)
+        if roh:
+            _REID_FERNET = Fernet(roh.encode() if isinstance(roh, str) else roh)
+        else:
+            _REID_FERNET = Fernet(Fernet.generate_key())
+    return _REID_FERNET
+
+
+def _reid_ttl_seconds() -> int:
+    roh = os.getenv(REID_TTL_ENV)
+    if not roh:
+        return DEFAULT_REID_TTL_SECONDS
+    try:
+        return int(roh)
+    except (TypeError, ValueError):
+        return DEFAULT_REID_TTL_SECONDS
+
+
+def seal_reid_map(reid_map: Dict[str, str]) -> str:
+    """Versiegelt das Mapping fuer den Transport durch fremde Kanaele.
+
+    Rueckgabe ist ein Fernet-Token (str). Wer es in einem Log findet -- und
+    genau dort landet es, das ist der Punkt --, hat eine Zeichenkette ohne
+    Schluessel.
+    """
+    klartext = json.dumps(reid_map, ensure_ascii=False).encode("utf-8")
+    return _reid_fernet().encrypt(klartext).decode("ascii")
+
+
+def open_reid_map(value: Any, ttl_seconds: Optional[int] = None) -> Dict[str, str]:
+    """Oeffnet ein versiegeltes Mapping. Im Zweifel LEER.
+
+    Akzeptiert ausschliesslich die versiegelte Form. Ein Klartext-dict wird
+    NICHT mehr angenommen: beide Formen zu akzeptieren waere ein Kanal, den
+    niemand mehr benutzt, aber jeder noch benutzen KANN -- und ein
+    client-gesetztes Mapping waere eine Steuerung der Antwort durch den
+    Kontrollierten (dieselbe Klasse Befund wie die Client-Freigabe in F2).
+
+    FEHLERRICHTUNG: laesst sich das Token nicht oeffnen (falscher Schluessel,
+    abgelaufen, beschaedigt), gibt es KEIN Mapping -- die Antwort behaelt
+    ihre Platzhalter. Unschoen, aber sicher. Die gefaehrliche Richtung waere
+    ein Rueckfall auf einen ungeschuetzten Kanal.
+    """
+    if not isinstance(value, str) or not value:
+        return {}
+    ttl = _reid_ttl_seconds() if ttl_seconds is None else int(ttl_seconds)
+    try:
+        roh = _reid_fernet().decrypt(value.encode("ascii"), ttl=ttl)
+        geoeffnet = json.loads(roh.decode("utf-8"))
+    except Exception:
+        # Bewusst ohne Wert im Log (Gesetz 5) und ohne Grund-Detail: die
+        # Unterscheidung "abgelaufen" vs. "gefaelscht" hilft nur einem
+        # Angreifer.
+        return {}
+    if not isinstance(geoeffnet, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in geoeffnet.items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+
 # Sicherheitsmarge (in Zeichen) auf die laengste bekannte Platzhalter-Laenge.
 # Siehe ReidStreamProcessor fuer die Begruendung.
 DEFAULT_PLACEHOLDER_MARGIN = 10
@@ -2080,7 +2212,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if not isinstance(metadata, dict):
             metadata = {}
             data["metadata"] = metadata
-        metadata[REID_MAP_KEY] = masker.reid_map
+        # VERSIEGELT, nicht im Klartext (Security-F4). ``metadata`` geht an
+        # litellms Logging-Callbacks; ein Klartext-Mapping waere dort die
+        # komplette PII-Tabelle im Log. Siehe seal_reid_map.
+        metadata[REID_MAP_KEY] = seal_reid_map(masker.reid_map)
 
         # Anonymisierungs-Hinweis nur einfuegen, wenn tatsaechlich etwas
         # maskiert wurde (kein Overhead fuer PII-freie Requests) -- und nur
@@ -3525,16 +3660,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         LiteLLM propagiert Metadaten je nach Version unter ``metadata`` oder
         ``litellm_metadata`` — beide werden geprueft. Genaue Propagation ist
         gegen die laufende LiteLLM-Version zu verifizieren.
+
+        Das Mapping ist VERSIEGELT unterwegs (Security-F4) und wird hier
+        geoeffnet. Ein Klartext-dict wird nicht mehr angenommen -- siehe
+        ``open_reid_map``.
         """
         if not isinstance(request_data, dict):
             return {}
         for meta_key in ("metadata", "litellm_metadata"):
             meta = request_data.get(meta_key)
-            if isinstance(meta, dict) and isinstance(meta.get(REID_MAP_KEY), dict):
-                return meta[REID_MAP_KEY]
+            if isinstance(meta, dict) and REID_MAP_KEY in meta:
+                geoeffnet = open_reid_map(meta[REID_MAP_KEY])
+                if geoeffnet:
+                    return geoeffnet
         # Fallback: direkt im request_data (manche Codepfade flatten Metadaten).
-        if isinstance(request_data.get(REID_MAP_KEY), dict):
-            return request_data[REID_MAP_KEY]
+        if REID_MAP_KEY in request_data:
+            return open_reid_map(request_data[REID_MAP_KEY])
         return {}
 
     @staticmethod
