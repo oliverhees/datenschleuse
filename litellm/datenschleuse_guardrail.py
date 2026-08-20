@@ -50,6 +50,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -1394,6 +1395,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_db: Optional[str] = None,
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
+        approval_header_secret: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -1443,6 +1445,18 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "konfiguriert sein, sonst waere jedes Bild ein Blindflug."
             )
         self.image_policy = policy
+
+        # --- Betreiber-Freigabe fuer Stufe 2 (DATENSCHLE-69, Security-F2) ---
+        # Der Header-Weg ist NUR aktiv, wenn der Betreiber ein Geheimnis
+        # konfiguriert hat. Ohne Geheimnis waere der Header wieder blosse
+        # Client-Eingabe -- also genau der Defekt, den wir schliessen. Der
+        # sichere Default ist deshalb "Header-Weg aus", nicht "offen".
+        self.approval_header_secret = (
+            approval_header_secret
+            or kwargs.pop("approval_header_secret", None)
+            or os.getenv("DATENSCHLEUSE_APPROVAL_HEADER_SECRET")
+            or ""
+        ).strip()
 
         # --- Schutzklassen-Modell (IMMER aktiv, keine Konfigurationsoption) --
         # Laedt presidio/sensitivity-keywords.yml einmalig. Fail-closed beim
@@ -1651,8 +1665,29 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
         # --- Schutzklassen: Metadaten fuer explizite Stufe + Freigabe-Flag ---
         meta_in = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        # Die STUFE darf ein Client weiter setzen: sie kann nur ERHOEHEN
+        # (monotone max()-Regel im Klassifizierer), also ist sie kein
+        # Bypass-Kanal -- ein Client, der sich hoeher einstuft, schaerft die
+        # Pruefung nur.
         requested_level = meta_in.get(sc.SENSITIVITY_LEVEL_KEY)
-        approved = sc.is_release_approved(meta_in)
+
+        # Die FREIGABE darf er NICHT (DATENSCHLE-69, Security-F2). Frueher
+        # stand hier ``sc.is_release_approved(meta_in)`` -- also der
+        # Request-Body. Damit konnte der Kontrollierte sein eigenes
+        # Kontroll-Gate abschalten (gemessen: aus BLOCKED wurde PASSED).
+        # Ein Gate, das der Kontrollierte selbst abschalten kann, ist kein
+        # Gate.
+        if self._strip_body_approval(data):
+            # Kein stiller No-op: ein Client, der die Freigabe in den Body
+            # schreibt, glaubt sonst, sie wirke. Geloggt wird nur die
+            # TATSACHE, nie ein Wert (Gesetz 5). Die Blockmeldung selbst nennt
+            # die beiden gueltigen Betreiber-Wege.
+            _LOG.warning(
+                "Freigabe-Flag im Request-Body gefunden und ignoriert "
+                "(entfernt). Freigeben kann nur der Betreiber ueber "
+                "Key-Konfiguration oder Header-Geheimnis (Security-F2)."
+            )
+        approved = self._operator_approved(data, user_api_key_dict)
 
         # QI-Typen werden nur dann aus der direkten Maskierung herausgehalten,
         # wenn der QI-Layer aktiv ist. Sonst laufen sie wie jeder andere
@@ -1890,6 +1925,84 @@ class DatenschleuseGuardrail(_GuardrailBase):
         self._resync_logging_snapshot(data)
 
         return data
+
+    # ---- Betreiber-Freigabe (DATENSCHLE-69, Security-F2) ------------------
+    #: Ersatzwert fuer das redigierte Header-Geheimnis. Konstant, damit er nie
+    #: mit einem Client-Wert verwechselt werden kann.
+    APPROVAL_HEADER_REDACTED = "<redacted-by-datenschleuse>"
+
+    def _strip_body_approval(self, data: Dict[str, Any]) -> bool:
+        """Entfernt das Freigabe-Flag aus BEIDEN Metadaten-Kanaelen des
+        Request-Bodys und meldet, ob eines gesetzt war.
+
+        Ignorieren allein reicht nicht. Bliebe das Flag stehen, wanderte es
+        durch den Logging-Kanal weiter und saehe fuer jeden spaeteren Leser
+        aus, als HAETTE eine Freigabe vorgelegen -- eine Falschaussage im
+        Audit-Trail.
+
+        Beide Kanaele, weil litellm je nach Codepfad ``metadata`` ODER
+        ``litellm_metadata`` propagiert. Ein Fix, der nur einen abdeckt, waere
+        derselbe Alias-Fehler wie seinerzeit ``headers``/``extra_headers``.
+        """
+        gesetzt = False
+        for meta_key in ("metadata", "litellm_metadata"):
+            meta = data.get(meta_key)
+            if isinstance(meta, dict) and sc.SENSITIVITY_APPROVAL_KEY in meta:
+                meta.pop(sc.SENSITIVITY_APPROVAL_KEY, None)
+                gesetzt = True
+        return gesetzt
+
+    def _operator_approved(
+        self, data: Dict[str, Any], user_api_key_dict: Any
+    ) -> bool:
+        """Die Stufe-2-Freigabe -- ausschliesslich aus Betreiber-Quellen.
+
+        Weg 1: Key-/Team-Konfiguration. Sie stammt aus der Proxy-Datenbank und
+        wird vom Betreiber beim Anlegen des Virtual Key gesetzt. litellm
+        strippt client-gesetzte ``user_api_key_*``-Metadaten selbst, mit
+        woertlich derselben Begruendung, die wir hier fuehren.
+
+        Weg 2: Header MIT betreiberseitig konfiguriertem Geheimnis. Ohne
+        konfiguriertes Geheimnis ist dieser Weg AUS -- nicht "offen fuer
+        alle". Das Geheimnis wird konstantzeitig verglichen und danach
+        redigiert, damit es nicht ueber den Logging-Kanal weiterwandert
+        (Gesetz 5: Secrets werden nie geloggt).
+        """
+        for quelle in ("metadata", "team_metadata"):
+            if sc.is_operator_release_approved(
+                self._field(user_api_key_dict, quelle)
+            ):
+                return True
+
+        if not self.approval_header_secret:
+            return False
+
+        psr = data.get("proxy_server_request")
+        if not isinstance(psr, dict):
+            return False
+        headers = psr.get("headers")
+        if not isinstance(headers, dict):
+            return False
+
+        # HTTP-Header sind case-insensitiv; der Proxy reicht sie mal so, mal
+        # so durch. Ein Vergleich nur auf Kleinschreibung waere ein stiller
+        # Fehlschlag beim Betreiber -- und der schaltet dann die Guardrail ab.
+        treffer = [
+            name for name in headers
+            if isinstance(name, str) and name.lower() == sc.APPROVAL_HEADER
+        ]
+        freigegeben = False
+        for name in treffer:
+            wert = headers.get(name)
+            if isinstance(wert, str) and hmac.compare_digest(
+                wert, self.approval_header_secret
+            ):
+                freigegeben = True
+            # Redigieren unabhaengig vom Ergebnis: auch ein FALSCHES
+            # Geheimnis ist ein Geheimnisversuch und hat im Log nichts zu
+            # suchen.
+            headers[name] = self.APPROVAL_HEADER_REDACTED
+        return freigegeben
 
     # ---- Logging-Schnappschuss (DATENSCHLE-69, Security-F1) ---------------
     @staticmethod

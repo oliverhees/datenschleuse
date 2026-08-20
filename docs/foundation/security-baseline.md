@@ -202,6 +202,120 @@ Regeln dazu:
   dem QI-Layer darf deshalb nicht vom defensiven Fehler-Handler geschluckt
   werden, der gewöhnliche QI-Fehler bewusst toleriert.
 
+## Herkunft der Stufe-2-Freigabe (bindend)
+
+**Freigeben darf ausschließlich der Betreiber. Niemals der Client, niemals
+über den Request-Body.**
+
+**Der Befund (DATENSCHLE-69, Security-F2).** Das Gate las
+`metadata.sensitivity_approval` aus dem Request-Body. In litellm 1.97.0
+überlebt ein client-gesetztes `metadata` bis in den Guardrail: gestrippt
+werden nur Keys mit Prefix `user_api_key_` und eine kleine Kontroll-Liste
+(`proxy/litellm_pre_call_utils.py:215-227` und `:1655-1660`).
+`sensitivity_approval` steht in keiner der beiden Mengen. Gemessen: mit
+`metadata: {"sensitivity_approval": true}` im Body wurde aus BLOCKED ein
+PASSED. Der Kontrollierte konnte sein eigenes Kontroll-Gate abschalten.
+
+**Die Regel.** Ein Gate, das der Kontrollierte selbst abschalten kann, ist
+kein Gate. Für ein Werkzeug, dessen Zweck es ist, auch bei **fehlerhaften**
+Clients zu schützen, ist Client-Vertrauen an dieser Stelle nicht
+verteidigbar. litellm begründet seinen eigenen `user_api_key_`-Strip wörtlich
+genauso: ein Aufrufer, der solche Keys vorbelegt, bekäme "their forged values
+surface in guardrails, spend tracking, audit logs, and identity resolution".
+
+**Die zwei gültigen Wege — mehr gibt es nicht:**
+
+| Weg | Quelle | Warum betreiberkontrolliert |
+|-----|--------|------------------------------|
+| Key-/Team-Konfiguration | `user_api_key_dict.metadata` bzw. `.team_metadata`, Key `datenschleuse_sensitivity_approval` | Stammt aus der Proxy-Datenbank; der Betreiber setzt sie beim Anlegen des Virtual Key. litellm strippt client-gesetzte `user_api_key_*`-Metadaten selbst. |
+| Header mit Geheimnis | Header `x-datenschleuse-sensitivity-approval`, Wert = konfiguriertes Geheimnis | Ein **bloßer** Header wäre wieder Client-Eingabe. Erst das Geheimnis macht ihn zum Betreiber-Kanal. |
+
+**Bindende Detailregeln:**
+
+- **Ohne konfiguriertes Geheimnis ist der Header-Weg AUS** — nicht "offen für
+  alle". Der sichere Default ist die abgeschaltete Tür.
+- **Konstantzeitiger Vergleich** (`hmac.compare_digest`) des Geheimnisses.
+- **Das Geheimnis wird nach der Prüfung redigiert**, auch bei falschem Wert.
+  `proxy_server_request.headers` geht in die Logging-Callbacks; ein Secret hat
+  dort nichts zu suchen (Gesetz 5).
+- **Das Body-Flag wird nicht nur ignoriert, sondern entfernt** — aus
+  `metadata` *und* `litellm_metadata`. Bliebe es stehen, wanderte es durch den
+  Logging-Kanal weiter und sähe für jeden späteren Leser aus, als **hätte**
+  eine Freigabe vorgelegen: eine Falschaussage im Audit-Trail. Beide Kanäle,
+  weil litellm je nach Codepfad den einen oder den anderen propagiert — ein
+  Fix für nur einen wäre derselbe Alias-Fehler wie seinerzeit
+  `headers`/`extra_headers`.
+- **Kein stiller No-op.** Wird ein Body-Flag gefunden, wird die Tatsache
+  geloggt (nie der Wert), und die Blockmeldung nennt beide gültigen
+  Betreiber-Wege. Ein Client, der glaubt, seine Freigabe wirke, ist gefährlicher
+  als einer, der eine klare Fehlermeldung bekommt.
+- **Die Stufe (`sensitivity_level`) darf ein Client weiterhin setzen.** Sie
+  kann nur **erhöhen** (monotone `max()`-Regel) und ist damit kein
+  Bypass-Kanal: wer sich höher einstuft, schärft die Prüfung nur.
+- **Stufe 3 bleibt unerreichbar für jeden Freigabeweg** — auch für den neuen
+  Betreiber-Weg. `enforce_tier_3_block` nimmt bewusst nur das
+  Classification-Objekt und bekommt niemals einen Bypass-Parameter.
+
+## Der Logging-Kanal ist ein Ausgangskanal (bindend)
+
+**"Erreicht den Provider nicht" heißt nicht "ist harmlos".**
+
+**Der Befund (DATENSCHLE-69, Security-F1).** litellm baut **vor** dem
+Guardrail einen flachen Schnappschuss des Bodys
+(`proxy/litellm_pre_call_utils.py:1690-1692`):
+
+```python
+_body_snapshot = {k: v for k, v in data.items() if k not in exclude}
+data["proxy_server_request"]["body"] = _body_snapshot
+```
+
+**Flach** ist das entscheidende Wort: pro Key hält der Schnappschuss dieselbe
+Objekt-Referenz wie `data`. Daraus folgt unmittelbar:
+
+- Ein **in-place** mutiertes Feld (`messages`) ist im Schnappschuss
+  automatisch mitmaskiert — beide zeigen auf dasselbe Objekt.
+- Ein durch **Rebinding** maskiertes Feld (`data[feld] = maskiert`) ist es
+  **nicht** — der Schnappschuss hält weiter den alten, unmaskierten Wert.
+
+Gemessen: `prompt`, `suffix`, `stop`, `user` und `tools` waren auf dem
+Provider-Weg dicht und standen im Log im Klartext.
+`turn_off_message_logging` rettet nicht: `perform_redaction`
+(`litellm_core_utils/redact_messages.py:238-240`) redigiert ausschließlich
+`messages`, `prompt` und `input`.
+
+**Die Regel — eine dritte Registerkategorie.** Neben "passiert" und "blockt"
+gibt es **behandelt** (`PAYLOAD_FIELDS_RESYNCED`): Keys, die den Payload nicht
+weitertragen, sondern ihn **spiegeln**. Das alte Passier-Kriterium fragte
+"erreicht dieser Key den Provider?" und war damit richtig, aber unvollständig.
+Die fehlende Frage lautet:
+
+> **Trägt dieser Key eine veraltete, unmaskierte Kopie genau des Payloads, den
+> wir gerade maskiert haben?**
+
+**Bindende Detailregeln:**
+
+- **Der Schnappschuss wird neu gebaut, nicht feldweise nachgezogen.** Ein
+  feldweiser Abgleich deckt ab, woran jemand gedacht hat; der Neubau deckt
+  alles ab, was im Payload steht — auch das, was ein künftiger Commit
+  hinzufügt.
+- **Durchgängiges In-place ist keine Option und ist auch keine gültige
+  Alternative.** `prompt` (als String), `suffix`, `user` und `stop` (als
+  String) sind Python-`str`, also unveränderlich. Eine Regel "immer in-place"
+  wäre unerfüllbar und würde still gebrochen — genau die Fehlerklasse, die
+  geschlossen werden soll.
+- **Der Re-Sync läuft als letzter Schritt, nach dem QI-Layer.** Der
+  vergröbert Texte **nach** der Maskierung; ein Schnappschuss davor trüge die
+  feiner aufgelösten Werte ins Log. Was das Modell nicht sehen darf, darf das
+  Log erst recht nicht sehen.
+- **Der Schnappschuss wird nicht geleert.** `spend_tracking_utils` und
+  `standard_logging_payload` lesen ihn. Ein leerer Body wäre dicht, würde aber
+  die Kostenerfassung des Betreibers kaputtmachen — ein Fix, der einen anderen
+  Defekt erzeugt.
+- **Fail-closed auf die Form:** `proxy_server_request` als Nicht-Objekt
+  blockt; `body` als roher JSON-String blockt. Er trägt denselben Klartext,
+  lässt sich aber nicht neu aufbauen. Was wir nicht neu bauen können, dürfen
+  wir nicht maskiert glauben.
+
 ## Allowlist-Prinzip für eingehende Nachrichten (bindend)
 
 Jede Ebene einer eingehenden Chat-Message wird nach Allowlist behandelt:

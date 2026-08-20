@@ -70,7 +70,41 @@ class Tier(enum.IntEnum):
 # Explizite Nutzer-Markierung der Stufe (int 1/2/3 oder "1"/"2"/"3").
 SENSITIVITY_LEVEL_KEY = "sensitivity_level"
 # Human-in-the-loop-Freigabe fuer Stufe 2 (bool true).
+#
+# !!! ACHTUNG -- DIESER KEY IST CLIENT-EINGABE, KEINE FREIGABE !!!
+# (DATENSCHLE-69, Security-F2)
+# In litellm 1.97.0 ueberlebt ein client-gesetztes ``metadata`` bis in den
+# Guardrail: gestrippt werden nur Keys mit Prefix ``user_api_key_`` und eine
+# kleine Kontroll-Liste (``proxy/litellm_pre_call_utils.py:215-227``,
+# ``:1655-1660``). Dieser Key steht in keiner der beiden Mengen -- ein Client
+# konnte damit sein eigenes Kontroll-Gate abschalten (gemessen: aus BLOCKED
+# wurde PASSED).
+#
+# Der Name bleibt erhalten, weil die Guardrail ihn WEITERHIN kennen muss --
+# aber nur, um ihn zu IGNORIEREN und aus den Metadaten zu entfernen. Wer eine
+# Freigabe auswerten will, nimmt OPERATOR_APPROVAL_KEY.
 SENSITIVITY_APPROVAL_KEY = "sensitivity_approval"
+
+# --- Betreiber-Freigabe: die EINZIGE gueltige Quelle (DATENSCHLE-69 F2) -----
+# Ein Gate, das der Kontrollierte selbst abschalten kann, ist kein Gate. Fuer
+# ein Werkzeug, dessen Zweck es ist, auch bei FEHLERHAFTEN Clients zu
+# schuetzen, ist Client-Vertrauen an dieser Stelle nicht verteidigbar.
+# Entscheidung von Oliver, festgehalten in
+# docs/foundation/security-baseline.md.
+#
+# Zwei betreiberseitige Wege, mehr nicht:
+#   1. Key-/Team-Konfiguration: der Betreiber setzt diesen Key beim Anlegen
+#      des Virtual Key. Er kommt aus der Proxy-Datenbank, nie aus dem Body.
+#      litellm strippt client-gesetzte ``user_api_key_*``-Metadaten selbst und
+#      begruendet das woertlich so, wie wir hier argumentieren.
+#   2. Header MIT betreiberseitig konfiguriertem Geheimnis. Ein blosser Header
+#      waere wieder Client-Eingabe; erst das Geheimnis macht ihn zu einem
+#      Betreiber-Kanal. Ohne konfiguriertes Geheimnis ist dieser Weg AUS.
+OPERATOR_APPROVAL_KEY = "datenschleuse_sensitivity_approval"
+
+#: Header-Name fuer den zweiten Betreiber-Weg. Der WERT muss dem konfigurierten
+#: Geheimnis entsprechen (konstantzeitiger Vergleich).
+APPROVAL_HEADER = "x-datenschleuse-sensitivity-approval"
 
 
 # ---------------------------------------------------------------------------
@@ -436,12 +470,40 @@ def is_release_approved(metadata: Any) -> bool:
     freigegeben (sicherer Default)."""
     if not isinstance(metadata, dict):
         return False
-    val = metadata.get(SENSITIVITY_APPROVAL_KEY)
+    return _approval_value_is_true(metadata.get(SENSITIVITY_APPROVAL_KEY))
+
+
+def _approval_value_is_true(val: Any) -> bool:
+    """Die gemeinsame Werte-Semantik beider Freigabe-Leser: echtes ``True``
+    oder die Strings 'true'/'1'/'yes'/'ja' (case-insensitiv). Alles andere --
+    fehlend, None, False, leerer String, beliebiger Text -- gilt als NICHT
+    freigegeben (sicherer Default)."""
     if val is True:
         return True
     if isinstance(val, str):
         return val.strip().lower() in ("true", "1", "yes", "ja")
     return False
+
+
+def is_operator_release_approved(metadata: Any) -> bool:
+    """Liest die BETREIBER-Freigabe aus einer Metadaten-Quelle des Betreibers
+    (Key- oder Team-Konfiguration aus der Proxy-Datenbank).
+
+    Gleiche Werte-Semantik wie ``is_release_approved``, aber ein ANDERER Key:
+    ``OPERATOR_APPROVAL_KEY``. Der Unterschied ist nicht kosmetisch -- er ist
+    der ganze Fix. Derselbe Key fuer beide Quellen haette bedeutet, dass ein
+    Client, dessen ``metadata`` faelschlich als Betreiber-Quelle behandelt
+    wird, sofort wieder durchkommt.
+
+    !!! WICHTIG FUER SPAETERE ENTWICKLER !!!
+    Diese Funktion darf NIEMALS mit ``data["metadata"]`` aus dem Request-Body
+    aufgerufen werden. Das war der Defekt (Security-F2). Zulaessige Quellen
+    sind ausschliesslich ``user_api_key_dict.metadata`` und
+    ``user_api_key_dict.team_metadata``.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    return _approval_value_is_true(metadata.get(OPERATOR_APPROVAL_KEY))
 
 
 def enforce_tier_2_gate(classification: Classification, approved: bool) -> None:
@@ -455,8 +517,16 @@ def enforce_tier_2_gate(classification: Classification, approved: bool) -> None:
     if classification.tier is Tier.TIER_2 and not approved:
         raise Tier2ApprovalRequired(
             "Anfrage als Stufe 2 (vertraulich) klassifiziert. Es fehlt die "
-            f"explizite Freigabe (metadata.{SENSITIVITY_APPROVAL_KEY} = true). "
-            "Ohne Freigabe wird der (auch anonymisierte) Cloud-Call blockiert. "
+            "explizite Freigabe. Ohne Freigabe wird der (auch anonymisierte) "
+            "Cloud-Call blockiert.\n"
+            "Freigeben kann ausschliesslich der BETREIBER, auf einem von zwei "
+            f"Wegen: (1) Key-/Team-Konfiguration mit {OPERATOR_APPROVAL_KEY} "
+            f"= true, oder (2) Header {APPROVAL_HEADER} mit dem konfigurierten "
+            "Geheimnis.\n"
+            f"NICHT freigeben kann der Client: ein metadata."
+            f"{SENSITIVITY_APPROVAL_KEY} im Request-Body wird ignoriert und "
+            "entfernt. Ein Gate, das der Kontrollierte selbst abschalten "
+            "kann, waere kein Gate (DATENSCHLE-69, Security-F2).\n"
             f"Begruendung: {classification.summary()}"
         )
 
