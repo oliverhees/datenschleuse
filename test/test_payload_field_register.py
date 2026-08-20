@@ -1100,5 +1100,87 @@ class TestRegisterInvariants(unittest.TestCase):
             self.assertEqual(kollision, set(), f"Kollision: {sorted(kollision)}")
 
 
+class TestPromptListeHatEineObergrenze(unittest.IsolatedAsyncioTestCase):
+    """``prompt`` als Batch-Liste war unbegrenzt.
+
+    ``stop`` hat seit jeher ``PAYLOAD_MAX_LIST_ITEMS``; ``prompt`` nicht.
+    Jeder Eintrag kostet einen eigenen Analyzer-Call, also skaliert ein
+    einzelner Request linear in Worker-Zeit -- 400 Eintraege waren gemessen
+    9,7 s aus EINEM Request. Das ist kein Speicher-, sondern ein
+    Verfuegbarkeitsproblem: der Worker steht so lange fuer alle anderen
+    nicht zur Verfuegung.
+
+    Eigene Konstante statt ``PAYLOAD_MAX_LIST_ITEMS``: 32 ist fuer
+    ``stop``-Sequenzen grosszuegig, fuer einen Prompt-Batch aber knapp --
+    die Legacy-Completions-API wird real mit Batches benutzt. Ein zu enges
+    Limit waere ein Fix, der einen anderen Defekt erzeugt.
+    """
+
+    def _guard(self):
+        guard = dg.DatenschleuseGuardrail()
+        guard._analyze = fake_analyze
+        return guard
+
+    async def _run(self, prompt):
+        return await self._guard().async_pre_call_hook(
+            user_api_key_dict=None,
+            cache=None,
+            data={"model": "gpt-3.5-turbo-instruct", "prompt": prompt},
+            call_type="atext_completion",
+        )
+
+    def test_die_konstante_existiert_und_ist_bezifferbar(self):
+        self.assertIsInstance(dg.PAYLOAD_MAX_PROMPT_ITEMS, int)
+        self.assertGreater(dg.PAYLOAD_MAX_PROMPT_ITEMS, 0)
+
+    async def test_batch_am_limit_geht_durch(self):
+        """Die Gegenprobe zuerst: das Limit darf legitime Batches nicht
+        killen."""
+        prompt = ["Hallo Welt"] * dg.PAYLOAD_MAX_PROMPT_ITEMS
+        out = await self._run(prompt)
+        self.assertEqual(len(out["prompt"]), dg.PAYLOAD_MAX_PROMPT_ITEMS)
+
+    async def test_batch_ueber_dem_limit_blockt(self):
+        """DER Befund."""
+        prompt = ["Hallo Welt"] * (dg.PAYLOAD_MAX_PROMPT_ITEMS + 1)
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await self._run(prompt)
+        self.assertIn("prompt", str(ctx.exception))
+
+    async def test_block_nennt_keine_nutzerwerte(self):
+        """Gesetz 5: die Meldung nennt die Grenze, nie den Inhalt."""
+        geheim = "Max Mustermann"
+        prompt = [geheim] * (dg.PAYLOAD_MAX_PROMPT_ITEMS + 1)
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await self._run(prompt)
+        self.assertNotIn(geheim, str(ctx.exception))
+
+    async def test_block_kommt_vor_der_analyse(self):
+        """Der Sinn der Grenze: sie muss greifen, BEVOR die Arbeit anfaellt.
+
+        Ein Limit, das erst nach 400 Analyzer-Calls zuschlaegt, verhindert
+        genau das nicht, wogegen es gebaut wurde.
+        """
+        aufrufe = []
+
+        async def zaehlend(text):
+            aufrufe.append(text)
+            return []
+
+        guard = dg.DatenschleuseGuardrail()
+        guard._analyze = zaehlend
+        prompt = ["Hallo"] * (dg.PAYLOAD_MAX_PROMPT_ITEMS + 1)
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None,
+                cache=None,
+                data={"model": "gpt-3.5-turbo-instruct", "prompt": prompt},
+                call_type="atext_completion",
+            )
+        self.assertEqual(
+            aufrufe, [], "Die Grenze greift erst nach der Analyse-Arbeit."
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

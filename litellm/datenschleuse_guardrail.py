@@ -569,6 +569,21 @@ STREAM_OPTIONS_ALLOWED_FIELDS = frozenset({"include_usage", "continuous_usage_st
 #: die Guardrail mit Analyzer-Calls zu fluten.
 PAYLOAD_MAX_LIST_ITEMS = 32
 
+#: Obergrenze fuer die BATCH-Form von ``prompt`` (Liste von Prompts).
+#:
+#: Eigene Konstante statt PAYLOAD_MAX_LIST_ITEMS: die beiden Listen sind
+#: nicht dieselbe Sorte Liste. 32 ``stop``-Sequenzen sind grosszuegig (die
+#: OpenAI-API erlaubt vier), 32 Prompts sind fuer einen Batch dagegen knapp
+#: -- die Legacy-Completions-API wird real so benutzt. Ein zu enges Limit
+#: waere ein Fix, der einen anderen Defekt erzeugt.
+#:
+#: WARUM ES DIE GRENZE BRAUCHT: jeder Eintrag kostet einen eigenen
+#: Analyzer-Call. Ein einzelner Request skaliert also linear in Worker-Zeit
+#: -- 400 Eintraege waren gemessen 9,7 s. Das ist kein Speicher-, sondern
+#: ein Verfuegbarkeitsproblem: so lange steht der Worker fuer niemanden
+#: sonst zur Verfuegung.
+PAYLOAD_MAX_PROMPT_ITEMS = 64
+
 # --- 1) Gemeinsame Steuerparameter beider Routen ---------------------------
 # Werte sind der Name des Formpruefers (siehe _PAYLOAD_VALIDATORS).
 _COMMON_VALIDATED = {
@@ -2916,6 +2931,16 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # blockt sie, statt "geprueft" zu heissen, ohne geprueft worden zu
         # sein. Kein still ueberspringender isinstance-Guard.
         if isinstance(prompt, list):
+            # Die Grenze ZUERST -- vor dem ersten Analyzer-Call. Ein Limit,
+            # das erst nach der Arbeit zuschlaegt, verhindert genau das
+            # nicht, wogegen es gebaut ist.
+            if len(prompt) > PAYLOAD_MAX_PROMPT_ITEMS:
+                raise DatenschleuseBlocked(
+                    f"prompt enthaelt mehr als {PAYLOAD_MAX_PROMPT_ITEMS} "
+                    "Eintraege -- blockiert (fail-closed). Jeder Eintrag "
+                    "kostet eine eigene Analyse; ein unbegrenzter Batch "
+                    "belegt den Worker beliebig lange."
+                )
             for index, item in enumerate(prompt):
                 if not isinstance(item, str):
                     raise DatenschleuseBlocked(
