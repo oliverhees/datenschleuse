@@ -129,38 +129,49 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
   Erkennung nicht die Platzhalter selbst für Namen hält, werden sie vor der
   Prüfung durch ein neutrales Zeichen ersetzt. Diese Ersetzung kann eigene
   Treffer erzeugen, die es im echten Text nie gab: ein Muster, das über
-  Whitespace hinweggreift, passt danach plötzlich. Solche Treffer werden
-  verworfen — aber nur, wenn sie es **nachweislich** sind. Der Nachweis
-  läuft in zwei Schritten: der Treffer wird an den Ersetzungsgrenzen
-  aufgeteilt, und geprüft werden sowohl die Stücke **einzeln** als auch der
-  **verklebte Kern** (die Stücke ohne das eingefügte Zeichen). Bleibt eine
-  der beiden Prüfungen ein Fund, wird blockiert.
+  Whitespace hinweggreift, passt danach plötzlich.
 
-  Beide Schritte sind nötig, und zwar aus einem Grund, der leicht übersehen
-  wird: Die Einzelprüfung trägt nur, solange die Erkennung **kontextfrei**
-  ist. Namens-Tokens werden einzeln erkannt, Bruchstücke musterbasierter
-  Entitäten (Telefonnummern, IBANs, IP-Adressen, Ticket-IDs) prinzipbedingt
-  nicht — eine halbe Telefonnummer ist keine Telefonnummer. Ohne die zweite
-  Prüfung fällt genau diese Klasse durch das Netz (Audit S1-R).
+  Verworfen wird ein Treffer deshalb **nur dann**, wenn er beweisbar unsere
+  eigene Einfügung ist — sein Kern besteht ausschließlich aus eingefügten
+  Zeichen und Whitespace. Steht auch nur ein Zeichen Klartext darin, wird
+  blockiert. Keine Ausnahme, keine Feinabstimmung.
 
-  Der Filter hängt damit an der **Herkunft** eines Treffers, nicht an seinem
-  Typ und nicht an einer bloßen Überlappung. Drei einfachere Varianten haben
-  in Audits jeweils echte Funde mit ausgeblendet (F10, S1, S1-R) — wer hier
-  vereinfacht, öffnet das Netz wieder. Regressionstests:
-  `test/test_custom_rules.py`, Abschnitte 17, 20 und 24.
+  **Diese Grobheit ist eine bewusste Entscheidung, keine Nachlässigkeit.**
+  Es gab drei Anläufe, den Fehlalarmraum feiner zuzuschneiden — Filter nach
+  Entitätstyp, Filter nach Span-Überlappung, Zerlegung in Segmente plus
+  verklebter Kern. Jeder Anlauf hat ein eigenes Leck erzeugt, und jedes davon
+  fand erst ein Audit (F10, S1, S1-R/HIGH-1/HIGH-2) — zuletzt gingen ganze
+  Kreditkartennummern und mehrwortige Deny-Begriffe durch. Keine dieser
+  Verfeinerungen wurde von einem Gegentest eingefordert; sie kauften
+  ausschließlich Fehlalarm-Reduktion, die niemand verlangt hatte.
+
+  **Regel für Änderungen an dieser Stelle:** Jede Verfeinerung braucht einen
+  Gegentest, der ohne sie fehlschlägt. Gibt es den nicht, kauft sie nichts
+  und kostet erfahrungsgemäß ein Leck. Regressionstests:
+  `test/test_custom_rules.py`, Abschnitte 17, 20, 24 und 28.
 - **Bewusst in Kauf genommener Fehlalarm.** Eine eigene Regex-Regel, deren
-  Muster sowohl mit als auch ohne Trenner passt, blockt jetzt, wenn ein
-  Platzhalter mitten hineinfällt. Das ist gewollt: von außen ist dieser Fall
-  nicht von der Konstruktion zu unterscheiden, mit der man die Maskierung
-  umgeht. Ein sichtbarer Fehlalarm ist billiger als ein stilles Leck.
-  Deny-Listen sind davon prinzipiell nicht betroffen. Gemessen am
-  deutschen PII-Testkorpus (45 Fälle, echter Analyzer): **0 Fehlalarme**.
-- **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String, plus
-  je einen pro Prüfstück für die wenigen Treffer, die tatsächlich über eine
-  Ersetzung laufen. Am Testkorpus gemessen: 1,00 Calls pro Fall, es entsteht
-  im Normalbetrieb also keiner davon. Die Nachprüfungen sind über den
-  gesamten Durchlauf gedeckelt; ist der Deckel erschöpft, wird blockiert
-  statt weitergeprüft (fail-closed).
+  Muster über einen Platzhalter hinweggreift, blockt. Das ist gewollt: von
+  außen ist dieser Fall nicht von der Konstruktion zu unterscheiden, mit der
+  man die Maskierung umgeht. Ein sichtbarer Fehlalarm ist billiger als ein
+  stilles Leck.
+
+  **Zu Deny-Listen — die Richtung ist wichtig:** Für *Fehlalarme* sind sie
+  prinzipiell nicht betroffen, ein Begriff ohne Regex-Metazeichen greift
+  nicht über einen Platzhalter hinweg. Als *Risikoschranke* war es unter den
+  früheren Filtern jedoch genau umgekehrt: jeder **mehrwortige** Begriff war
+  ein möglicher Falsch-Negativer, weil der verklebte Kern den Trenner löschte
+  und der Begriff darin nicht mehr vorkommen konnte. Betroffen war damit
+  ausgerechnet der Regelfall — die Beispieldatei und die CLI-Hilfe dieses
+  Repos werben mit „Nordwind Logistik". Mit dem heutigen Filter ist diese
+  Klasse geschlossen.
+
+  Gemessen am deutschen PII-Testkorpus (45 Fälle, echter Analyzer, plus 45
+  aus dem Korpus erzeugte Deny-Regeln, davon 33 mehrwortig): **0 Fehlalarme**,
+  **0 Treffer mit Füller im Kern**.
+- **Kosten.** Genau ein zusätzlicher Analyzer-Call pro `arguments`-String.
+  Der Artefaktfilter entscheidet ohne weitere Aufrufe — am Testkorpus
+  gemessen 1,00 Calls pro Fall. Damit kann sich auch das Zeitbudget der
+  Regel-Schicht hier nicht vervielfachen.
 - **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
   vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
 
