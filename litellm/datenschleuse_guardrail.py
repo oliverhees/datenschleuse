@@ -2916,6 +2916,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
     #: Ersatzwert fuer die Nutzfelder eines geblockten Requests.
     BLOCKED_FIELD_MARKER = "<withheld-by-datenschleuse: request blocked>"
 
+    #: Ersatz fuer eine Message-Liste. Eine LISTE mit einem gueltigen
+    #: Message-Dict, kein String (Runde 4, F7): ``messages`` stand in
+    #: _ALLE_MASKIERTEN_FELDER und wurde damit zu einem String. Ein String
+    #: ist iterierbar -- Konsumenten stuerzen daran nicht ab, sie lesen
+    #: ZEICHEN. Und der Zweig ``if isinstance(data.get("messages"), list)``
+    #: war damit toter Code.
+    BLOCKED_MESSAGE = {"role": "user", "content": BLOCKED_FIELD_MARKER}
+
     @classmethod
     def _redact_logging_snapshot(cls, data: Any) -> None:
         """Ersetzt den Logging-Schnappschuss eines geblockten Requests.
@@ -2937,16 +2945,109 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if isinstance(psr, dict) and "body" in psr:
             psr["body"] = dict(cls.BLOCKED_SNAPSHOT_BODY)
 
-        # Der Schnappschuss ist nur EINER von zwei Klartext-Kanaelen.
+        # Der Schnappschuss ist nur EINER von mehreren Klartext-Kanaelen.
         # ``post_call_failure_hook`` bekommt ``request_data`` selbst, und das
-        # darin haengende ``litellm_logging_obj`` wurde mit DERSELBEN
-        # ``messages``-Liste konstruiert. Der Block trifft mitten in der
-        # Message-Schleife -- alles danach ist voellig unmaskiert. Nur den
-        # Schnappschuss zu putzen waere genau die Ein-Kanal-Luecke, die
-        # dieser Docstring oben als Fehlerklasse benennt.
+        # darin haengende ``litellm_logging_obj`` haelt die Nutzfelder ein
+        # zweites Mal. Der Block trifft mitten in der Message-Schleife --
+        # alles danach ist voellig unmaskiert.
+        #
+        # WIE GENAU es sie haelt, ist entscheidend fuer die Bauart des Fixes
+        # (Runde 4, F1; belegt am Quelltext von litellm 1.97.0):
+        #
+        #   litellm_logging.py:317   _input = messages          -> KEINE Kopie
+        #   litellm_logging.py:333   self.messages = copy.copy(messages)
+        #
+        # Also: ``model_call_details["input"]`` ist die IDENTISCHE Liste,
+        # ``logging_obj.messages`` eine ANDERE Liste mit DENSELBEN Dicts.
+        # (Eine frueherere Fassung dieses Kommentars sprach von "derselben
+        # messages-Liste" -- das war ungenau und hat den Fix in die Irre
+        # gefuehrt.)
+        #
+        # Daraus folgt, warum hier NICHTS per Rebinding redigiert wird:
+        #
+        #   data[feld] = MARKER   erreicht per Konstruktion keinen Alias.
+        #   messages[:] = [...]   erreicht die identische Liste, aber NICHT
+        #                         die flache Kopie -- die hat eine eigene
+        #                         aeussere Liste.
+        #
+        # Nur das In-place-Leeren der Message-DICTS erreicht beide Wege.
+        # Deshalb dreiteilig: Dicts leeren, aeussere Liste kuerzen, und das
+        # Logging-Objekt ausdruecklich neutralisieren.
         for feld in _ALLE_MASKIERTEN_FELDER:
             if feld in data:
-                data[feld] = cls.BLOCKED_FIELD_MARKER
+                data[feld] = cls._redact_wert(data[feld])
+
+        # ``messages`` bekommt seine FORM zurueck: eine Liste mit einer
+        # gueltigen Message (F7). Erst hier, nach dem generischen Leeren --
+        # die alten Dicts sind zu diesem Zeitpunkt bereits ausgeraeumt und
+        # damit auch fuer den haltenden Alias harmlos.
+        if isinstance(data.get("messages"), list):
+            data["messages"][:] = [dict(cls.BLOCKED_MESSAGE)]
+
+        cls._redact_logging_obj(data.get("litellm_logging_obj"))
+
+    @classmethod
+    def _redact_wert(cls, wert: Any) -> Any:
+        """Neutralisiert einen Nutzwert IN PLACE und gibt den Ersatz zurueck.
+
+        In place UND Rueckgabe: das eine erreicht die Aliase (wer dieses
+        Dict/diese Liste noch haelt, haelt danach nichts mehr), das andere
+        den Slot im ``data`` selbst. Beides zusammen ist der Fix; jedes
+        allein war der Befund.
+        """
+        if isinstance(wert, dict):
+            # Leeren statt neu bauen: ein neues Dict laesst das alte
+            # unberuehrt im Alias stehen.
+            wert.clear()
+            return wert
+        if isinstance(wert, list):
+            for eintrag in wert:
+                cls._redact_wert(eintrag)
+            wert[:] = []
+            return wert
+        return cls.BLOCKED_FIELD_MARKER
+
+    @classmethod
+    def _redact_logging_obj(cls, obj: Any) -> None:
+        """Neutralisiert litellms Logging-Objekt -- den zweiten Halter der
+        Nutzfelder.
+
+        Hier ist ein Rebinding richtig, anders als beim ``data``: wir halten
+        das OBJEKT selbst, nicht eine Kopie davon. Ein Attribut auf dem
+        geteilten Objekt zu setzen erreicht jeden, der das Objekt hat --
+        einen dict-SCHLUESSEL zu setzen erreicht niemanden sonst. Das ist
+        genau der Unterschied, den der Befund aufgedeckt hat.
+        """
+        if obj is None:
+            return
+        ersatz = [dict(cls.BLOCKED_MESSAGE)]
+
+        # 1. Die offizielle API zuerst (litellm_logging.py:616-623). Ihr
+        #    Docstring sieht sie ausdruecklich fuer pre-call-Hooks vor
+        #    ("Allows pre-call hooks to update the messages before the call
+        #    is made") und sie setzt self.messages UND
+        #    model_call_details["messages"].
+        update = getattr(obj, "update_messages", None)
+        if callable(update):
+            try:
+                update(list(ersatz))
+            except Exception:  # pragma: no cover - Fremdcode
+                # Bewusst weiter statt werfen: Schritt 2 unten ist die
+                # eigentliche Zusicherung und laeuft unabhaengig davon.
+                # Auch bewusst ohne Log -- ein Log an dieser Stelle koennte
+                # selbst werfen und wuerde dann Schritt 2 verhindern.
+                pass
+
+        # 2. Direkt -- und AUCH dann, wenn (1) gelaufen ist:
+        #    ``model_call_details["input"]`` ist die identische Liste
+        #    (:317) und wird von ``update_messages`` NICHT beruehrt.
+        mcd = getattr(obj, "model_call_details", None)
+        if isinstance(mcd, dict):
+            for key in ("input", "messages"):
+                if key in mcd:
+                    mcd[key] = list(ersatz)
+        if getattr(obj, "messages", None) is not None:
+            obj.messages = list(ersatz)
         # ``messages`` ist eine Liste von Dicts -- der Marker ersetzt sie
         # ganz. Ein Weiterreichen der Struktur mit geleerten Werten waere
         # wieder eine Liste von Feldern, an die jemand gedacht hat.
