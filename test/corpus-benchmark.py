@@ -403,11 +403,18 @@ def load_stopwords(path: Path) -> tuple[list[str], int]:
     ``allow_list_match`` + ``regex_flags`` am /analyze-Request, keine
     Benchmark-Sonderlogik.
 
-    NICHT verwechseln mit dem ausgelieferten Zustand: Der Guardrail sendet die
-    ``allow_list`` derzeit NICHT (kein Aufrufer ausserhalb von test/ setzt sie).
-    Ein Lauf MIT dieser Liste misst also, was nach der in
-    ``docs/foundation/erkennungsziel.md`` §7 spezifizierten Guardrail-Aenderung
-    erreichbar waere; den heutigen Betriebszustand misst der Lauf OHNE Liste.
+    Seit DATENSCHLE-82 sendet der Guardrail dieselbe Liste (``litellm/
+    de_stopwords.py``, angehaengt in ``_presidio_analyze``). Ein Lauf MIT Liste
+    misst damit den AUSGELIEFERTEN Zustand, nicht mehr nur den erreichbaren;
+    der Lauf OHNE Liste ist die Gegenprobe (Rohzustand des Analyzers).
+
+    Dieses Skript bleibt aber der Analyzer-Weg: Es baut das Payload selbst und
+    umgeht den Guardrail. Dass beide Wege dasselbe messen, ist eine Aussage,
+    die belegt werden muss und nicht angenommen werden darf -- genau diese
+    Annahme war der Fehler, den DATENSCHLE-82 aufgedeckt hat. Den Beleg fuehrt
+    ``test/guardrail-benchmark.py`` (gleicher Korpus, gleiche Auswertung, aber
+    durch ``async_pre_call_hook``); maschinell festgehalten in
+    ``test/test_de_stopwords.py::WirkungImAusgelieferbenPfad``.
 
     ``regex_flags`` ist PFLICHT und wird bewusst nicht defaultet: der Analyzer
     setzt sonst DOTALL|MULTILINE|IGNORECASE. Unter MULTILINE sind ``^``/``$``
@@ -1125,11 +1132,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Pfad zu presidio/de-stopwords.yml. Wird die Datei angegeben, "
         "schickt der Benchmark ihre Muster als Presidio-'allow_list' mit. "
-        "ACHTUNG: Das misst den ERREICHBAREN, nicht den ausgelieferten "
-        "Zustand — der Guardrail sendet die Liste derzeit NICHT "
-        "(Spezifikation: docs/foundation/erkennungsziel.md §7). Ohne das "
-        "Flag misst der Lauf den Rohzustand des Analyzers, und das ist "
-        "der Zustand, den ein Betreiber heute erlebt.",
+        "Seit DATENSCHLE-82 sendet der Guardrail dieselbe Liste, dieser Lauf "
+        "misst also den AUSGELIEFERTEN Zustand (docs/foundation/"
+        "erkennungsziel.md §6/§7). Ohne das Flag misst der Lauf den "
+        "Rohzustand des Analyzers — die Gegenprobe. Den ausgelieferten Pfad "
+        "selbst misst test/guardrail-benchmark.py.",
     )
     parser.add_argument(
         "--no-stopwords",

@@ -37,21 +37,33 @@ Stdlib-Paket "test", siehe DATENSCHLE-62):
     python3 -m unittest discover -s ./test -p "test_de_stopwords.py" -v
 """
 
+import asyncio
+import importlib.util
+import json
 import os
+import sys
+import tempfile
 import unittest
 
 import regex
 import yaml
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+
+# litellm/ auf den Importpfad legen: die Laufzeit-Tests unten pruefen den
+# Guardrail selbst, nicht nur die Datendatei.
+_LITELLM_DIR = os.path.normpath(os.path.join(_HERE, "..", "litellm"))
+if _LITELLM_DIR not in sys.path:
+    sys.path.insert(0, _LITELLM_DIR)
+
+import datenschleuse_guardrail as dg  # noqa: E402
+import de_stopwords as ds  # noqa: E402
+
 _STOPWORD_PATH = os.path.normpath(
     os.path.join(_HERE, "..", "presidio", "de-stopwords.yml")
 )
 _RECOGNIZER_PATH = os.path.normpath(
     os.path.join(_HERE, "..", "presidio", "recognizers-config.yml")
-)
-_GUARDRAIL_PATH = os.path.normpath(
-    os.path.join(_HERE, "..", "litellm", "datenschleuse_guardrail.py")
 )
 _ANALYZER_URL = os.environ.get("PRESIDIO_ANALYZER_URL", "http://localhost:5001")
 
@@ -145,19 +157,65 @@ def _deny_list_terme():
     return treffer
 
 
-def _guardrail_sendet_allow_list():
-    """Sendet der Guardrail die allow_list inzwischen? (Schalter fuer §7)
+class _FakeAnalyzerResponse:
+    """Minimal-Antwort des Analyzers: leere Trefferliste, HTTP 200."""
 
-    Bewusst als Quelltext-Pruefung: Es ist dieselbe Frage, die das Audit per
-    grep beantwortet hat -- nur maschinell und dauerhaft. Sobald jemand die
-    Liste in _analyze verdrahtet, aktiviert sich der Laufzeit-Test unten von
-    selbst und kann nicht vergessen werden.
+    status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return []
+
+
+def analyze_payload(guard, text="bestellnummer"):
+    """Gibt das Payload zurueck, das ``guard`` an POST /analyze schickt.
+
+    DATENEBENE STATT QUELLTEXT-SUBSTRING. Hier stand vorher eine Pruefung
+    ``"allow_list" in open(datenschleuse_guardrail.py).read()``, die als
+    Schalter fuer den Laufzeit-Test unten diente. Die Konstruktion war in
+    beide Richtungen falsch:
+
+    * **Falsch-negativ.** Wird die Uebergabe ueber ein Hilfsmodul gebaut --
+      genau das Muster von ``qi_generalization.py`` und
+      ``sensitivity_classifier.py`` --, taucht das Wort im Guardrail nicht
+      zwingend auf. Der Laufzeit-Test waere stillschweigend uebersprungen
+      geblieben, obwohl die Anforderung faellig ist. Ein Test, der sich selbst
+      abschaltet, ist schlimmer als keiner: er meldet Gruen.
+    * **Falsch-positiv.** Umgekehrt haette schon ein Kommentar oder ein
+      Variablenname mit dem Wort den Test scharf geschaltet, ohne dass ein
+      einziges Byte auf der Leitung anders aussieht.
+
+    Diese Funktion fragt stattdessen die einzige Instanz, die es wirklich
+    weiss: das tatsaechlich gebaute Request-Payload. Der Analyzer wird dafuer
+    nicht gebraucht -- ``httpx.AsyncClient`` wird ersetzt und das Payload
+    abgegriffen.
     """
+    gesehen = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, **kwargs):  # noqa: A002
+            gesehen["url"] = url
+            gesehen["payload"] = json
+            return _FakeAnalyzerResponse()
+
+    orig = dg.httpx.AsyncClient
+    dg.httpx.AsyncClient = _FakeClient  # type: ignore[assignment]
     try:
-        with open(_GUARDRAIL_PATH, encoding="utf-8") as fh:
-            return "allow_list" in fh.read()
-    except OSError:
-        return False
+        asyncio.run(guard._analyze(text))
+    finally:
+        dg.httpx.AsyncClient = orig  # type: ignore[assignment]
+    return gesehen.get("payload")
 
 
 def _analyzer_erreichbar():
@@ -415,39 +473,283 @@ class BetreiberVorrang(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(
-    _guardrail_sendet_allow_list(),
-    "Guardrail sendet die allow_list noch nicht (docs/foundation/"
-    "erkennungsziel.md §7). Der Test aktiviert sich automatisch, sobald "
-    "'allow_list' in litellm/datenschleuse_guardrail.py auftaucht.",
-)
+class GuardrailSendetAllowList(unittest.TestCase):
+    """Der ausgelieferte Zustand: schickt der Guardrail die Liste mit? (§7)
+
+    Das war die eigentliche Luecke von DATENSCHLE-82: Die Liste war gemessen,
+    auditiert und gemergt -- und wirkte ausschliesslich im Benchmark. Im
+    laufenden Proxy stand sie nirgends. Gemessene Zahlen, die nur ein
+    Werkzeug erreicht, beschreiben den erreichbaren, nicht den ausgelieferten
+    Zustand.
+
+    Geprueft wird deshalb das Payload auf der Leitung, nicht der Quelltext.
+    """
+
+    def setUp(self):
+        self.doc = _load_stopwords()
+        self.guard = dg.DatenschleuseGuardrail(
+            presidio_analyzer_url="http://nicht-erreichbar:3000",
+            image_policy="block",
+        )
+
+    def test_payload_enthaelt_die_allow_list(self):
+        payload = analyze_payload(self.guard)
+        self.assertIsNotNone(payload, "Es wurde gar kein /analyze-Payload gebaut.")
+        self.assertIn(
+            "allow_list",
+            payload,
+            "Der Guardrail sendet die Nicht-PII-Wortliste nicht mit. Damit "
+            "wirkt presidio/de-stopwords.yml nur im Benchmark und nicht in "
+            "Produktion (docs/foundation/erkennungsziel.md §7).",
+        )
+        self.assertEqual(sorted(payload["allow_list"]), sorted(_patterns(self.doc)))
+
+    def test_payload_setzt_allow_list_match_auf_regex(self):
+        payload = analyze_payload(self.guard) or {}
+        self.assertEqual(
+            payload.get("allow_list_match"),
+            "regex",
+            "Ohne allow_list_match='regex' vergleicht Presidio die Eintraege "
+            "als Literale -- die verankerten Muster treffen dann nie.",
+        )
+
+    def test_payload_sendet_regex_flags_explizit(self):
+        """Der Punkt, an dem die erste Fassung der Liste gescheitert ist (F1).
+
+        Ohne explizite Flags defaultet ``AnalyzerRequest`` auf
+        DOTALL|MULTILINE|IGNORECASE. Unter MULTILINE werden aus den
+        Vollspan-Ankern ``\\A``/``\\z`` faktisch Zeilen-Anker-Verhaeltnisse:
+        mehrzeilige Spans wie "Zahlungsart\\nLoewenstein" fielen komplett weg,
+        inklusive des echten Nachnamens.
+        """
+        payload = analyze_payload(self.guard) or {}
+        self.assertIn(
+            "regex_flags",
+            payload,
+            "regex_flags fehlt im Payload -- der Analyzer defaultet dann auf "
+            "DOTALL|MULTILINE|IGNORECASE (Security-Finding F1).",
+        )
+        self.assertEqual(payload["regex_flags"], self.doc["regex_flags"])
+
+    def test_verifikationsdurchlauf_sieht_dieselbe_konfiguration(self):
+        """Beide Durchlaeufe muessen dieselbe Erkennungskonfiguration sehen.
+
+        ``_analyze`` bedient die Maskierung UND den Verifikationsdurchlauf,
+        der das fertig maskierte Ergebnis erneut prueft und bei Restbefund
+        fail-closed blockt. Wirkte die Liste nur im Maskierungspfad, waere der
+        Selbstblock garantiert: Die Maskierung ueberspringt 'bestellnummer',
+        die Verifikation findet es im Ergebnis weiterhin -- und blockt jeden
+        Request, der einen Stoppwort-Term enthaelt. Aus einem Precision-Fix
+        wuerde eine Verfuegbarkeitsstoerung.
+
+        Der Test haelt fest, dass beide Pfade durch dieselbe Naht laufen und
+        dort dasselbe Payload entsteht.
+        """
+        payload_maskierung = analyze_payload(self.guard, "bestellnummer")
+        payload_verifikation = analyze_payload(self.guard, "bestellnummer   ")
+        for name, payload in (
+            ("Maskierung", payload_maskierung),
+            ("Verifikation", payload_verifikation),
+        ):
+            with self.subTest(durchlauf=name):
+                self.assertIn("allow_list", payload or {})
+                self.assertEqual((payload or {}).get("allow_list_match"), "regex")
+
+    def test_leere_liste_wird_nicht_gesendet(self):
+        """Gegenprobe: der Test oben ist nicht durch ein Konstrukt gruen, das
+        immer einen allow_list-Schluessel setzt."""
+        payload = analyze_payload(self.guard, "   ")
+        self.assertIsNone(
+            payload,
+            "Leerer Text darf gar keinen Analyzer-Call ausloesen -- sonst "
+            "misst der Payload-Test etwas anderes als den echten Pfad.",
+        )
+
+
+class BenchmarkUndGuardrailLadenDieselbeListe(unittest.TestCase):
+    """Was gemessen wird, muss auch gesendet werden -- und umgekehrt.
+
+    Der Benchmark (``test/corpus-benchmark.py::load_stopwords``) und der
+    Guardrail (``litellm/de_stopwords.py::load``) validieren dieselbe Datei mit
+    zwei Implementierungen. Das ist kein Versehen, sondern die Grenze zwischen
+    Werkzeug und Laufzeit-Image: der Benchmark liegt in ``test/`` und wird
+    nicht ausgeliefert.
+
+    Genau deshalb braucht es diese Klammer. Driften die beiden auseinander,
+    misst der Benchmark eine andere Liste als der Dienst sendet -- und die
+    Zahlen in erkennungsziel.md beschreiben wieder den erreichbaren statt den
+    ausgelieferten Zustand. Das war der ganze Befund von DATENSCHLE-82.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "corpus_benchmark", os.path.join(_HERE, "corpus-benchmark.py")
+        )
+        modul = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = modul
+        spec.loader.exec_module(modul)
+        cls.cb = modul
+
+    def test_muster_und_flags_sind_identisch(self):
+        import pathlib
+
+        bench_patterns, bench_flags = self.cb.load_stopwords(pathlib.Path(_STOPWORD_PATH))
+        geladen = ds.load(stopwords_path=_STOPWORD_PATH, recognizers_path=_RECOGNIZER_PATH)
+        self.assertEqual(list(geladen.patterns), bench_patterns)
+        self.assertEqual(geladen.regex_flags, bench_flags)
+
+    def test_beide_lehnen_fehlende_regex_flags_ab(self):
+        """Stichprobe auf die Fehlerbehandlung, nicht nur auf das Ergebnis."""
+        import pathlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "de-stopwords.yml")
+            with open(pfad, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(
+                    {
+                        "allow_list_match": "regex",
+                        "entries": [{"pattern": "(?i:\\Ax\\z)"}],
+                    },
+                    fh,
+                )
+            with self.assertRaises(self.cb.BenchmarkError):
+                self.cb.load_stopwords(pathlib.Path(pfad))
+            with self.assertRaises(ds.StopwordConfigError):
+                ds.load(stopwords_path=pfad, recognizers_path=_RECOGNIZER_PATH)
+
+
 class BetreiberVorrangZurLaufzeit(unittest.TestCase):
-    """Anforderung an die noch nicht umgesetzte Guardrail-Aenderung (§7).
+    """Der Betreiber gewinnt -- auch zur Laufzeit (§7, ADR-0002 Konsequenz 2).
 
-    Sobald der Guardrail die Liste sendet, reicht die Datenebene nicht mehr:
-    Betreiber pflegen ihre eigene recognizers-config.yml, und die kann mit der
-    mitgelieferten Stoppwortliste kollidieren, ohne dass jemand aus diesem
-    Repo es merkt.
+    Die Datenebene (Klasse ``BetreiberVorrang`` oben) prueft die Liste, die in
+    DIESEM Repo liegt. Das reicht nicht mehr, seit der Guardrail die Liste
+    sendet: Betreiber pflegen ihre eigene recognizers-config.yml, und die kann
+    mit der mitgelieferten Stoppwortliste kollidieren, ohne dass jemand hier
+    es merkt.
 
-    Verlangt wird FAIL-CLOSED beim Laden -- nicht "kollidierenden Eintrag still
+    Verlangt ist FAIL-CLOSED beim Laden -- nicht "kollidierenden Eintrag still
     ueberspringen", nicht "wirken lassen". Wer beides konfiguriert hat, hat
     einen Konflikt, den nur er aufloesen kann; der Dienst darf ihn nicht fuer
     ihn entscheiden.
 
-    Der Test ist bewusst jetzt schon da und uebersprungen: Die Anforderung
-    steht damit im Code und nicht nur in der Doku, und sie meldet sich von
-    selbst, sobald jemand §7 umsetzt.
+    KEIN ``skipUnless`` mehr. Vorher haing diese Klasse an einem Schalter, der
+    den Quelltext des Guardrails nach dem Wort "allow_list" durchsuchte. Damit
+    haette ein Rueckbau der Verdrahtung den Test nicht rot gemacht, sondern
+    stillschweigend abgeschaltet -- die Anforderung waere lautlos verschwunden.
+    Sie ist jetzt faellig, also laeuft sie.
     """
 
-    def test_kollision_beim_laden_fuehrt_zu_startfehler(self):
-        self.fail(
-            "§7 ist umgesetzt (allow_list im Guardrail). Damit ist der "
-            "Betreiber-Vorrang zur Laufzeit faellig: Der Guardrail MUSS beim "
-            "Laden pruefen, ob ein Muster aus de-stopwords.yml einen "
-            "deny_list-Term aus recognizers-config.yml matcht, und in diesem "
-            "Fall fail-closed starten. Diesen Test durch die echte "
-            "Verhaltenspruefung ersetzen (siehe ADR-0002, Konsequenz 2)."
+    @staticmethod
+    def _schreibe_liste(verzeichnis, patterns, **overrides):
+        doc = {
+            "version": 2,
+            "allow_list_match": "regex",
+            "regex_flags": 0,
+            "entries": [{"term": p, "pattern": p} for p in patterns],
+        }
+        doc.update(overrides)
+        pfad = os.path.join(verzeichnis, "de-stopwords.yml")
+        with open(pfad, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(doc, fh, allow_unicode=True)
+        return pfad
+
+    def _guardrail_mit(self, stopwords_path):
+        return dg.DatenschleuseGuardrail(
+            presidio_analyzer_url="http://nicht-erreichbar:3000",
+            image_policy="block",
+            stopwords_path=stopwords_path,
+            recognizers_path=_RECOGNIZER_PATH,
         )
+
+    def test_kollision_beim_laden_fuehrt_zu_startfehler(self):
+        """Der Kern: ein Muster, das einen deny_list-Term trifft, verhindert
+        den Start -- nicht "Eintrag ueberspringen", nicht "wirken lassen"."""
+        deny_term = next(t for _, t in _deny_list_terme())
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = self._schreibe_liste(
+                tmp, ["(?i:\\Abestellnummer\\z)", "(?i:\\A%s\\z)" % regex.escape(deny_term)]
+            )
+            with self.assertRaises(ds.StopwordConfigError) as ctx:
+                self._guardrail_mit(pfad)
+        self.assertIn(
+            deny_term,
+            str(ctx.exception),
+            "Die Fehlermeldung muss den kollidierenden Term nennen -- sonst "
+            "kann der Betreiber den Konflikt nicht aufloesen.",
+        )
+
+    def test_ohne_kollision_startet_der_guardrail(self):
+        """Gegenprobe: die Pruefung blockt nicht einfach alles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = self._schreibe_liste(tmp, ["(?i:\\Abestellnummer\\z)"])
+            guard = self._guardrail_mit(pfad)
+        payload = analyze_payload(guard)
+        self.assertEqual(payload["allow_list"], ["(?i:\\Abestellnummer\\z)"])
+
+    def test_die_ausgelieferte_kombination_startet(self):
+        """Die Dateien, die dieses Repo mitliefert, muessen zusammenpassen.
+
+        Ohne diesen Test koennte ein neuer Eintrag in de-stopwords.yml den
+        Dienst beim naechsten Start unbrauchbar machen -- gemerkt haette es
+        erst der Betreiber."""
+        guard = dg.DatenschleuseGuardrail(
+            presidio_analyzer_url="http://nicht-erreichbar:3000",
+            image_policy="block",
+            stopwords_path=_STOPWORD_PATH,
+            recognizers_path=_RECOGNIZER_PATH,
+        )
+        self.assertIn("allow_list", analyze_payload(guard))
+
+    def test_fehlende_liste_fuehrt_zu_startfehler(self):
+        """Nicht lesbar heisst nicht "einfach ohne Liste weiterlaufen" -- das
+        waere eine unbemerkte Verhaltensaenderung im Betrieb (§7)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ds.StopwordConfigError):
+                self._guardrail_mit(os.path.join(tmp, "gibt-es-nicht.yml"))
+
+    def test_fehlende_regex_flags_fuehren_zu_startfehler(self):
+        """Ohne explizite Flags waere F1 wieder scharf -- also gar nicht erst
+        starten."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = self._schreibe_liste(tmp, ["(?i:\\Abestellnummer\\z)"])
+            with open(pfad, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            del doc["regex_flags"]
+            with open(pfad, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(doc, fh)
+            with self.assertRaises(ds.StopwordConfigError):
+                self._guardrail_mit(pfad)
+
+    def test_fehlende_recognizer_config_fuehrt_zu_startfehler(self):
+        """Ohne die Betreiber-Config ist der Vorrang nicht pruefbar. Nicht
+        pruefbar heisst nicht "dann eben nicht pruefen"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = self._schreibe_liste(tmp, ["(?i:\\Abestellnummer\\z)"])
+            with self.assertRaises(ds.StopwordConfigError):
+                dg.DatenschleuseGuardrail(
+                    presidio_analyzer_url="http://nicht-erreichbar:3000",
+                    image_policy="block",
+                    stopwords_path=pfad,
+                    recognizers_path=os.path.join(tmp, "gibt-es-nicht.yml"),
+                )
+
+    def test_die_kollisionspruefung_hat_zur_laufzeit_zaehne(self):
+        """Beleg, dass der Kern-Test nicht zufaellig gruen ist: dieselbe
+        Pruefung gegen eine Betreiber-Config OHNE den Term muss durchlassen."""
+        deny_term = next(t for _, t in _deny_list_terme())
+        with tempfile.TemporaryDirectory() as tmp:
+            leere_config = os.path.join(tmp, "recognizers-config.yml")
+            with open(leere_config, "w", encoding="utf-8") as fh:
+                yaml.safe_dump({"recognizers": [{"name": "X", "deny_list": ["zzz"]}]}, fh)
+            pfad = self._schreibe_liste(tmp, ["(?i:\\A%s\\z)" % regex.escape(deny_term)])
+            guard = dg.DatenschleuseGuardrail(
+                presidio_analyzer_url="http://nicht-erreichbar:3000",
+                image_policy="block",
+                stopwords_path=pfad,
+                recognizers_path=leere_config,
+            )
+        self.assertIn("allow_list", analyze_payload(guard))
 
 
 @unittest.skipUnless(
@@ -515,6 +817,222 @@ class StopwordListeGegenAnalyzer(unittest.TestCase):
                     [(t["entity_type"], t["start"], t["end"]) for t in mit],
                     "Die Liste veraendert das Ergebnis fuer %r." % text,
                 )
+
+
+@unittest.skipUnless(
+    _ANALYZER_DA,
+    "Presidio-Analyzer nicht erreichbar auf %s." % _ANALYZER_URL,
+)
+class GuardrailAbnahmeGegenAnalyzer(unittest.IsolatedAsyncioTestCase):
+    """Die Abnahmepunkte aus §7 -- durch den GUARDRAIL, nicht am Analyzer.
+
+    Die Klasse darueber belegt, was der Analyzer mit der Liste tut. Das ist
+    genau die Aussage, die DATENSCHLE-82 ausgeloest hat: der erreichbare
+    Zustand. Hier laeuft derselbe Nachweis durch den ausgelieferten Pfad --
+    ``async_pre_call_hook`` -> ``_analyze`` -> echter Analyzer.
+    """
+
+    def _guard(self):
+        return dg.DatenschleuseGuardrail(
+            presidio_analyzer_url=_ANALYZER_URL,
+            image_policy="block",
+        )
+
+    async def _pre_call(self, messages):
+        data = {"messages": messages}
+        return await self._guard().async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+
+    async def test_abnahme_1_tool_call_schluessel_bleibt_wert_wird_maskiert(self):
+        """§7 Abnahme 1 -- die FP-Klasse, die still Funktionalitaet zerstoert."""
+        msg = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": json.dumps(
+                        {"bestellnummer": "Herr Mueller"}, ensure_ascii=False
+                    ),
+                },
+            }],
+        }
+        out = await self._pre_call([msg])
+        nachricht = next(m for m in out["messages"] if m.get("tool_calls"))
+        args = json.loads(nachricht["tool_calls"][0]["function"]["arguments"])
+        self.assertIn(
+            "bestellnummer",
+            args,
+            "Der Parametername wurde maskiert -- der Tool-Call geht durch und "
+            "ist beim Empfaenger unbrauchbar (DATENSCHLE-71).",
+        )
+        self.assertNotIn(
+            "Mueller",
+            args["bestellnummer"],
+            "Der Wert muss weiterhin maskiert werden -- die Liste darf "
+            "Precision kaufen, aber keinen Recall.",
+        )
+
+    async def test_abnahme_2_zweizeiliges_label_wert_paar(self):
+        """§7 Abnahme 2 -- Regressionsnachweis fuer Security-Finding F1."""
+        out = await self._pre_call(
+            [{"role": "user", "content": "Zahlungsart\nLoewenstein"}]
+        )
+        inhalte = " ".join(
+            m.get("content") or "" for m in out["messages"] if isinstance(m.get("content"), str)
+        )
+        self.assertNotIn("Loewenstein", inhalte)
+
+    async def test_abnahme_3_nachname_vorname(self):
+        """§7 Abnahme 3 -- Regressionsnachweis fuer Security-Finding F2."""
+        out = await self._pre_call([{"role": "user", "content": "Menge, Andreas"}])
+        inhalte = " ".join(
+            m.get("content") or "" for m in out["messages"] if isinstance(m.get("content"), str)
+        )
+        for name in ("Menge", "Andreas"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, inhalte)
+
+    async def test_abnahme_4_deny_list_term_des_betreibers_bleibt_wirksam(self):
+        """§7 Abnahme 4 -- die mitgelieferte Vorgabe entschaerft nichts."""
+        out = await self._pre_call(
+            [{"role": "user", "content": "Der Bürgermeister kommt morgen vorbei."}]
+        )
+        inhalte = " ".join(
+            m.get("content") or "" for m in out["messages"] if isinstance(m.get("content"), str)
+        )
+        self.assertNotIn(
+            "Bürgermeister",
+            inhalte,
+            "Der deny_list-Treffer des Betreibers wurde von der "
+            "mitgelieferten Stoppwortliste still ueberstimmt.",
+        )
+
+
+@unittest.skipUnless(
+    _ANALYZER_DA,
+    "Presidio-Analyzer nicht erreichbar auf %s." % _ANALYZER_URL,
+)
+class WirkungImAusgelieferbenPfad(unittest.IsolatedAsyncioTestCase):
+    """Die Zahl, wegen der DATENSCHLE-82 ueberhaupt existiert.
+
+    Die Stoerquote 81,2%% -> 37,5%% war bis hierher eine Aussage ueber das
+    MESSWERKZEUG: ``test/corpus-benchmark.py`` haengt die Liste selbst an
+    ``/analyze``, der Proxy tat es nicht. Gemessen wurde damit der erreichbare,
+    nicht der ausgelieferte Zustand.
+
+    Diese Klasse misst beide Seiten im selben Lauf gegen denselben Analyzer und
+    haelt sie aneinander. Sie ist der Grund, warum ein Rueckbau der Verdrahtung
+    nicht mehr unbemerkt bleiben kann: Ohne gesendete Liste faellt der
+    Guardrail auf die Zahl OHNE Liste zurueck, und dann ist hier rot.
+
+    Bewusst nur die Negativ-Faelle: Sie tragen die Stoerquote, und der Lauf
+    bleibt kurz genug fuer die normale Suite.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "corpus_benchmark", os.path.join(_HERE, "corpus-benchmark.py")
+        )
+        modul = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = modul
+        spec.loader.exec_module(modul)
+        cls.cb = modul
+        alle = cls.cb.load_corpus(cls.cb.DEFAULT_CORPUS_PATH)
+        cls.negativ = [c for c in alle if c.is_negative]
+
+    def _stoerquote(self, matches):
+        return self.cb.aggregate(matches, 0.5).stoerquote
+
+    def _direkt(self, allow_list, regex_flags):
+        """Der Benchmark-Weg: Text direkt an ``/analyze``."""
+        import requests
+
+        with requests.Session() as s:
+            return [
+                self.cb.match_case(
+                    c,
+                    self.cb.analyze_text(
+                        s, _ANALYZER_URL, c.text, 30.0, allow_list, regex_flags
+                    ),
+                    0.5,
+                )
+                for c in self.negativ
+            ]
+
+    async def _durch_den_guardrail(self):
+        """Der ausgelieferte Weg: ``async_pre_call_hook`` -> ``_analyze``.
+
+        Abgegriffen wird die ECHTE Rueckgabe von ``_presidio_analyze`` -- kein
+        nachgebautes Payload, sonst pruefte der Test seinen eigenen Nachbau
+        statt den Dienst.
+        """
+        guard = dg.DatenschleuseGuardrail(
+            presidio_analyzer_url=_ANALYZER_URL, image_policy="block"
+        )
+        original = guard._presidio_analyze
+        matches = []
+        for case in self.negativ:
+            gesehen = []
+
+            async def _wrap(text, *a, _c=case, _g=gesehen, **k):
+                res = await original(text, *a, **k)
+                if text == _c.text:
+                    _g.append(list(res))
+                return res
+
+            guard._presidio_analyze = _wrap
+            try:
+                await guard.async_pre_call_hook(
+                    user_api_key_dict=None,
+                    cache=None,
+                    data={"messages": [{"role": "user", "content": case.text}]},
+                    call_type="completion",
+                )
+            finally:
+                guard._presidio_analyze = original
+            self.assertTrue(
+                gesehen,
+                "Der Guardrail hat den Text %r nie unveraendert analysiert -- "
+                "der Test misst dann nicht den ausgelieferten Pfad." % case.text[:40],
+            )
+            matches.append(
+                self.cb.match_case(
+                    c := case,
+                    self.cb.parse_presidio_entities(gesehen[0], context=c.case_id),
+                    0.5,
+                )
+            )
+        return matches
+
+    async def test_die_liste_wirkt_im_ausgelieferten_pfad(self):
+        """Der Kern: der Guardrail erreicht die Zahl MIT Liste, nicht die ohne.
+
+        Beide Vergleichswerte werden im selben Lauf gemessen. Ein fest
+        verdrahtetes 0.375 waere wertlos -- es wuerde bei jeder Korpus- oder
+        Analyzer-Aenderung rot, ohne dass die Verdrahtung etwas dafuer kann.
+        """
+        doc = _load_stopwords()
+        ohne = self._stoerquote(self._direkt(None, 0))
+        mit = self._stoerquote(self._direkt(_patterns(doc), doc.get("regex_flags", 0)))
+        guardrail = self._stoerquote(await self._durch_den_guardrail())
+
+        self.assertLess(
+            mit, ohne, "Die Liste senkt die Stoerquote nicht mehr -- Vorannahme hinfaellig."
+        )
+        self.assertEqual(
+            guardrail,
+            mit,
+            "Der Guardrail erreicht NICHT die Stoerquote mit Liste (%.1f%% statt "
+            "%.1f%%). Genau das war der Zustand vor DATENSCHLE-82: die Liste "
+            "wirkte im Benchmark, der Proxy sendete sie nie. Die veroeffentlichte "
+            "Zahl beschriebe dann wieder den erreichbaren statt den "
+            "ausgelieferten Zustand." % (guardrail * 100, mit * 100),
+        )
 
 
 if __name__ == "__main__":

@@ -81,6 +81,12 @@ import sensitivity_classifier as sc
 # Kuerzel), findet die generische Erkennung prinzipbedingt nicht.
 import custom_rules as cur
 
+# Deutsche Nicht-PII-Wortliste (DATENSCHLE-82). Unterdrueckt gemessene
+# Fehlzuendungen des spaCy-NER ueber Presidios allow_list. Laedt fail-closed
+# und erzwingt den Vorrang der Betreiber-Konfiguration -- Begruendung und
+# Fehlermodi im Modul-Docstring von de_stopwords.py.
+import de_stopwords as ds
+
 
 # ---------------------------------------------------------------------------
 # Basisklasse: in Produktion die echte LiteLLM-CustomGuardrail, im Test-/
@@ -808,6 +814,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
         custom_rules_path: Optional[str] = None,
+        stopwords_path: Optional[str] = None,
+        recognizers_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -865,6 +873,23 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # hochkommt -- blind klassifizieren waere gefaehrlicher als nicht
         # starten. Siehe docs/SENSITIVITY-INTEGRATION.md.
         self.classifier = sc.SensitivityClassifier()
+
+        # --- Deutsche Nicht-PII-Wortliste (DATENSCHLE-82) -------------------
+        # Presidios eigener Unterdrueckungs-Mechanismus, einmalig beim START
+        # geladen und ab hier an JEDEN /analyze-Aufruf gehaengt. Vorher wirkte
+        # die Liste nur im Benchmark -- gemessen wurde damit der erreichbare,
+        # nicht der ausgelieferte Zustand (docs/foundation/erkennungsziel.md
+        # §6/§7).
+        #
+        # Fail-closed wie der Klassifizierer darueber, und aus demselben
+        # Grund: eine fehlende oder kollidierende Liste aendert das
+        # Erkennungsverhalten gegenueber dem Gemessenen. Ein Dienst, der das
+        # still tut, ist gefaehrlicher als einer, der nicht startet.
+        # StopwordConfigError wird deshalb bewusst NICHT gefangen.
+        self.allow_list = ds.load(
+            stopwords_path=stopwords_path or kwargs.pop("stopwords_path", None),
+            recognizers_path=recognizers_path or kwargs.pop("recognizers_path", None),
+        )
 
         # --- Eigene Begriffe und Muster (DATENSCHLE-7) ----------------------
         # Anders als der Klassifizierer daneben startet dieser Layer NIE
@@ -1000,6 +1025,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         payload: Dict[str, Any] = {"text": text, "language": self.language}
         if self.score_threshold > 0:
             payload["score_threshold"] = self.score_threshold
+        # Nicht-PII-Wortliste (DATENSCHLE-82). Hier und nirgends sonst: durch
+        # diese Stelle laufen BEIDE Durchlaeufe -- die Maskierung und der
+        # Verifikationsdurchlauf, der das fertig maskierte Ergebnis erneut
+        # prueft und bei Restbefund fail-closed blockt.
+        #
+        # Wuerde die Liste nur im Maskierungspfad wirken, waere der Selbstblock
+        # garantiert: Die Maskierung ueberspringt 'bestellnummer', die
+        # Verifikation findet es im maskierten Ergebnis weiterhin als LOCATION
+        # -- und blockt jeden Request, der einen Stoppwort-Term enthaelt. Aus
+        # einem Precision-Fix wuerde eine Verfuegbarkeitsstoerung. Beide
+        # Durchlaeufe muessen dieselbe Erkennungskonfiguration sehen.
+        #
+        # allow_list_match und regex_flags gehoeren untrennbar dazu (siehe
+        # de_stopwords.AllowList.as_payload).
+        if len(self.allow_list):
+            payload.update(self.allow_list.as_payload())
         try:
             async with httpx.AsyncClient(timeout=self.request_timeout) as client:
                 resp = await client.post(f"{self.analyzer_url}/analyze", json=payload)
