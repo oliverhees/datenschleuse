@@ -128,8 +128,16 @@ Precision-Zahl danach aussieht.
 
 Das Precision-Ziel ist **rot**. Der Korpus beprobte auf der Negativ-Seite lange
 nur die Regex-Recognizer (IBAN, Telefon, KFZ, Aktenzeichen, Firma) — die
-statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **66,2 %**
-bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört).
+statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **67,5 %**
+bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört). **Das
+ist der ausgelieferte Zustand** — vier von fünf PII-freien Texten werden gestört.
+
+Mit der Nicht-PII-Wortliste (`presidio/de-stopwords.yml`) steigt die Precision
+ohne Recall-Verlust auf **81,8 %** bei **37,5 %** Störquote (12 von 32). Diese
+Zahlen sind gemessen und die Liste liegt im Repo, aber der Guardrail sendet sie
+nicht an Presidio — sie beschreiben den **erreichbaren**, nicht den
+ausgelieferten Zustand (siehe „Aufruf"). Beide Gates bleiben in beiden Fällen
+verfehlt.
 
 Der gemeldete **Recall von 100 % ist ebenfalls kein Qualitätsbeleg**:
 `de_core_news_lg` gibt für PERSON in seinen eigenen Metadaten 92,02 % Recall an.
@@ -137,11 +145,11 @@ Ein Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
 Evaluationsmenge, ist zu leicht. Die Härtung des Korpus ist ein eigenes Work
 Item.
 
-Das eingecheckte `benchmark-results.json` stammt noch aus einem Lauf mit
-unvollständig beprobter Negativ-Seite und zeigt deshalb zu gute
-Precision-Werte. Es wird hier bewusst nicht von Hand korrigiert — es ist ein
-Maschinen-Artefakt und wird durch einen echten Lauf ersetzt, nicht durch eine
-Handeintragung. Bis dahin ist es kein Beleg.
+Das eingecheckte `benchmark-results.json` ist der Lauf **mit** Wortliste über
+alle 82 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
+Störquote 37,5 %, `bestanden: false`). Es wird ausschließlich durch einen
+echten Lauf ersetzt, nie von Hand editiert — es ist ein Maschinen-Artefakt.
+Eine Handeintragung wäre keine Korrektur, sondern eine Fälschung der Messung.
 
 ## Aufruf
 
