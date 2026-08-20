@@ -25,6 +25,18 @@ services:
       # Verschluesselter QI-Session-State (SQLite) persistent halten.
       - datenschleuse-qi-state:/app/state
       - ./litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
+      - ./litellm/custom_rules.py:/app/custom_rules.py:ro
+      # Eigene Begriffe und Muster (DATENSCHLE-7). BEWUSST beschreibbar
+      # gemountet (kein :ro): die Regeldatei ist das einzige Artefakt, das der
+      # Anwender im Betrieb aendert -- ueber `datenschleuse-rules add` auf dem
+      # Host ODER per `docker compose exec` im Container. Der Guardrail liest
+      # sie bei Aenderung automatisch neu ein (mtime-Pruefung), deshalb wirkt
+      # ein neues Muster ohne Rebuild UND ohne Neustart.
+      #
+      # Die Datei enthaelt potenziell echte Kundennamen -> per .gitignore vom
+      # Repository ausgeschlossen und wie ein Secret zu behandeln. Gespeichert
+      # werden ausschliesslich die Muster selbst, NIE Trefferdaten (ISC-36).
+      - ./rules:/app/rules
       # sensitivity_classifier.py's Default-Config-Pfad ist relativ zur eigenen
       # Datei (../presidio/sensitivity-keywords.yml) -- das stimmt im Repo
       # (litellm/ und presidio/ sind Geschwister), aber NICHT im Image (/app/
@@ -35,6 +47,10 @@ services:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
       - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      # Regeldatei der eigenen Begriffe/Muster (DATENSCHLE-7). Explizit
+      # gesetzt statt auf den Modul-Default zu vertrauen, damit der Pfad an
+      # einer Stelle sichtbar ist und mit dem Volume-Mount oben zusammenpasst.
+      - DATENSCHLEUSE_CUSTOM_RULES_PATH=/app/rules/custom-rules.yml
       # Live-Build-Befund (verifiziert 2026-07-23, Coolify-Vorbereitung): diese
       # Zeile fehlte -- general_settings.master_key in config.yaml referenziert
       # os.environ/DATENSCHLEUSE_MASTER_KEY, aber ohne diese Env-Var kam der Key

@@ -21,6 +21,23 @@ PyYAML>=6.0
 # Schluessel/das Paket, startet der QI-Store nicht.
 cryptography>=42.0
 
+# regex: Regex-Engine fuer die eigenen Begriffe/Muster des Anwenders
+# (litellm/custom_rules.py, DATENSCHLE-7).
+#
+# Warum nicht die stdlib `re`? Wegen des ``timeout``-Parameters beim Matchen.
+# Anwender-Regexe sind nicht vertrauenswuerdig kalibriert -- ein Muster mit
+# exponentiellem Backtracking (ReDoS) wuerde mit `re` einen Request unbegrenzt
+# anhalten. Mit `regex` laeuft genau diese eine Regel in ein Timeout, alle
+# anderen liefern weiter. Das ist die technische Grundlage des Anti-Kriteriums
+# ISC-26 (ein kaputtes Muster legt nur sich selbst still, nie die Pipeline).
+#
+# Pruefung (Gesetz 5): sehr weit verbreitet (Millionen Downloads/Tag), seit
+# ueber 15 Jahren aktiv gepflegt, keine offenen bekannten CVEs. Kein neues
+# Supply-Chain-Risiko fuer dieses Projekt: Presidio selbst haengt bereits von
+# `regex` ab (es ist die Engine hinter presidio/recognizers-config.yml), und
+# test/requirements.txt nutzt es aus genau diesem Grund schon.
+regex>=2023.0
+
 # --- Nur fuer die Test-Suite (nicht ins Laufzeit-Image noetig) ------------
 # Die Tests (test/test_datenschleuse_guardrail.py) laufen mit der stdlib
 # (unittest.IsolatedAsyncioTestCase) OHNE zusaetzliche Pakete. Wer sie lieber
