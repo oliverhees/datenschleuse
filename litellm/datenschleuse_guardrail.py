@@ -1604,6 +1604,77 @@ class DatenschleuseBlocked(Exception):
 
 
 # ===========================================================================
+# Betreiber-Geheimnis des Freigabe-Headers (DATENSCHLE-69, Runde 4, F2)
+# ===========================================================================
+#: ENV-Name des Header-Geheimnisses. Als Konstante, weil ihn ausser dem
+#: Konstruktor auch die Konfigurationsmeldungen nennen muessen -- ein
+#: Betreiber, der beim Start abbricht, braucht den Namen des Schalters.
+APPROVAL_SECRET_ENV = "DATENSCHLEUSE_APPROVAL_HEADER_SECRET"
+
+
+def _validate_approval_header_secret(roh: Any) -> str:
+    """Prueft das Header-Geheimnis. BEIM START, nicht beim ersten Request.
+
+    Der Schwesterschalter zu ``configure_reid_crypto()``. Der bekam in dieser
+    Runde die Start-Pruefung; dieser hier blieb ungeschuetzt -- und lief
+    deshalb genau in die Fehlerklasse, die dort schon geschlossen war: eine
+    unbrauchbare Konfiguration faellt erst im Betrieb auf, dort als
+    scheinbarer Ausfall.
+
+    Geprueft werden GENAU die Eigenschaften, auf die sich der Vergleich in
+    ``_operator_approved`` verlaesst -- nicht mehr:
+
+    * ``str``: ein Nicht-String stirbt sonst am ``.strip()`` im Konstruktor,
+      als AttributeError, der dem Betreiber nichts sagt.
+    * UTF-8-darstellbar: ``os.getenv`` gibt undekodierbare Bytes als
+      Surrogate zurueck (``surrogateescape``). Die fliegen erst beim
+      ``.encode("utf-8")`` im Request auf -- also wieder mitten im Vergleich.
+    * nicht ausschliesslich Leerzeichen: das wuerde den Header-Weg still
+      ABSCHALTEN, waehrend der Betreiber glaubt, er habe ihn konfiguriert.
+      Ein stiller Zustand ist hier gefaehrlicher als ein Abbruch.
+
+    BEWUSST NICHT geprueft: eine Mindestlaenge. Das waere eine
+    Passwort-Policy und damit eine Betreiber-Entscheidung, keine Frage der
+    Bauart -- und sie wuerde bestehende Setups beim Update hart brechen.
+    Vermerkt am Work Item statt hier stillschweigend entschieden.
+
+    Der LEERE Wert bleibt gueltig: er ist die dokumentierte Abschaltung des
+    Header-Wegs (sicherer Default). Ein Abbruch dort koennte niemand mehr
+    ohne Header-Freigabe betreiben.
+    """
+    if roh is None:
+        return ""
+    if not isinstance(roh, str):
+        raise DatenschleuseConfigError(
+            f"{APPROVAL_SECRET_ENV} muss eine Zeichenkette sein (war: "
+            f"{type(roh).__name__}). Erwartet wird das Geheimnis im Klartext; "
+            "leer oder ungesetzt schaltet den Header-Freigabeweg ab."
+        )
+    if roh == "":
+        return ""
+    try:
+        roh.encode("utf-8")
+    except UnicodeEncodeError:
+        # Bewusst OHNE den Wert in der Meldung (Gesetz 5) -- und ohne den
+        # Text der Ausnahme, der die verantwortlichen Zeichen mitfuehrt.
+        raise DatenschleuseConfigError(
+            f"{APPROVAL_SECRET_ENV} enthaelt Zeichen, die sich nicht als "
+            "UTF-8 darstellen lassen (typisch: undekodierbare Bytes aus der "
+            "Umgebung, die Python als Surrogate durchreicht). Der Vergleich "
+            "wuerde damit erst im Request scheitern -- Abbruch beim Start."
+        ) from None
+    geputzt = roh.strip()
+    if not geputzt:
+        raise DatenschleuseConfigError(
+            f"{APPROVAL_SECRET_ENV} besteht nur aus Leerzeichen. Das wuerde "
+            "den Header-Freigabeweg still ABSCHALTEN, waehrend die "
+            "Konfiguration so aussieht, als sei er aktiv. Entweder ein "
+            "echtes Geheimnis setzen oder die Variable ganz weglassen."
+        )
+    return geputzt
+
+
+# ===========================================================================
 # Reine, framework-freie Logik (keine LiteLLM-/Presidio-Abhaengigkeit).
 # Genau dieser Teil ist unit-testbar ohne laufenden Container.
 # ===========================================================================
@@ -1966,12 +2037,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # konfiguriert hat. Ohne Geheimnis waere der Header wieder blosse
         # Client-Eingabe -- also genau der Defekt, den wir schliessen. Der
         # sichere Default ist deshalb "Header-Weg aus", nicht "offen".
-        self.approval_header_secret = (
+        # Geprueft BEIM START (Runde 4, F2) -- siehe
+        # _validate_approval_header_secret. Der ``or``-Fallback bleibt: das
+        # erste WAHRE Glied gewinnt, ein leerer Wert faellt weiter durch.
+        self.approval_header_secret = _validate_approval_header_secret(
             approval_header_secret
             or kwargs.pop("approval_header_secret", None)
-            or os.getenv("DATENSCHLEUSE_APPROVAL_HEADER_SECRET")
+            or os.getenv(APPROVAL_SECRET_ENV)
             or ""
-        ).strip()
+        )
+        # Einmal kodiert statt bei jedem Request: ``hmac.compare_digest`` ist
+        # auf BYTES definiert und verweigert ``str`` mit Nicht-ASCII (F2).
+        # Der Vergleich bleibt auf Bytes konstantzeitig.
+        self._approval_secret_bytes = self.approval_header_secret.encode("utf-8")
 
         # --- Schutzklassen-Modell (IMMER aktiv, keine Konfigurationsoption) --
         # Laedt presidio/sensitivity-keywords.yml einmalig. Fail-closed beim
@@ -2679,16 +2757,42 @@ class DatenschleuseGuardrail(_GuardrailBase):
             if isinstance(name, str) and name.lower() == sc.APPROVAL_HEADER
         ]
         freigegeben = False
-        for name in treffer:
-            wert = headers.get(name)
-            if isinstance(wert, str) and hmac.compare_digest(
-                wert, self.approval_header_secret
-            ):
-                freigegeben = True
-            # Redigieren unabhaengig vom Ergebnis: auch ein FALSCHES
-            # Geheimnis ist ein Geheimnisversuch und hat im Log nichts zu
-            # suchen.
-            headers[name] = self.APPROVAL_HEADER_REDACTED
+        try:
+            for name in treffer:
+                wert = headers.get(name)
+                if not isinstance(wert, str):
+                    continue
+                try:
+                    kandidat = wert.encode("utf-8")
+                except UnicodeEncodeError:
+                    # Ein Header-Wert, der sich nicht als UTF-8 darstellen
+                    # laesst, kann das konfigurierte Geheimnis nicht sein
+                    # (das ist beim Start als UTF-8-darstellbar geprueft).
+                    # Also: kein Treffer -- aber auch kein Absturz.
+                    continue
+                if hmac.compare_digest(kandidat, self._approval_secret_bytes):
+                    freigegeben = True
+        except Exception as exc:
+            # Ein unkontrollierter Fehlerpfad ist kein fail-closed (Grundbuch).
+            # Ein roher TypeError aus dem Vergleich wird von litellm zu einem
+            # opaken 500 -- der Betreiber sieht einen Ausfall statt eines
+            # Blocks. Genannt wird NUR der Typname: der Text einer Ausnahme
+            # kann den verglichenen Wert mitfuehren (Gesetz 5).
+            raise DatenschleuseBlocked(
+                "Die Betreiber-Freigabe ueber den Header konnte nicht "
+                f"geprueft werden ({type(exc).__name__}) -- Request "
+                "blockiert (fail-closed). Eine Freigabe, deren Pruefung "
+                "scheitert, ist keine Freigabe."
+            ) from exc
+        finally:
+            # Redigieren im ``finally`` und nicht im Schleifenrumpf: die
+            # Redaktion darf NICHT am Erfolg des Vergleichs haengen. Genau
+            # daran hing sie -- ein Wurf mitten in der Schleife liess das
+            # Geheimnis unredigiert im Logging-Kanal stehen (F2, gemessen).
+            # Auch ein FALSCHES Geheimnis ist ein Geheimnisversuch und hat
+            # im Log nichts zu suchen.
+            for name in treffer:
+                headers[name] = self.APPROVAL_HEADER_REDACTED
         return freigegeben
 
     # ---- Logging-Schnappschuss (DATENSCHLE-69, Security-F1) ---------------
