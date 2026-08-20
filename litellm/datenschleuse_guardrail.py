@@ -1418,12 +1418,24 @@ class DatenschleuseGuardrail(_GuardrailBase):
         part_type = part.get("type")
         if not isinstance(part_type, str) or part_type not in ALLOWED_PART_TYPES:
             if (
-                isinstance(part_type, str)
+                type(part_type) is str
                 and part_type in KNOWN_UNSUPPORTED_PART_TYPES
             ):
-                # Der ausgegebene Name ist unsere Konstante (der Vergleich
-                # erzwingt Gleichheit), nicht der Request -- kein
-                # Client-Wert, keine unbegrenzte Laenge.
+                # ``type(...) is str`` statt ``isinstance`` ist Absicht
+                # (Review-Finding W1 zu e6b53b8): ``x in frozenset`` prueft
+                # ueber ``__hash__``/``__eq__``, formatiert wird aber die
+                # INSTANZ. Eine str-Subklasse, die sich wie ein Eintrag
+                # hasht und vergleicht, aber beliebigen Inhalt traegt,
+                # landete sonst wortwoertlich in der Meldung -- die auch in
+                # LiteLLMs Fehlerlog geht ("kein PII in Logs").
+                #
+                # Ueber HTTP nicht erreichbar (``json.loads`` liefert exakte
+                # ``str``), wohl aber fuer In-Process-Aufrufer und kuenftige
+                # Normalisierungen, die str-Enums durchreichen. Mit dem
+                # Identitaets-Check ist der ausgegebene Name nachweislich
+                # unsere Konstante -- die Zusage stimmt jetzt, statt nur
+                # behauptet zu sein. Subklassen fallen in den generischen
+                # Zweig und blocken dort unveraendert.
                 grund = (
                     f"Content-Part-Typ '{part_type}' gehoert zu Anthropics "
                     "nativem Web-Search-Tool und hat in der Datenschleuse "
@@ -1667,8 +1679,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 # in die Meldung. Genannt wird er NUR, wenn er exakt einem
                 # Wert unserer Konstante entspricht -- dann ist der
                 # ausgegebene String unsere Konstante, nicht der Request.
+                #
+                # ``type(...) is str`` statt ``isinstance``: siehe die
+                # ausfuehrliche Begruendung in _validate_part_shape. Dieses
+                # Muster stand hier zuerst; es mitzuziehen verhindert, dass
+                # die Kopie repariert und das Original stehengelassen wird.
                 if (
-                    isinstance(citation_type, str)
+                    type(citation_type) is str
                     and citation_type in KNOWN_UNSUPPORTED_CITATION_TYPES
                 ):
                     grund = (

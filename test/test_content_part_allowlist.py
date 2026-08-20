@@ -291,6 +291,79 @@ class TestKnownUnsupportedPartTypesAreNamed(unittest.IsolatedAsyncioTestCase):
             self.assertLess(len(str(exc)), 600)
             self.assertNotIn("A" * 100, str(exc))
 
+    async def test_str_subclass_cannot_alias_into_the_named_branch(self):
+        """W1 aus dem Review zu e6b53b8. Der Kommentar am Code behauptete,
+        der Vergleich 'erzwingt Gleichheit', der ausgegebene Name sei
+        deshalb unsere Konstante. Das war falsch: ``x in frozenset`` prueft
+        ueber ``__hash__``/``__eq__``, formatiert wird aber die INSTANZ.
+
+        Eine str-Subklasse, die sich wie 'server_tool_use' hasht und
+        vergleicht, aber beliebigen Inhalt traegt, landete damit wortwoertlich
+        in der Blockmeldung -- die auch in LiteLLMs Fehlerlog geht ("kein PII
+        in Logs").
+
+        Ueber HTTP ist das nicht erreichbar (``json.loads`` liefert exakte
+        ``str``), wohl aber fuer In-Process-Aufrufer und fuer kuenftige
+        LiteLLM-Normalisierungen, die str-Enums durchreichen. Statt die
+        Zusage zu streichen, machen wir sie wahr: nur exaktes ``str`` darf in
+        den benennenden Zweig (Doku-Falsifikationstest)."""
+
+        class Alias(str):
+            def __hash__(self):
+                return hash("server_tool_use")
+
+            def __eq__(self, other):
+                return other == "server_tool_use"
+
+        boese = Alias("Max Mustermann, IBAN DE02120300000000202051 " + "A" * 5000)
+        # Vorbedingung: die Aliasierung greift wirklich.
+        self.assertIsInstance(boese, str)
+        self.assertIn(boese, dg.KNOWN_UNSUPPORTED_PART_TYPES)
+
+        guard = _guard()
+        try:
+            await _run_pre_call(guard, [{"type": boese}])
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertNotIn("Mustermann", meldung)
+            self.assertNotIn("DE02120300000000202051", meldung)
+            self.assertNotIn("A" * 100, meldung)
+            self.assertLess(len(meldung), 600)
+
+    async def test_citation_type_str_subclass_cannot_alias_either(self):
+        """Dieselbe Aliasierung eine Ebene tiefer. Der Zitat-Zweig hatte das
+        Muster zuerst; ihn stehen zu lassen hiesse, die Kopie zu reparieren
+        und das Original zu behalten."""
+
+        class Alias(str):
+            def __hash__(self):
+                return hash("web_search_result_location")
+
+            def __eq__(self, other):
+                return other == "web_search_result_location"
+
+        boese = Alias("Patientin Mustermann, Diagnose F32.1 " + "A" * 5000)
+        self.assertIn(boese, dg.KNOWN_UNSUPPORTED_CITATION_TYPES)
+
+        guard = _guard()
+        content = [
+            {
+                "type": "text",
+                "text": "Bericht",
+                "citations": [{"type": boese}],
+            }
+        ]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertNotIn("Mustermann", meldung)
+            self.assertNotIn("F32.1", meldung)
+            self.assertNotIn("A" * 100, meldung)
+            self.assertLess(len(meldung), 600)
+
     async def test_unknown_type_keeps_generic_message(self):
         """Regression: ein wirklich unbekannter Typ darf NICHT faelschlich
         als bekannte Einschraenkung ausgewiesen werden -- sonst wuerde die
