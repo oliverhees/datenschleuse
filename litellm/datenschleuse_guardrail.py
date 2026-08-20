@@ -49,11 +49,13 @@ from __future__ import annotations
 
 import base64
 import copy
+import functools
 import hashlib
 import json
 import logging
 import os
 import re
+import sys
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 # httpx ist im offiziellen LiteLLM-Image bereits vorhanden (LiteLLM-Dependency)
@@ -72,6 +74,12 @@ import qi_generalization as qig
 # option -- deshalb IMMER aktiv, anders als der optionale QI-Layer. Reine Logik,
 # keine LiteLLM-/Presidio-Laufzeitabhaengigkeit (nur PyYAML zum Config-Laden).
 import sensitivity_classifier as sc
+
+# Eigene Deny-Listen und Regex-Muster des Anwenders (DATENSCHLE-7). Reine
+# Logik + PyYAML + das `regex`-Modul, keine LiteLLM-/Presidio-Abhaengigkeit.
+# Was der Anwender hier hinterlegt (Kundennamen, Projektnamen, interne
+# Kuerzel), findet die generische Erkennung prinzipbedingt nicht.
+import custom_rules as cur
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +329,155 @@ ANONYMIZATION_NOTICE = (
 )
 
 
+@functools.lru_cache(maxsize=32)
+def _placeholder_pattern(keys: Tuple[str, ...]) -> "re.Pattern[str]":
+    """Alternation ueber alle Platzhalter, laengste zuerst.
+
+    Python probiert Alternativen von links nach rechts; die Sortierung des
+    Aufrufers uebernimmt damit dieselbe Rolle wie die frueher explizite
+    "laengster Treffer gewinnt"-Schleife.
+
+    Gecacht, weil derselbe ``reid_map`` innerhalb einer Nachricht mehrfach
+    geprueft wird (ein Aufruf pro ``arguments``-String). Im Cache liegen nur
+    die PLATZHALTER -- unsere eigenen, generierten Token, nie ein Klartext
+    (Gesetz 5).
+    """
+    return re.compile("|".join(re.escape(k) for k in keys))
+
+
+def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, int]]]:
+    """Baut den Probe-String und merkt sich, WO die Fueller stehen.
+
+    Der Verifikationsdurchlauf ersetzt bekannte Platzhalter durch ein
+    neutrales Zeichen, damit die Erkennung nicht den Platzhalter selbst als
+    Namen liest. Genau diese Ersetzung kann aber neue, kuenstliche Treffer
+    erzeugen -- etwa wenn ein Muster ueber das eingefuegte Leerzeichen hinweg
+    greift. Um solche Artefakte spaeter erkennen zu koennen, reicht der
+    fertige String nicht: man braucht die Positionen der Fueller.
+
+    Ersetzt wird deshalb NICHT mit mehrfachem ``replace`` -- nur ein einziger
+    Durchlauf kennt die Positionen im ERGEBNIS. Laengste Platzhalter zuerst,
+    damit ``<PERSON_1>`` nicht innerhalb von ``<PERSON_10>`` matcht; bei einer
+    Regex-Alternation gilt dafuer die Reihenfolge der Alternativen.
+
+    Security-Finding DoS-1: Der Durchlauf lief frueher zeichenweise in Python
+    und pruefte an jedem Vorkommen des Anfangszeichens ALLE Schluessel durch.
+    Das ist quadratisch, sobald das Anfangszeichen haeufig ist -- und beides
+    bestimmt der Absender: die Textform und (ueber die Menge erkannter
+    Entitaeten) die Groesse des ``reid_map``. Gemessen: 200 KB Text mit 1000
+    Schluesseln brauchten 6,5 s statt 0,07 s. Das ist synchrone CPU-Arbeit im
+    Event-Loop, blockiert also alle parallelen Requests mit -- dieselbe
+    Defektklasse, die Finding F2 in der Regel-Schicht behoben hat. Die
+    Positionssuche laeuft deshalb jetzt in der Regex-Maschine (C) statt in
+    Python.
+    """
+    if not reid_map:
+        return text, []
+    # Security-Finding S4: ein LEERER Schluessel ist kein Platzhalter, wuerde
+    # aber ueberall matchen. Einmal aussortieren.
+    keys = tuple(k for k in sorted(reid_map, key=len, reverse=True) if k)
+    if not keys:
+        return text, []
+
+    teile: List[str] = []
+    fueller: List[Tuple[int, int]] = []
+    laenge = 0
+    ende = 0
+    for treffer in _placeholder_pattern(keys).finditer(text):
+        zwischen = text[ende:treffer.start()]
+        if zwischen:
+            teile.append(zwischen)
+            laenge += len(zwischen)
+        teile.append(_PLACEHOLDER_PROBE_FILLER)
+        fueller.append((laenge, laenge + len(_PLACEHOLDER_PROBE_FILLER)))
+        laenge += len(_PLACEHOLDER_PROBE_FILLER)
+        ende = treffer.end()
+    teile.append(text[ende:])
+    return "".join(teile), fueller
+
+
+def _is_filler_artifact(probe: str, entity: Dict[str, Any],
+                        filler_spans: List[Tuple[int, int]]) -> bool:
+    r"""Ist dieser Treffer NACHWEISLICH erst durch die Neutralisierung
+    entstanden?
+
+    Nachweislich heisst: sein Kern besteht ausschliesslich aus Zeichen, die
+    WIR eingefuegt haben. Steht auch nur ein Zeichen Klartext darin, wird der
+    Treffer behalten und der Request blockt.
+
+    WARUM SO GROB -- UND WARUM DAS DIE RICHTIGE ANTWORT IST
+    ------------------------------------------------------
+    Wir haben DREIMAL versucht, den Fehlalarmraum feiner zuzuschneiden, und
+    uns dabei jedes Mal ein Leck eingebaut, das erst ein Auditor fand:
+
+    1. Filter nach ``entity_type``-Praefix (F10): blendete das Sicherheitsnetz
+       fuer alle eigenen Entitaeten aus -- ausgerechnet fuer die Werte, fuer
+       die es allein zustaendig ist.
+    2. Filter nach Span-Ueberlappung (S1): verwarf ``Anna <PERSON_0>
+       Mueller`` komplett, ohne die Teile zu pruefen.
+    3. Segmentpruefung plus verklebter Kern (S1-R, HIGH-1, HIGH-2): die
+       Duplikat-Entfernung machte aus vier Zifferngruppen zwei und liess
+       ganze Kreditkartennummern durch; der verklebte Kern loeschte den
+       Trenner und konnte mehrwortige Deny-Begriffe grundsaetzlich nicht
+       wiederfinden.
+
+    Der entscheidende Befund kam vom Pruefer: Diese ganze Heuristik wurde von
+    KEINEM Gegentest eingefordert. Sie kaufte ausschliesslich Fehlalarm-
+    Reduktion, die niemand verlangt hatte -- und war die Quelle aller drei
+    Lecks. Eine Optimierung auf Verdacht, die dreimal ein Loch gerissen hat,
+    ist ihren Preis nicht wert.
+
+    Was bleibt, ist der Fall, der BEWEISBAR sicher ist: Der Kern besteht nur
+    aus Fuellern und Whitespace, es gibt also gar keinen Klartext, den man
+    herauslassen koennte. Das deckt den haeufigen Artefaktfall ab
+    (benachbarte Platzhalter werden zu einer Leerzeichenkette, auf die ein
+    Whitespace-Muster greift) -- und kostet keinen einzigen Analyzer-Aufruf.
+
+    DER PREIS, BEWUSST GEZAHLT: Ein eigenes Regex-Muster, das ueber einen
+    Platzhalter hinweggreift (``Nord\s*wind`` auf ``Nord<PERSON_0>wind``),
+    blockt jetzt. Das ist ein SICHTBARER Fehlalarm statt eines stillen Lecks
+    -- und von aussen ist dieser Fall ohnehin nicht von der Konstruktion zu
+    unterscheiden, mit der man die Maskierung umgeht.
+
+    AN DEN NAECHSTEN, DER HIER VERFEINERN WILL: Lies die Liste oben. Jede
+    Verfeinerung braucht einen Gegentest, der ohne sie FEHLSCHLAEGT. Gibt es
+    den nicht, kauft die Verfeinerung nichts und kostet erfahrungsgemaess ein
+    Leck.
+    """
+    if not filler_spans:
+        # Ohne Fueller haben WIR nichts eingefuegt. Dann kann dieser Treffer
+        # auch nicht durch unsere Ersetzung entstanden sein -- er gehoert dem
+        # Analyzer und wird nicht angetastet.
+        return False
+    try:
+        start = int(entity["start"])
+        end = int(entity["end"])
+    except (KeyError, TypeError, ValueError):
+        # Unlesbarer Treffer: NICHT als Artefakt abtun -- im Zweifel blocken.
+        return False
+    start = max(0, start)
+    end = min(len(probe), end)
+    if start >= end:
+        # Security-Finding S3: verdrehte (start > end) und ausserhalb des
+        # Textes liegende Spans sind etwas anderes als ein Whitespace-
+        # Treffer -- hier wissen wir gar nichts. Nicht schlucken.
+        return False
+
+    kern_start, kern_end = start, end
+    while kern_start < kern_end and probe[kern_start].isspace():
+        kern_start += 1
+    while kern_end > kern_start and probe[kern_end - 1].isspace():
+        kern_end -= 1
+    if kern_start < kern_end:
+        # Klartext im Kern -> koennte echte PII sein. Behalten und blocken.
+        return False
+
+    # Der Kern ist leer. Artefakt ist er aber nur, wenn wir den Whitespace
+    # auch selbst erzeugt haben -- sonst stand er so im Text und der Fund
+    # gehoert dem Analyzer.
+    return any(fs < end and start < fe for fs, fe in filler_spans)
+
+
 class DatenschleuseBlocked(Exception):
     """Wird geworfen, wenn fail-closed greift. LiteLLM behandelt eine im
     pre_call-Hook geworfene Exception als Guardrail-Block -> Request wird
@@ -503,9 +660,26 @@ class Masker:
 
     @staticmethod
     def _resolve_overlaps(entities: List[Dict[str, Any]], text_len: int) -> List[Dict[str, Any]]:
-        """Presidio kann ueberlappende Treffer liefern (z.B. PERSON und
-        LOCATION auf demselben Span). Wir behalten pro Position den Treffer mit
-        dem hoechsten Score und lassen ueberlappende, schwaechere fallen.
+        """Loest ueberlappende Treffer auf, OHNE je Abdeckung zu verlieren.
+
+        Presidio kann ueberlappende Treffer liefern (z.B. PERSON und LOCATION
+        auf demselben Span); mit den eigenen Regeln (DATENSCHLE-7) kommen
+        weitere hinzu. Der Typ wird weiterhin vom Treffer mit dem hoechsten
+        Score bestimmt -- die WEITE aber ist die Vereinigung aller
+        ueberlappenden Spans.
+
+        Sicherheits-Rationale (Security-Audit-Finding F1, HIGH): frueher wurde
+        der schwaechere Treffer bei Ueberlappung KOMPLETT verworfen. Enthielt
+        er den staerkeren, verschwand damit der Rest seines Spans aus der
+        Maskierung. Konkret: eine eigene Regel auf "Max" (Score 0.9) schlug
+        den Presidio-PERSON-Treffer "Max Mustermann" (0.85) -- und
+        "Mustermann" ging im KLARTEXT zum Anbieter. Wer eine Schutzregel
+        anlegte, senkte damit seinen Schutz, ohne es zu merken.
+
+        Genau das ist jetzt strukturell ausgeschlossen: die maskierte
+        Zeichenmenge kann durch einen zusaetzlichen Treffer nur WACHSEN, nie
+        schrumpfen. Ein etwas zu weit maskierter Span kostet hoechstens
+        Antwortqualitaet -- ein zu enger kostet Daten.
         """
         valid = [
             e for e in entities
@@ -515,13 +689,38 @@ class Masker:
             and e.get("entity_type")
         ]
         # Hoher Score zuerst, dann laengerer Span, dann fruehere Position.
+        # Dadurch legt der staerkste Treffer einer Gruppe den Typ fest.
         valid.sort(key=lambda e: (-float(e.get("score", 0.0)), -(e["end"] - e["start"]), e["start"]))
+
         kept: List[Dict[str, Any]] = []
         for e in valid:
-            if any(not (e["end"] <= k["start"] or e["start"] >= k["end"]) for k in kept):
-                continue  # ueberlappt einen bereits behaltenen, staerkeren Treffer
-            kept.append(e)
-        return kept
+            treffer = None
+            for k in kept:
+                if not (e["end"] <= k["start"] or e["start"] >= k["end"]):
+                    treffer = k
+                    break
+            if treffer is None:
+                kept.append(dict(e))
+            else:
+                # Vereinigung statt Verwerfen -- nie verkuerzen.
+                treffer["start"] = min(treffer["start"], e["start"])
+                treffer["end"] = max(treffer["end"], e["end"])
+
+        # Durch das Aufweiten koennen zwei behaltene Spans einander jetzt
+        # ueberlappen (transitive Ketten A-B-C). Ein Sweep in Startreihenfolge
+        # verschmilzt sie endgueltig; der hoechste Score gibt den Typ vor.
+        kept.sort(key=lambda e: (e["start"], e["end"]))
+        merged: List[Dict[str, Any]] = []
+        for e in kept:
+            if merged and e["start"] < merged[-1]["end"]:
+                letzter = merged[-1]
+                letzter["end"] = max(letzter["end"], e["end"])
+                if float(e.get("score", 0.0)) > float(letzter.get("score", 0.0)):
+                    letzter["entity_type"] = e["entity_type"]
+                    letzter["score"] = e.get("score", 0.0)
+            else:
+                merged.append(dict(e))
+        return merged
 
 
 class ReidStreamProcessor:
@@ -608,6 +807,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_db: Optional[str] = None,
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
+        custom_rules_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -666,6 +866,41 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # starten. Siehe docs/SENSITIVITY-INTEGRATION.md.
         self.classifier = sc.SensitivityClassifier()
 
+        # --- Eigene Begriffe und Muster (DATENSCHLE-7) ----------------------
+        # Anders als der Klassifizierer daneben startet dieser Layer NIE
+        # fail-closed: fehlt die Regeldatei, nutzt der Anwender das Feature
+        # schlicht nicht, und eine kaputte Regel legt laut Anti-Kriterium
+        # ISC-26 ausdruecklich nur sich selbst still (nicht die Pipeline).
+        # Die Regeln werden im laufenden Betrieb per mtime-Pruefung neu
+        # eingelesen -- ein neues Muster wirkt ohne Rebuild und ohne Neustart.
+        try:
+            self.custom_rules = cur.RuleSet(
+                custom_rules_path
+                or kwargs.pop("custom_rules_path", None)
+                or cur.default_rules_path()
+            )
+            # Security-Finding F3: den Ladefehler AUSWERTEN statt ihn im
+            # RuleSet liegen zu lassen. Vorher las nur die CLI auf dem Host
+            # load_error aus -- im Container blieb ein Kaltstart mit kaputter
+            # Regeldatei damit voellig unsichtbar, obwohl die komplette eigene
+            # Maskierungsschicht ausgefallen war.
+            if self.custom_rules.load_error:
+                print(
+                    f"[datenschleuse] FEHLER: eigene Regeln nicht geladen -- "
+                    f"{self.custom_rules.load_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except Exception as exc:  # pragma: no cover - defensiv
+            print(
+                f"[datenschleuse] FEHLER: eigene Regeln konnten nicht geladen "
+                f"werden ({type(exc).__name__}) -- eigene Begriffe werden NICHT "
+                f"maskiert; die Presidio-Maskierung laeuft unveraendert weiter.",
+                file=sys.stderr,
+                flush=True,
+            )
+            self.custom_rules = None
+
         # --- Quasi-Identifier-Layer (opt-in) --------------------------------
         # Aktiv, sobald ein Risiko-Preset gesetzt ist (Config: qi_risk_preset).
         # Ist es None/"off", bleibt der QI-Layer komplett aus -> Verhalten exakt
@@ -703,6 +938,60 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
     # ---- Presidio Analyzer (echte externe Abhaengigkeit) ------------------
     async def _analyze(self, text: str) -> List[Dict[str, Any]]:
+        """Erkennung fuer EINEN Text: Presidio plus die eigenen Regeln.
+
+        Die eigenen Begriffe/Muster (custom_rules.py, DATENSCHLE-7) werden hier
+        -- und nur hier -- eingemischt. Das ist die einzige Stelle, durch die
+        jeder zu pruefende Text laeuft; die Treffer kommen im selben Format wie
+        die von Presidio und laufen deshalb ohne Sonderweg durch denselben
+        Masker und dasselbe reid_map.
+
+        ISC-26: ein Fehler in der Regel-Schicht darf die Presidio-Maskierung
+        NICHT mitreissen. Die Regel-Schicht isoliert bereits pro Regel; das
+        ``try`` hier ist die zweite Sicherung fuer den Fall, dass die Schicht
+        als Ganzes stolpert (z.B. unlesbare Regeldatei).
+        """
+        entities = await self._presidio_analyze(text)
+        if self.custom_rules is None:
+            return entities
+        try:
+            entities = entities + self.custom_rules.find(text)
+        except cur.RuleMatchingIncomplete as exc:
+            # Security-Finding F8 (HIGH): Die Regelpruefung konnte fuer diesen
+            # Text nicht vollstaendig laufen. Ein Teilergebnis waere hier das
+            # gefaehrlichste Ergebnis ueberhaupt -- der Text SIEHT maskiert
+            # aus, waehrend ein Teil der Vorkommen im Klartext hinausgeht,
+            # und niemand sucht nach einem Fehler, den er nicht sieht.
+            # Deshalb dieselbe Konsequenz wie bei nicht erreichbarem Presidio:
+            # blocken statt raten.
+            raise DatenschleuseBlocked(
+                f"Die eigenen Regeln konnten fuer diesen Text nicht "
+                f"vollstaendig geprueft werden ({exc}) -- Request blockiert "
+                f"(fail-closed). Eine unvollstaendige Maskierung waere von "
+                f"einer vollstaendigen nicht zu unterscheiden. Muster pruefen "
+                f"mit: datenschleuse-rules list"
+            ) from exc
+        except Exception as exc:
+            # ACHTUNG, ENGE GRENZE (Security-Finding S2): Hierher kommt NUR
+            # noch, was beim LADEN der Regeldatei scheitert. ``RuleSet.find``
+            # sagt zu, dass jeder Fehler AB dem Scan als
+            # ``RuleMatchingIncomplete`` herauskommt und damit oben blockt.
+            # Vorher lief jede Nicht-Timeout-Ausnahme aus dem Scan hier
+            # hinein -- Folgeregeln abgebrochen, Abdeckung unbekannt, Request
+            # trotzdem raus. Wer die Zusage in custom_rules.py aufweicht,
+            # oeffnet dieses Loch wieder.
+            # Andere Fehler der Regel-Schicht bleiben folgenlos fuer die
+            # Presidio-Maskierung (ISC-26): dort ist die Abdeckung bekannt,
+            # nur die eigene Zusatzschicht fehlt.
+            print(
+                f"[datenschleuse] WARNUNG: eigene Regeln uebersprungen "
+                f"({type(exc).__name__}); Presidio-Maskierung bleibt aktiv.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return entities
+
+    async def _presidio_analyze(self, text: str) -> List[Dict[str, Any]]:
         """Ruft Presidio Analyzer ``/analyze`` auf. Fail-closed: jeder Fehler
         (Netzwerk, HTTP >= 400, ungueltige Antwort) wird zu DatenschleuseBlocked
         eskaliert, damit KEIN unmaskierter Text durchgeht."""
@@ -1347,7 +1636,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         return node
 
     async def _verify_no_pii_left(self, text: Any, masker: Masker) -> None:
-        """Verifikationsdurchlauf auf dem ERGEBNIS (Security-Audit F1).
+        r"""Verifikationsdurchlauf auf dem ERGEBNIS (Security-Audit F1).
 
         Alle Einzelpruefungen oben sind Pfad-gebunden: sie greifen nur, wenn
         ein Wert den Weg nimmt, den jemand vorhergesehen hat. Diese Pruefung
@@ -1359,13 +1648,76 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Die bekannten Platzhalter werden vorher durch ein neutrales Zeichen
         ersetzt: sonst wuerde die Erkennung womoeglich den Platzhalter selbst
         (``<PERSON_0>``) als Namen lesen und jeden korrekt maskierten
-        Tool-Aufruf blocken."""
+        Tool-Aufruf blocken.
+
+        Verworfen werden anschliessend genau die Treffer, deren Span einen
+        FUELLERBEREICH schneidet -- also die, die es ohne die Neutralisierung
+        gar nicht gaebe. Die Fuellerpositionen sind bekannt, weil wir sie
+        selbst setzen. Gefiltert wird damit nach HERKUNFT, nicht nach Typ.
+
+        Vorgeschichte, damit niemand zum einfacheren Filter zurueckbaut: Hier
+        stand zuerst ein Filter auf das Praefix ``CUSTOM_``. Der schloss
+        denselben Fehlalarm-Raum, blendete das Sicherheitsnetz aber
+        VOLLSTAENDIG fuer eigene Entitaeten aus -- ausgerechnet fuer
+        Kundennamen und interne Kuerzel, die sonst gar nichts erkennt
+        (Finding F10). Ein unmaskiert durchgerutschter Kundenname loeste
+        keinen Block mehr aus. Zusaetzlich haette ein Presidio-Recognizer, den
+        jemand ``CUSTOM_*`` nennt, still aus der Pruefung fallen koennen --
+        der Typ-Namensraum ist geteilt (Finding F13). Beides erledigt die
+        Span-Pruefung.
+
+        Warum ueberhaupt gefiltert wird -- zwei Gruende:
+
+        1. Sie haetten hier nichts mehr zu finden. Eigene Regeln sind
+           deterministische Literale bzw. Regexe, die im ersten Durchlauf
+           bereits ueber jeden Textknoten gelaufen sind. Was sie dort nicht
+           getroffen haben, koennen sie hier nicht neu treffen -- die
+           Ersetzung kann einen Match nur zerstoeren. Presidio dagegen ist
+           kontextbasiert: dort kann der zweite Durchlauf sehr wohl etwas
+           finden, was der erste uebersehen hat. Fuer Presidio hat diese
+           Nachpruefung also einen Zweck, fuer deterministische Regeln nicht.
+
+        2. Sie erzeugen hier FALSCHE Treffer. Gemessen (drei Faelle):
+           Ein Muster, das Whitespace ueberspannt (``Nord\s*wind``), greift
+           auf ``Nord<PERSON_0>wind`` erst NACH der Ersetzung, weil aus dem
+           Platzhalter ein Leerzeichen wird -- im Original passte es nicht.
+           Ebenso trifft ein Muster wie ``\s{3,}`` die Leerzeichenkette, die
+           aus mehreren angrenzenden Platzhaltern entsteht. Beides sind
+           Treffer, die ausschliesslich durch die Nachpruefung entstehen --
+           und jeder davon haette einen korrekt maskierten Request blockiert,
+           mit einer Meldung, die auf einen Maskierungsfehler zeigt. Wer ein
+           breites eigenes Muster anlegt, haette damit seine eigenen Anfragen
+           lahmgelegt.
+
+        Ein breites Grossbuchstaben-Muster (``[A-Z]{5,}``) ist dagegen
+        unauffaellig -- das faengt die Neutralisierung bereits ab. Der Filter
+        schliesst den Suchraum aber grundsaetzlich statt fillerabhaengig.
+
+        WARUM NICHT ``_presidio_analyze`` AUFRUFEN: Das waere die elegantere
+        Form, wuerde die eigenen Regeln aber ebenfalls komplett aus der
+        Pruefung nehmen -- also denselben blinden Fleck erzeugen wie der alte
+        Praefix-Filter. Ausserdem ist ``_analyze`` die Naht, an der die Tests
+        dieses Moduls die Erkennung ersetzen (test_toolcall_masking.py setzt
+        ``guard._analyze``); ein Wechsel des Aufrufs -- oder auch nur ein
+        zusaetzlicher Parameter -- laesst zehn dieser Mocks ins Leere laufen.
+
+        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Der Artefaktfilter darf NUR
+        verwerfen, was beweisbar unsere eigene Einfuegung ist. Jede feinere
+        Variante -- Filter nach Typ, nach blosser Span-Ueberlappung, nach
+        zerlegten und wieder verklebten Segmenten -- hat in dieser Reihenfolge
+        je ein Leck erzeugt (F10, S1, S1-R/HIGH-1/HIGH-2). Die Begruendung und
+        die Liste stehen ausfuehrlich an ``_is_filler_artifact``. Lies sie,
+        bevor du hier optimierst.
+
+        Genau EIN Analyzer-Aufruf pro Durchlauf. Der Filter entscheidet ohne
+        weitere Aufrufe, deshalb kann sich das Zeitbudget der Regel-Schicht
+        hier auch nicht vervielfachen (Finding DoS-2).
+        """
         if not isinstance(text, str) or not text.strip():
             return
-        probe = text
-        for placeholder in sorted(masker.reid_map, key=len, reverse=True):
-            probe = probe.replace(placeholder, _PLACEHOLDER_PROBE_FILLER)
-        leftovers = await self._analyze(probe)
+        probe, filler_spans = _build_probe(text, masker.reid_map)
+        leftovers = [e for e in await self._analyze(probe)
+                     if not _is_filler_artifact(probe, e, filler_spans)]
         if leftovers:
             types = sorted({str(e.get("entity_type")) for e in leftovers})
             # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
@@ -1379,13 +1731,28 @@ class DatenschleuseGuardrail(_GuardrailBase):
             # "Digitalisierung Rathaus Muenchen" + "Frau Schmidt". Eine
             # Meldung, die dem Betreiber einen Code-Fehler unterstellt, waere
             # in diesen Faellen schlicht falsch.
+            # DRITTE URSACHE (QA-Finding): die beiden obigen sind Fehler, die
+            # WIR beheben muessten -- daraus kann der Betreiber nichts tun.
+            # Die praktisch wahrscheinlichste Ursache ist die dritte: ein
+            # eigenes Regex-Muster mit variablem Whitespace, das ueber einen
+            # eingesetzten Platzhalter hinweggreift (S1-R, bewusst
+            # akzeptiert). Sie ist die einzige, die er selbst loesen kann --
+            # und security-baseline.md bzw. ADR 0001, wo sie steht, liest er
+            # nie. Die Blockmeldung liest er. Also steht sie hier, mit dem
+            # Werkzeug dazu. WICHTIG: Konkreter werden darf diese Meldung nur
+            # ueber Kategorien und Werkzeugnamen. Kein Fundwert, kein
+            # Regelwert, kein Textausschnitt (Gesetz 5, DATENSCHLE-64/-57) --
+            # festgenagelt in TestBlockmeldungNenntDasEigeneMuster.
             raise DatenschleuseBlocked(
                 "Nach der Maskierung wurden weiterhin personenbezogene Daten "
                 f"erkannt ({', '.join(types)}) -- Request blockiert "
-                "(fail-closed). Ursache ist entweder eine Luecke im "
-                "Maskierungspfad oder ein Grenzfall der Erkennung, bei dem "
-                "erst der zweite Durchlauf anschlaegt. In beiden Faellen "
-                "gilt: im Zweifel nicht rauslassen."
+                "(fail-closed). Moegliche Ursachen: eine Luecke im "
+                "Maskierungspfad, ein Grenzfall der Erkennung, bei dem erst "
+                "der zweite Durchlauf anschlaegt, oder ein eigenes "
+                "Regex-Muster mit variablem Whitespace, das ueber einen "
+                "eingesetzten Platzhalter hinweggreift -- pruefen mit: "
+                "datenschleuse-rules test. In allen Faellen gilt: im Zweifel "
+                "nicht rauslassen."
             )
 
     async def _mask_arguments(

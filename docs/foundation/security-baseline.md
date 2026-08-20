@@ -76,7 +76,11 @@ Regeln dazu:
 - **Verifikationsdurchlauf auf dem Ergebnis.** Der fertig maskierte
   `arguments`-String geht erneut durch den Analyzer; findet der dort noch
   Entitäten, wird blockiert. Alle anderen Prüfungen sind pfadgebunden —
-  diese greift unabhängig davon, welchen Weg ein Wert genommen hat.
+  diese ist die einzige, die einen Wert unabhängig von seinem Weg noch
+  einmal ansieht. Sie ist deshalb ein zusätzliches Netz, keine Garantie:
+  vor der Prüfung werden bekannte Platzhalter neutralisiert, und Treffer,
+  die nachweislich erst durch diese Neutralisierung entstehen, werden
+  verworfen (siehe „bekannte Grenzen").
 - **JSON muss eindeutig sein.** Doppelte Schlüssel (`json.loads` behält still
   den letzten Wert, der erste wird nie geprüft) und nicht standardkonforme
   Konstanten (`NaN`, `Infinity`) werden abgelehnt, nicht interpretiert.
@@ -120,8 +124,56 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
   "ansprechpartner":"Frau Schmidt"}` wird geblockt — der Knoten-Durchlauf
   erkennt „Digitalisierung" als LOCATION und übersieht „Rathaus Muenchen",
   der Verifikationsdurchlauf findet es dann. **Kein Code-Fehler.** Die
-  Blockmeldung nennt deshalb beide möglichen Ursachen und unterstellt keine.
-- **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String.
+  Blockmeldung nennt deshalb alle drei möglichen Ursachen und unterstellt
+  keine — die dritte ist das eigene Whitespace-Muster aus dem nächsten Punkt,
+  der einzige Fall, den der Betreiber selbst beheben kann.
+- **Neutralisierung der Platzhalter — und ihre Kehrseite.** Damit die
+  Erkennung nicht die Platzhalter selbst für Namen hält, werden sie vor der
+  Prüfung durch ein neutrales Zeichen ersetzt. Diese Ersetzung kann eigene
+  Treffer erzeugen, die es im echten Text nie gab: ein Muster, das über
+  Whitespace hinweggreift, passt danach plötzlich.
+
+  Verworfen wird ein Treffer deshalb **nur dann**, wenn er beweisbar unsere
+  eigene Einfügung ist — sein Kern besteht ausschließlich aus eingefügten
+  Zeichen und Whitespace. Steht auch nur ein Zeichen Klartext darin, wird
+  blockiert. Keine Ausnahme, keine Feinabstimmung.
+
+  **Diese Grobheit ist eine bewusste Entscheidung, keine Nachlässigkeit.**
+  Es gab drei Anläufe, den Fehlalarmraum feiner zuzuschneiden — Filter nach
+  Entitätstyp, Filter nach Span-Überlappung, Zerlegung in Segmente plus
+  verklebter Kern. Jeder Anlauf hat ein eigenes Leck erzeugt, und jedes davon
+  fand erst ein Audit (F10, S1, S1-R/HIGH-1/HIGH-2) — zuletzt gingen ganze
+  Kreditkartennummern und mehrwortige Deny-Begriffe durch. Keine dieser
+  Verfeinerungen wurde von einem Gegentest eingefordert; sie kauften
+  ausschließlich Fehlalarm-Reduktion, die niemand verlangt hatte.
+
+  **Regel für Änderungen an dieser Stelle:** Jede Verfeinerung braucht einen
+  Gegentest, der ohne sie fehlschlägt. Gibt es den nicht, kauft sie nichts
+  und kostet erfahrungsgemäß ein Leck. Regressionstests:
+  `test/test_custom_rules.py`, Abschnitte 17, 20, 24 und 28.
+- **Bewusst in Kauf genommener Fehlalarm.** Eine eigene Regex-Regel, deren
+  Muster über einen Platzhalter hinweggreift, blockt. Das ist gewollt: von
+  außen ist dieser Fall nicht von der Konstruktion zu unterscheiden, mit der
+  man die Maskierung umgeht. Ein sichtbarer Fehlalarm ist billiger als ein
+  stilles Leck.
+
+  **Zu Deny-Listen — die Richtung ist wichtig:** Für *Fehlalarme* sind sie
+  prinzipiell nicht betroffen, ein Begriff ohne Regex-Metazeichen greift
+  nicht über einen Platzhalter hinweg. Als *Risikoschranke* war es unter den
+  früheren Filtern jedoch genau umgekehrt: jeder **mehrwortige** Begriff war
+  ein möglicher Falsch-Negativer, weil der verklebte Kern den Trenner löschte
+  und der Begriff darin nicht mehr vorkommen konnte. Betroffen war damit
+  ausgerechnet der Regelfall — die Beispieldatei und die CLI-Hilfe dieses
+  Repos werben mit „Nordwind Logistik". Mit dem heutigen Filter ist diese
+  Klasse geschlossen.
+
+  Gemessen am deutschen PII-Testkorpus (45 Fälle, echter Analyzer, plus 45
+  aus dem Korpus erzeugte Deny-Regeln, davon 33 mehrwortig): **0 Fehlalarme**,
+  **0 Treffer mit Füller im Kern**.
+- **Kosten.** Genau ein zusätzlicher Analyzer-Call pro `arguments`-String.
+  Der Artefaktfilter entscheidet ohne weitere Aufrufe — am Testkorpus
+  gemessen 1,00 Calls pro Fall. Damit kann sich auch das Zeitbudget der
+  Regel-Schicht hier nicht vervielfachen.
 - **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
   vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
 
