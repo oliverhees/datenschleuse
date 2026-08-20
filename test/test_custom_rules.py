@@ -2013,3 +2013,87 @@ class TestNoPlaintextEscapesThroughArtifactFilter(
             await guard._verify_no_pii_left(
                 "Angebot fuer Zephyr<PERSON_0>Kontor", masker)
         self.assertEqual(len(aufrufe), 1)
+
+
+# ===========================================================================
+# 29. QA-Finding (MEDIUM) — die Blockmeldung nannte nur UNSERE Fehler
+#
+# Schlaegt die Nachpruefung an, nannte die Meldung genau zwei Ursachen:
+# "Luecke im Maskierungspfad" und "Grenzfall der Erkennung". Beides sind
+# Fehler, die WIR beheben muessten -- der Betreiber kann daraus nichts tun.
+#
+# Die in der Praxis wahrscheinlichste Ursache fehlte: ein eigenes
+# Regex-Muster mit variablem Whitespace, das ueber einen eingesetzten
+# Platzhalter hinweggreift. Dieser Fall ist bewusst akzeptiert (S1-R,
+# security-baseline.md, ADR 0001) -- und er ist der EINZIGE, den der
+# Betreiber selbst loesen kann. Die Dateien, in denen er dokumentiert ist,
+# liest er nie; die Blockmeldung liest er. Also muss die Ursache dort stehen,
+# zusammen mit dem Werkzeug, mit dem man sie nachweist.
+#
+# Zweite Haelfte des Findings, und die haertere: die Meldung darf dabei
+# NICHT anfangen, den Ausloeser zu zeigen. Kein PII-Wert, kein Regelwert,
+# kein Textausschnitt aus dem Request -- nur Kategorien und Werkzeugnamen.
+# Genau das war hier schon zweimal Befund (DATENSCHLE-64, DATENSCHLE-57).
+# Ein Hinweis, der beim Konkretwerden den Wert mitliefert, ist kein besserer
+# Hinweis, sondern ein neues Leck.
+# ===========================================================================
+class TestBlockmeldungNenntDasEigeneMuster(_RuleFileTestCase,
+                                           unittest.IsolatedAsyncioTestCase):
+    # Ausloeser ist bewusst der S1-R-Fall: ein Muster, das MIT und OHNE
+    # Trenner passt, greift nach der Ersetzung ueber den Platzhalter.
+    REGELWERT = r"Nord\s*wind"
+    KLARTEXT = "Max Mustermann"
+    MASKIERT = "Vertrag Nord<PERSON_0>wind, Projekt Adlerflug"
+
+    async def _blockmeldung(self):
+        self.write_rules([rule("verklebt", entity="Firmenname", kind="regex",
+                               value=self.REGELWERT,
+                               examples=["Die Nord wind Gruppe"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine(text, payload=None):
+            return []
+
+        guard._presidio_analyze = keine
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = self.KLARTEXT
+
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard._verify_no_pii_left(self.MASKIERT, masker)
+        return str(ctx.exception)
+
+    async def test_meldung_nennt_das_eigene_muster_als_dritte_ursache(self):
+        """Ohne diesen Hinweis sucht der Betreiber den Fehler bei uns --
+        obwohl er in seiner eigenen Regeldatei steht."""
+        meldung = await self._blockmeldung()
+        self.assertIn("Muster", meldung,
+                      "die Meldung nennt das eigene Muster nicht als Ursache")
+        self.assertIn("Platzhalter", meldung,
+                      "die Meldung sagt nicht, WORUEBER das Muster greift")
+
+    async def test_meldung_nennt_das_werkzeug_zum_nachpruefen(self):
+        """Ein Hinweis ohne Werkzeug ist nur eine Vermutung."""
+        meldung = await self._blockmeldung()
+        self.assertIn("datenschleuse-rules test", meldung,
+                      "die Meldung nennt kein Werkzeug zum Nachpruefen")
+
+    async def test_meldung_traegt_weder_wert_noch_textausschnitt(self):
+        """Gegenprobe zur Konkretisierung (Gesetz 5, DATENSCHLE-64/-57):
+        konkreter werden darf die Meldung nur ueber Kategorien und
+        Werkzeugnamen -- nie ueber den Inhalt, der sie ausgeloest hat."""
+        meldung = await self._blockmeldung()
+        verboten = {
+            "PII-Wert": self.KLARTEXT,
+            "PII-Fragment": "Mustermann",
+            "Regelwert": self.REGELWERT,
+            "aufgeloester Regelwert": "Nordwind",
+            "Textausschnitt": self.MASKIERT,
+            "Trefferumgebung": "Nord<PERSON_0>wind",
+            "Platzhalter aus dem Request": "<PERSON_0>",
+            "Kontextwort 1": "Vertrag",
+            "Kontextwort 2": "Adlerflug",
+        }
+        for was, wert in verboten.items():
+            self.assertNotIn(
+                wert, meldung,
+                f"Blockmeldung traegt {was} nach aussen: {meldung}")

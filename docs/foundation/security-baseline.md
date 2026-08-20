@@ -124,7 +124,9 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
   "ansprechpartner":"Frau Schmidt"}` wird geblockt — der Knoten-Durchlauf
   erkennt „Digitalisierung" als LOCATION und übersieht „Rathaus Muenchen",
   der Verifikationsdurchlauf findet es dann. **Kein Code-Fehler.** Die
-  Blockmeldung nennt deshalb beide möglichen Ursachen und unterstellt keine.
+  Blockmeldung nennt deshalb alle drei möglichen Ursachen und unterstellt
+  keine — die dritte ist das eigene Whitespace-Muster aus dem nächsten Punkt,
+  der einzige Fall, den der Betreiber selbst beheben kann.
 - **Neutralisierung der Platzhalter — und ihre Kehrseite.** Damit die
   Erkennung nicht die Platzhalter selbst für Namen hält, werden sie vor der
   Prüfung durch ein neutrales Zeichen ersetzt. Diese Ersetzung kann eigene

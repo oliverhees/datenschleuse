@@ -200,7 +200,34 @@ Schwellwert konfigurierbar über `qi_risk_preset` in `litellm/config.yaml`: `uti
 Standard (über Presidio, deutsch): Namen, Orte, E-Mail, Telefon, Kreditkarte, IBAN, IP-Adresse.
 Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregisternummer, KFZ-Kennzeichen.**
 
-Gemessen gegen einen eigenen deutschen Testkorpus (`test/corpus/`): **Recall 100 %, Precision 100 %** über alle Pflicht-Entitäten (Ziel war ≥95 %/≥90 %). Lauf jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py`.
+### Wie gut wird erkannt — die ehrliche Fassung
+
+Gemessen wird gegen einen eigenen deutschen Testkorpus (`test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py`.
+
+**Recall: 100 % — und genau das ist der Grund für Skepsis.** Über alle Pflicht-Entitäten wird bislang jede erwartete Entität gefunden. Als Qualitätsbeleg taugt die Zahl trotzdem nicht. Das eingesetzte Sprachmodell `de_core_news_lg` gibt für Personennamen in seinen eigenen Metadaten **92,02 % Recall** an — auf Zeitungs- und Wikipedia-Text, für den es trainiert wurde. Ein Korpus, auf dem ein Modell besser abschneidet als auf seiner eigenen Evaluationsmenge, ist nicht besonders gut, sondern zu leicht. Selbst nachsehen:
+
+```bash
+docker exec datenschleuse-analyzer python -c \
+  "import de_core_news_lg; print(de_core_news_lg.load().meta['performance'])"
+```
+
+Unsere Fälle sind handverlesen, kurz und syntaktisch einfach. Das Modell trifft dort keinen der Fälle, an denen es real scheitert: verschachtelte Sätze, seltene und fremdsprachige Namen, Namen ohne Anrede, Namen in Aufzählungen. Die 100 % sind eine Aussage über den Schwierigkeitsgrad des Korpus, nicht über die Erkennungsleistung in freier Wildbahn. Die Härtung des Korpus ist ein offenes Work Item.
+
+**Precision: Hier stand vorher 100 %. Die Zahl ist zurückgezogen.** Sie kam zustande, weil der Korpus auf der Negativ-Seite ausschließlich die Regex-Recognizer beprobte (IBAN, Telefon, KFZ, Aktenzeichen, Firma); die statistische Erkennung war unbeprobt. Nachdem sie beprobt wurde, sieht es so aus:
+
+| Kennzahl | Ziel | gemessen |
+|---|---|---|
+| Recall (Pflicht-Entitäten) | ≥ 95 % | 100 % — auf zu leichtem Korpus, siehe oben |
+| Precision (aus Negativ-Fällen) | ≥ 90 % | **66,2 %** |
+| Störquote (PII-freie Texte mit Fehlalarm) | ≤ 10 % | **81,2 %** (26 von 32) |
+
+Vier von fünf PII-freien Texten werden also gestört. Eine gemessene Nicht-PII-Wortliste, die noch nicht auf `main` liegt, hebt die Precision ohne Recall-Verlust auf **81,8 %** bei 37,5 % Störquote — besser, aber weiterhin unter dem Ziel.
+
+**Das Erkennungsziel ist damit nicht erreicht, und es wird nicht abgesenkt, bis es passt.** Der Benchmark-Runner liegt im Repo, die Messung wird gefahren statt geschätzt; ein Gate-Test, der die Schwellen maschinell durchsetzt, kommt mit dem laufenden Work Item dazu. Ein Ziel ohne maschinelle Durchsetzung ist ein Wunsch, den man beim nächsten roten Lauf stillschweigend anpasst.
+
+> **Belegstand:** Die vollständige Messung samt Zielpapier (`docs/foundation/erkennungsziel.md`), ADR-0002 und Gate-Test liegen auf einem noch nicht gemergten Branch und kommen mit dem zugehörigen Work Item ins Repo — auf `main` sind sie noch nicht nachschlagbar. Das eingecheckte `test/corpus/benchmark-results.json` stammt noch aus einem Lauf mit unvollständig beprobter Negativ-Seite und zeigt deshalb die alten, zu guten Precision-Werte.
+
+Was das für den Betrieb heißt: Der teure Fehler ist übersehene PII, und dort steht die Datenschleuse gut da — nur eben auf einem Korpus gemessen, der leichter ist als die Realität. Der häufige Fehler sind Fehlalarme; die kosten Nutzbarkeit, nicht Schutz. Beides steht hier, weil ein Sicherheitswerkzeug, das nur seine Bestwerte zeigt, sich nicht einschätzen lässt.
 
 ### Und was sie nicht kennt: eure eigenen Begriffe
 
