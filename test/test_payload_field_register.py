@@ -834,6 +834,112 @@ class TestTransportEnvelope(_HookCase):
 
 
 # ===========================================================================
+# NEU-F1 (Security-Gate 3) -- der vierte Weg: die URL
+# ===========================================================================
+class TestUrlAndConnectionChannels(_HookCase):
+    """Die achte Ebene -- und diesmal lag der Fehler in der MESSMETHODE.
+
+    Das Nachweisverfahren pruefte "Header UND Body des gesamten ausgehenden
+    Requests". Die URL stand dort nicht. Genau dort geht ``api_version`` auf
+    Azure hinaus, als Query-Parameter:
+
+        /openai/deployments/.../chat/completions?api-version=2024-02-01&notiz=...
+
+    Gegen ``openai/gpt-4o`` ist derselbe Key dicht. Was gegen einen Provider
+    dicht ist, muss es gegen einen anderen nicht sein -- die Messung ist
+    provider-abhaengig, und das gehoert ins Verfahren.
+
+    Beim Nachmessen mit dem erweiterten Verfahren kamen drei weitere Keys
+    heraus, die NIE gemessen worden waren -- schwerer als der gemeldete Fund:
+
+      * ``api_base``   bestimmt, WOHIN der Request geht. Ein client-gesetzter
+                       api_base leitet die komplette Anfrage auf einen
+                       fremden Server um (gemessen: Request kam dort an).
+      * ``api_key``    geht als ``authorization``-Header hinaus.
+      * ``mock_response`` unterdrueckt den Aufruf ganz -- nicht messbar, und
+                       nach dem eigenen Kriterium darf ungemessen nicht
+                       passieren.
+    """
+
+    async def test_api_version_injection_blockt(self):
+        # Der gemeldete Fall: an eine gueltige Azure-Version wird angehaengt.
+        data = {
+            "model": "azure/meine-deployment",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "api_version": f"2024-02-01&notiz=Patient {_NAME}, IBAN {_IBAN}",
+        }
+        await self.assert_blocked(data, "acompletion")
+
+    async def test_echte_api_version_laeuft_unveraendert_durch(self):
+        # Blocken waere hier zu grob: der Proxy setzt api_version selbst aus
+        # dem Query-String eines Azure-Clients. Eng validieren statt blocken.
+        data = {
+            "model": "azure/meine-deployment",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "api_version": "2024-02-01-preview",
+        }
+        out = await self.run_hook(data, "acompletion")
+        self.assertEqual(out["api_version"], "2024-02-01-preview")
+
+    async def test_api_base_blockt(self):
+        # Der schwerste der vier: bestimmt das Ziel der Anfrage.
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "api_base": "http://angreifer.example",
+        }
+        exc = await self.assert_blocked(data, "acompletion")
+        self.assertIn("api_base", str(exc))
+
+    async def test_api_key_mit_freitext_blockt(self):
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "api_key": f"Patient {_NAME}, IBAN {_IBAN}",
+        }
+        await self.assert_blocked(data, "acompletion")
+
+    async def test_echter_api_key_laeuft_unveraendert_durch(self):
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "api_key": "sk-proj-AbC123_x.y-z",
+        }
+        out = await self.run_hook(data, "acompletion")
+        self.assertEqual(out["api_key"], "sk-proj-AbC123_x.y-z")
+
+    async def test_custom_llm_provider_blockt(self):
+        # Waehlt den Provider-Handler -- und damit, ob ueberhaupt eine URL mit
+        # Query-Parametern gebaut wird. Der Proxy setzt ihn nie selbst.
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "custom_llm_provider": "azure",
+        }
+        exc = await self.assert_blocked(data, "acompletion")
+        self.assertIn("custom_llm_provider", str(exc))
+
+    async def test_mock_response_blockt(self):
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "mock_response": "beliebige Antwort",
+        }
+        exc = await self.assert_blocked(data, "acompletion")
+        self.assertIn("mock_response", str(exc))
+
+    def test_verbindungs_keys_passieren_nicht_ungeprueft(self):
+        """Verbindung, Zugang und Steuerung sind nie 'Infrastruktur, die man
+        durchlassen kann'. Sie bestimmen, WOHIN die Daten gehen und MIT WESSEN
+        Zugangsdaten -- das ist eine schaerfere Frage als 'traegt dieses Feld
+        gerade einen Marker?'."""
+        for feld in ("api_base", "api_key", "api_version",
+                     "custom_llm_provider", "mock_response"):
+            with self.subTest(feld=feld):
+                self.assertNotIn(feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE)
+
+
+# ===========================================================================
 # F3 (Security-Gate 2) -- der Beleg darf nicht an einer Version haengen
 # ===========================================================================
 class TestInfrastructureClaimHoldsAtRuntime(unittest.TestCase):
