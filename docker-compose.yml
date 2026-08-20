@@ -58,6 +58,24 @@ services:
       # Ablageort der SQLite-State-DB (im persistenten Volume oben) + TTL.
       - DATENSCHLEUSE_STATE_DB=/app/state/qi_state.db
       - DATENSCHLEUSE_STATE_TTL_SECONDS=${DATENSCHLEUSE_STATE_TTL_SECONDS:-86400}
+      # --- Re-Id-Mapping (Platzhalter -> Klartext) --------------------------
+      # OPTIONAL, und das ist eine bewusste Entscheidung: ist der Key nicht
+      # gesetzt, erzeugt die Guardrail beim Start EINEN PROZESSLOKALEN. Fuer
+      # den Standardbetrieb (ein Worker) ist das die SICHERERE Wahl -- ein
+      # Log, das nach einem Neustart gelesen wird, ist endgueltig nicht mehr
+      # aufloesbar.
+      #
+      # SETZEN, sobald mehrere Worker/Replicas laufen: die teilen sonst
+      # keinen Schluessel, und die Re-Identifikation schlaegt scheinbar
+      # zufaellig fehl (jeder zweite Request bekommt Platzhalter statt
+      # Klartext). Die Guardrail warnt beim Start, wenn sie selbst einen
+      # erzeugt.
+      #   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - DATENSCHLEUSE_REID_KEY=${DATENSCHLEUSE_REID_KEY:-}
+      # Lebensdauer eines Siegels in Sekunden (Default 3600 = 1 h). Muss > 0
+      # sein -- ein Wert <= 0 wuerde die Re-Identifikation abschalten und
+      # bricht deshalb beim Start ab.
+      - DATENSCHLEUSE_REID_TTL=${DATENSCHLEUSE_REID_TTL:-3600}
       # Postgres treibt das eingebaute LiteLLM Admin-UI (/ui) + Spend-Logs an
       # (ISC-17/18) -- Zeitpunkt/Modell/Kosten/Guardrail-Ergebnisse OHNE
       # Message-Content (turn_off_message_logging, siehe litellm/config.yaml).

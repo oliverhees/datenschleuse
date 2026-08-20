@@ -191,6 +191,87 @@ REID_TTL_ENV = "DATENSCHLEUSE_REID_TTL"
 DEFAULT_REID_TTL_SECONDS = 60 * 60  # 1 h
 
 _REID_FERNET = None
+_REID_TTL = None
+
+
+def configure_reid_crypto():
+    """Prueft und uebernimmt die Re-Id-Krypto-Konfiguration. Beim START.
+
+    Wird vom Konstruktor der Guardrail aufgerufen -- ein fehlerhafter
+    Schluessel oder eine unsinnige TTL bricht damit den Start ab, statt bei
+    jedem Request zu werfen (bzw. still jede Re-Identifikation abzuschalten).
+
+    Ohne gesetzten Schluessel wird EINMALIG einer erzeugt. Das bleibt die
+    bewusste Vorgabe -- das Mapping ist request-gebunden und muss keinen
+    Neustart ueberleben. Es darf nur kein UNBEMERKTER Zustand sein, deshalb
+    die Warnung: ein Neustart entwertet offene Mappings, und mehrere Worker
+    teilen keinen Schluessel. Beides faellt sonst erst im Betrieb auf, als
+    scheinbar zufaelliges Fehlschlagen der Re-Identifikation.
+    """
+    global _REID_FERNET, _REID_TTL
+
+    # --- TTL zuerst: rein rechnerisch, braucht kein cryptography ---------
+    roh_ttl = os.getenv(REID_TTL_ENV)
+    if roh_ttl is None or roh_ttl == "":
+        _REID_TTL = DEFAULT_REID_TTL_SECONDS
+    else:
+        try:
+            ttl = int(roh_ttl)
+        except (TypeError, ValueError):
+            raise DatenschleuseConfigError(
+                f"{REID_TTL_ENV} ist keine ganze Zahl. Erwartet wird eine "
+                "Lebensdauer in Sekunden (z.B. 3600). Ein stiller Rueckfall "
+                "auf die Vorgabe waere gefaehrlicher als der Abbruch: ein "
+                "Tippfehler wuerde unbemerkt etwas anderes tun."
+            )
+        if ttl <= 0:
+            raise DatenschleuseConfigError(
+                f"{REID_TTL_ENV} muss groesser als 0 sein (war: {ttl}). Ein "
+                "Wert <= 0 schaltet die Re-Identifikation faktisch ab -- "
+                "jede Antwort behielte ihre Platzhalter, ohne eine einzige "
+                "Meldung. Anmerkung: 0 wirkt bei Fernet ausserdem NICHT wie "
+                "'sofort abgelaufen' (verglichen wird zeitstempel + ttl < "
+                "jetzt), meint also etwas anderes als es tut."
+            )
+        _REID_TTL = ttl
+
+    # --- Schluessel ------------------------------------------------------
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError as exc:
+        raise DatenschleuseConfigError(
+            "Das Paket 'cryptography' fehlt. Es ist eine harte "
+            "Laufzeit-Abhaengigkeit (siehe requirements-guardrail.txt): ohne "
+            "es kann das Re-Id-Mapping nicht verschluesselt transportiert "
+            "werden, und unverschluesselt laeuft es nicht (fail-closed)."
+        ) from exc
+
+    roh_key = os.getenv(REID_KEY_ENV)
+    if roh_key:
+        try:
+            _REID_FERNET = Fernet(
+                roh_key.encode() if isinstance(roh_key, str) else roh_key
+            )
+        except Exception as exc:
+            raise DatenschleuseConfigError(
+                f"{REID_KEY_ENV} ist kein gueltiger Fernet-Key (erwartet 32 "
+                f"url-safe base64 Bytes): {exc}. Erzeugen mit: python -c "
+                '"from cryptography.fernet import Fernet; '
+                'print(Fernet.generate_key().decode())"'
+            ) from exc
+    else:
+        _REID_FERNET = Fernet(Fernet.generate_key())
+        _LOG.warning(
+            "%s ist nicht gesetzt -- es wird ein PROZESSLOKALER Schluessel "
+            "fuer das Re-Id-Mapping erzeugt. Folgen: ein Neustart entwertet "
+            "alle offenen Mappings, und mehrere Worker teilen keinen "
+            "Schluessel (die Re-Identifikation schlaegt dann scheinbar "
+            "zufaellig fehl). Fuer den Einzelprozess-Betrieb ist das die "
+            "sicherere Wahl -- ein altes Log bleibt endgueltig unaufloesbar. "
+            "Wer mehrere Worker faehrt, setzt %s.",
+            REID_KEY_ENV,
+            REID_KEY_ENV,
+        )
 
 
 def _reid_fernet():
@@ -215,26 +296,18 @@ def _reid_fernet():
     zur Laufzeit, schlaegt das Versiegeln fehl und der Request blockt --
     fail-closed, kein unverschluesselter Weiterbetrieb.
     """
-    global _REID_FERNET
     if _REID_FERNET is None:
-        from cryptography.fernet import Fernet
-
-        roh = os.getenv(REID_KEY_ENV)
-        if roh:
-            _REID_FERNET = Fernet(roh.encode() if isinstance(roh, str) else roh)
-        else:
-            _REID_FERNET = Fernet(Fernet.generate_key())
+        # Direktnutzung ohne Guardrail-Instanz (Tests, Hilfsskripte).
+        configure_reid_crypto()
     return _REID_FERNET
 
 
 def _reid_ttl_seconds() -> int:
-    roh = os.getenv(REID_TTL_ENV)
-    if not roh:
-        return DEFAULT_REID_TTL_SECONDS
-    try:
-        return int(roh)
-    except (TypeError, ValueError):
-        return DEFAULT_REID_TTL_SECONDS
+    """Die validierte TTL. Geprueft wurde beim START (configure_reid_crypto)
+    -- hier wird nicht mehr geraten."""
+    if _REID_TTL is None:
+        configure_reid_crypto()
+    return _REID_TTL
 
 
 def seal_reid_map(reid_map: Dict[str, str]) -> str:
@@ -583,6 +656,20 @@ PAYLOAD_MAX_LIST_ITEMS = 32
 #: ein Verfuegbarkeitsproblem: so lange steht der Worker fuer niemanden
 #: sonst zur Verfuegung.
 PAYLOAD_MAX_PROMPT_ITEMS = 64
+
+#: Obergrenze fuer die Anzahl Messages eines Chat-Requests.
+#:
+#: Dieselbe Begruendung wie bei PAYLOAD_MAX_PROMPT_ITEMS, nur auf der
+#: HAUPTROUTE und mit dem groesseren Volumen: jede Message kostet mindestens
+#: einen eigenen Analyzer-Call. Ein Request skaliert damit linear in
+#: Worker-Zeit, und so lange steht der Worker fuer niemanden sonst bereit.
+#: Nur ``prompt`` zu begrenzen und ``messages`` offen zu lassen waere die
+#: halbe Massnahme gewesen.
+#:
+#: Deutlich hoeher als das prompt-Limit, weil die Wertform eine andere ist:
+#: ein Prompt-Batch von 64 ist gross, ein Gespraechsverlauf von 64 Turns ist
+#: normal. 256 Turns sind auch fuer lange Agenten-Sitzungen reichlich.
+PAYLOAD_MAX_MESSAGES = 256
 
 # --- 1) Gemeinsame Steuerparameter beider Routen ---------------------------
 # Werte sind der Name des Formpruefers (siehe _PAYLOAD_VALIDATORS).
@@ -1470,6 +1557,21 @@ ANONYMIZATION_NOTICE = (
 )
 
 
+class DatenschleuseConfigError(Exception):
+    """Fehlerhafte BETREIBER-Konfiguration. Wird beim START geworfen, nicht
+    beim ersten Request.
+
+    Der Unterschied ist nicht kosmetisch: ein Konfigurationsfehler, der erst
+    im Betrieb auffaellt, erscheint dort als Ausfall -- der Betreiber sucht
+    dann an der falschen Stelle. Vorbild ist ``QiStateStore``, das aus
+    demselben Grund im Konstruktor abbricht.
+
+    Bewusst KEIN Subtyp von DatenschleuseBlocked: das hier ist kein
+    Request, der geblockt wird, sondern eine Instanz, die gar nicht erst
+    laufen darf.
+    """
+
+
 class DatenschleuseBlocked(Exception):
     """Wird geworfen, wenn fail-closed greift. LiteLLM behandelt eine im
     pre_call-Hook geworfene Exception als Guardrail-Block -> Request wird
@@ -1779,6 +1881,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
         approval_header_secret: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
+        # Krypto-Konfiguration ZUERST und beim START (W2/W3). Ein
+        # ungueltiger Schluessel oder eine unsinnige TTL bricht hier ab --
+        # nicht erst beim ersten Request, wo der Betreiber es fuer einen
+        # Ausfall haelt und an der falschen Stelle sucht. Vorbild:
+        # QiStateStore.
+        configure_reid_crypto()
+
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
         self.analyzer_url = (
             presidio_analyzer_url
@@ -2083,6 +2192,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "werden und der Request ist blockiert (fail-closed)."
             )
         self._validate_payload_shape(data, route)
+        self._validate_messages_count(data)
         # Die FORM des Logging-Schnappschusses vor jeder Maskierung
         # (Security-F1): was wir am Ende nicht neu bauen koennen, duerfen wir
         # gar nicht erst maskiert glauben.
@@ -2434,6 +2544,25 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     meta.pop(approval_key, None)
                     gesetzt = True
         return gesetzt
+
+    @staticmethod
+    def _validate_messages_count(data: Dict[str, Any]) -> None:
+        """Begrenzt die Anzahl Messages -- VOR der ersten Analyse.
+
+        Steht im Validate-Pfad und nicht in der Maskierungsschleife: eine
+        Grenze, die erst nach 400 Analyzer-Calls zuschlaegt, verhindert genau
+        das nicht, wogegen sie gebaut ist.
+
+        In der Meldung erscheint nur die GRENZE, nie ein Inhalt (Gesetz 5).
+        """
+        messages = data.get("messages")
+        if isinstance(messages, list) and len(messages) > PAYLOAD_MAX_MESSAGES:
+            raise DatenschleuseBlocked(
+                f"messages enthaelt mehr als {PAYLOAD_MAX_MESSAGES} "
+                "Eintraege -- blockiert (fail-closed). Jede Message kostet "
+                "eine eigene Analyse; ein unbegrenztes Gespraech belegt den "
+                "Worker beliebig lange."
+            )
 
     @staticmethod
     def _strip_body_reid_map(data: Dict[str, Any]) -> bool:

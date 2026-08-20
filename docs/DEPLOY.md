@@ -43,6 +43,8 @@ Dateien fuer den Deploy:
    | `UI_USERNAME` | – | Default `admin` |
    | `DATENSCHLEUSE_DB_USER` / `_NAME` | – | Default `datenschleuse` |
    | `DATENSCHLEUSE_STATE_TTL_SECONDS` | – | Default `86400` (24 h) |
+   | `DATENSCHLEUSE_REID_KEY` | – | Fernet-Key wie oben. Ohne ihn erzeugt die Guardrail beim Start einen **prozesslokalen** — richtig fuer einen Worker, **falsch ab zwei**: mehrere Worker teilen dann keinen Schluessel und die Re-Identifikation schlaegt scheinbar zufaellig fehl. Die Guardrail warnt beim Start. |
+   | `DATENSCHLEUSE_REID_TTL` | – | Default `3600` (1 h). Muss > 0 sein — ein Wert <= 0 bricht den Start ab, statt die Re-Identifikation still abzuschalten. |
 
 3. **Domain vergeben:** Coolify erkennt am Service `datenschleuse` die
    `SERVICE_FQDN_DATENSCHLEUSE_4000`-Markierung und schlaegt automatisch eine

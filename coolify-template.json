@@ -13,6 +13,8 @@
     {"key": "DATENSCHLEUSE_DB_USER", "label": "Postgres Benutzer", "default": "datenschleuse"},
     {"key": "DATENSCHLEUSE_DB_PASSWORD", "label": "Postgres Passwort", "description": "Starkes Passwort fuer die interne Spend-Log-DB. Kein Default.", "required": true, "generate": "random_hex_32"},
     {"key": "DATENSCHLEUSE_DB_NAME", "label": "Postgres Datenbank", "default": "datenschleuse"},
-    {"key": "DATENSCHLEUSE_STATE_TTL_SECONDS", "label": "QI-State TTL (Sekunden)", "description": "Lebensdauer des QI-Session-States. Default 24h.", "default": "86400", "required": false}
+    {"key": "DATENSCHLEUSE_STATE_TTL_SECONDS", "label": "QI-State TTL (Sekunden)", "description": "Lebensdauer des QI-Session-States. Default 24h.", "default": "86400", "required": false},
+    {"key": "DATENSCHLEUSE_REID_KEY", "label": "Re-Id-Mapping Fernet-Key", "description": "Verschluesselt die Platzhalter-zu-Klartext-Zuordnung auf ihrem Weg durch die Logging-Kanaele. Optional: ohne Key erzeugt die Guardrail beim Start einen prozesslokalen. Setzen, sobald mehrere Worker laufen -- sonst schlaegt die Re-Identifikation scheinbar zufaellig fehl.", "required": false, "generate": "fernet"},
+    {"key": "DATENSCHLEUSE_REID_TTL", "label": "Re-Id-Mapping TTL (Sekunden)", "description": "Lebensdauer eines Siegels. Default 3600 (1h). Muss groesser als 0 sein.", "default": "3600", "required": false}
   ]
 }

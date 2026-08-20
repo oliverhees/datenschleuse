@@ -1100,6 +1100,72 @@ class TestRegisterInvariants(unittest.TestCase):
             self.assertEqual(kollision, set(), f"Kollision: {sorted(kollision)}")
 
 
+class TestMessagesListeHatEineObergrenze(unittest.IsolatedAsyncioTestCase):
+    """Die HAUPTROUTE braucht dieselbe Grenze wie die Nebenroute (W9).
+
+    ``prompt`` wurde begrenzt, ``messages`` nicht -- dabei gilt die
+    Begruendung wortgleich: jeder Eintrag kostet einen eigenen
+    Analyzer-Call, ein einzelner Request skaliert linear in Worker-Zeit.
+    Auf der Hauptroute mit dem groesseren Volumen. Eine Route zu begrenzen
+    und die Hauptroute offen zu lassen, ist die halbe Massnahme.
+    """
+
+    def _guard(self):
+        guard = dg.DatenschleuseGuardrail()
+        guard._analyze = fake_analyze
+        return guard
+
+    async def _run(self, messages, guard=None):
+        return await (guard or self._guard()).async_pre_call_hook(
+            user_api_key_dict=None,
+            cache=None,
+            data={"model": "gpt-4o", "messages": messages},
+            call_type="acompletion",
+        )
+
+    def _msgs(self, anzahl, text="Hallo Welt"):
+        return [{"role": "user", "content": text} for _ in range(anzahl)]
+
+    def test_die_konstante_existiert(self):
+        self.assertIsInstance(dg.PAYLOAD_MAX_MESSAGES, int)
+        self.assertGreater(dg.PAYLOAD_MAX_MESSAGES, 0)
+
+    async def test_gespraech_am_limit_geht_durch(self):
+        """Gegenprobe zuerst: lange Gespraeche sind normal und duerfen nicht
+        sterben."""
+        out = await self._run(self._msgs(dg.PAYLOAD_MAX_MESSAGES))
+        self.assertEqual(len(out["messages"]), dg.PAYLOAD_MAX_MESSAGES)
+
+    async def test_gespraech_ueber_dem_limit_blockt(self):
+        """DER Befund."""
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await self._run(self._msgs(dg.PAYLOAD_MAX_MESSAGES + 1))
+        self.assertIn("messages", str(ctx.exception))
+
+    async def test_block_nennt_keine_nutzerwerte(self):
+        """Gesetz 5: die Meldung nennt die Grenze, nie den Inhalt."""
+        geheim = "Max Mustermann"
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await self._run(self._msgs(dg.PAYLOAD_MAX_MESSAGES + 1, geheim))
+        self.assertNotIn(geheim, str(ctx.exception))
+
+    async def test_block_kommt_vor_der_analyse(self):
+        """Der Sinn der Grenze: sie muss greifen, BEVOR die Arbeit anfaellt."""
+        aufrufe = []
+
+        async def zaehlend(text):
+            aufrufe.append(text)
+            return []
+
+        guard = dg.DatenschleuseGuardrail()
+        guard._analyze = zaehlend
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await self._run(self._msgs(dg.PAYLOAD_MAX_MESSAGES + 1), guard=guard)
+        self.assertEqual(
+            aufrufe, [], "Die Grenze greift erst nach der Analyse-Arbeit."
+        )
+
+
 class TestPromptListeHatEineObergrenze(unittest.IsolatedAsyncioTestCase):
     """``prompt`` als Batch-Liste war unbegrenzt.
 
