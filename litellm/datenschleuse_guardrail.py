@@ -614,6 +614,52 @@ def reidentify_full(text: str, mapping: Dict[str, str]) -> str:
     return text
 
 
+def _ist_echter_str(wert: Any) -> bool:
+    """``True`` nur fuer exakt ``str`` -- Subklassen sind es ausdruecklich NICHT.
+
+    ``isinstance`` waere hier die falsche Frage. Eine ``str``-Subklasse darf
+    ``__hash__`` und ``__eq__`` ueberschreiben und sich damit wie ein
+    beliebiger anderer String verhalten, waehrend sie inhaltlich etwas voellig
+    anderes traegt. Fuer die Identitaetsfrage "ist dieser Wert wirklich der
+    String, als der er sich ausgibt?" zaehlt deshalb nur der exakte Typ.
+    """
+    return type(wert) is str
+
+
+def _ist_registriert(wert: Any, register: Any) -> bool:
+    """Mitgliedschaft UND Typidentitaet in einer Frage.
+
+    Der strukturelle Kern von DATENSCHLE-65 (Review-Finding W1 zu ``e6b53b8``,
+    empirisch belegt, dreimal gefunden): ``x in frozenset`` prueft ueber
+    ``__hash__``/``__eq__`` -- benutzt (formatiert, geloggt, weiterverarbeitet)
+    wird danach aber die INSTANZ. Eine ``str``-Subklasse, die sich wie ein
+    Registereintrag hasht und vergleicht, aber beliebigen Inhalt traegt,
+    schleust diesen Inhalt damit durch jede Registerpruefung:
+
+      * gegen ein ``KNOWN_UNSUPPORTED_*``-Register wird sie BENANNT -- ihr
+        Klartext landet in der Blockmeldung und in ``_LOG.warning``, die in
+        derselben Zeile zusichert, keine Werte zu loggen (Gesetz 5),
+      * gegen eine ALLOWLIST gilt sie als erlaubt -- fail-closed ist
+        ausgehebelt, und sie wird als der getarnte Wert weiterverarbeitet
+        bzw. geht als Feldname unveraendert ans Zielmodell.
+
+    Der erste Fix dieses Befunds (``ef29bf8``) war lokal gedacht und hat zwei
+    Stellen repariert; drei baugleiche Nachbarn im selben File blieben stehen.
+    Deshalb steht die Pruefung jetzt EINMAL hier und wird ueberall benutzt, wo
+    ein Client-Wert gegen ein Register oder eine Allowlist gehalten wird und
+    das Ergebnis anschliessend benannt, geloggt oder als erlaubt behandelt
+    wird. Wer ein neues Register einfuehrt, hat damit genau eine richtige
+    Funktion zur Auswahl statt eines Musters zum Nachbauen.
+
+    Verhaltens-Neutralitaet: fuer echtes ``str`` ist das Ergebnis identisch
+    mit ``wert in register``; fuer alles Nicht-``str`` (int, dict, None ...)
+    ist es ``False``, also derselbe fail-closed-Zweig wie bisher. Nur die
+    getarnte Subklasse wechselt die Seite -- und zwar in den generischen
+    Block-Zweig, wo sie unbenannt blockt.
+    """
+    return _ist_echter_str(wert) and wert in register
+
+
 def _field_fingerprint(name: Any) -> str:
     """Stabiler, wertfreier Kurz-Fingerprint eines Feldnamens.
 
@@ -1323,18 +1369,29 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Ausgegeben werden nur Anzahl, Python-Typname und die konstante Liste
         der erlaubten Felder.
         """
-        unknown = [key for key in msg if key not in ALLOWED_MESSAGE_FIELDS]
+        unknown = [
+            key for key in msg if not _ist_registriert(key, ALLOWED_MESSAGE_FIELDS)
+        ]
         if unknown:
             # QA-Audit: ein Betreiber sah bisher nur eine ANZAHL und hatte
             # keine Chance herauszufinden, was ihn blockiert -- ausser
             # Trial-and-Error gegen die Allowlist. Jetzt: bekannte
             # Provider-Felder beim Namen (konstantes Vokabular aus DIESER
             # Datei, nie aus dem Request), alles Uebrige als Fingerprint.
+            #
+            # Die Partition laeuft ueber DENSELBEN Praedikat-Aufruf statt
+            # ueber ``key not in benannt``: ein getarnter Schluessel wuerde
+            # sonst gegen einen echten Eintrag in ``benannt`` gleich
+            # vergleichen und aus BEIDEN Listen fallen -- er verschwaende
+            # spurlos aus der Diagnose, statt gefingerprintet zu werden.
             benannt = sorted(
                 key for key in unknown
-                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_MESSAGE_FIELDS
+                if _ist_registriert(key, KNOWN_UNSUPPORTED_MESSAGE_FIELDS)
             )
-            fremd = [key for key in unknown if key not in benannt]
+            fremd = [
+                key for key in unknown
+                if not _ist_registriert(key, KNOWN_UNSUPPORTED_MESSAGE_FIELDS)
+            ]
             teile = []
             if benannt:
                 teile.append(
@@ -1358,7 +1415,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
 
         role = msg.get("role")
-        if role is not None and (not isinstance(role, str) or role not in ALLOWED_ROLES):
+        if role is not None and not _ist_registriert(role, ALLOWED_ROLES):
             raise DatenschleuseBlocked(
                 f"Nachricht mit unbekannter Rolle (Typ {type(role).__name__!r}) "
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
@@ -1423,26 +1480,18 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
 
         part_type = part.get("type")
-        if not isinstance(part_type, str) or part_type not in ALLOWED_PART_TYPES:
-            if (
-                type(part_type) is str
-                and part_type in KNOWN_UNSUPPORTED_PART_TYPES
-            ):
-                # ``type(...) is str`` statt ``isinstance`` ist Absicht
-                # (Review-Finding W1 zu e6b53b8): ``x in frozenset`` prueft
-                # ueber ``__hash__``/``__eq__``, formatiert wird aber die
-                # INSTANZ. Eine str-Subklasse, die sich wie ein Eintrag
-                # hasht und vergleicht, aber beliebigen Inhalt traegt,
-                # landete sonst wortwoertlich in der Meldung -- die auch in
-                # LiteLLMs Fehlerlog geht ("kein PII in Logs").
-                #
-                # Ueber HTTP nicht erreichbar (``json.loads`` liefert exakte
-                # ``str``), wohl aber fuer In-Process-Aufrufer und kuenftige
-                # Normalisierungen, die str-Enums durchreichen. Mit dem
-                # Identitaets-Check ist der ausgegebene Name nachweislich
-                # unsere Konstante -- die Zusage stimmt jetzt, statt nur
-                # behauptet zu sein. Subklassen fallen in den generischen
-                # Zweig und blocken dort unveraendert.
+        # ``_ist_registriert`` statt ``isinstance(...) and ... in ...``:
+        # die Allowlist entscheidet hier ueber "erlaubt -> weiterverarbeiten"
+        # UND ueber den Rueckgabewert, an dem der Aufrufer (``_mask_content``)
+        # per ``==`` seinen Pfad waehlt. Eine getarnte Subklasse liefe sonst
+        # als 'text' bzw. 'image_url' durch den kompletten Pfad, obwohl sie
+        # etwas anderes ist. Begruendung im Detail: siehe die Funktion.
+        if not _ist_registriert(part_type, ALLOWED_PART_TYPES):
+            if _ist_registriert(part_type, KNOWN_UNSUPPORTED_PART_TYPES):
+                # Nur ein exaktes ``str`` darf hier BENANNT werden: dann ist
+                # der ausgegebene Name nachweislich unsere Konstante und
+                # nicht der Request. Getarnte Subklassen fallen in den
+                # generischen Zweig darunter und blocken dort unbenannt.
                 grund = (
                     f"Content-Part-Typ '{part_type}' gehoert zu Anthropics "
                     "nativem Web-Search-Tool und hat in der Datenschleuse "
@@ -1471,13 +1520,18 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
 
         allowed = ALLOWED_PART_FIELDS[part_type]
-        unknown = [key for key in part if key not in allowed]
+        unknown = [key for key in part if not _ist_registriert(key, allowed)]
         if unknown:
+            # Partition ueber dasselbe Praedikat statt ueber ``key not in
+            # benannt`` -- siehe _validate_message_shape.
             benannt = sorted(
                 key for key in unknown
-                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_PART_FIELDS
+                if _ist_registriert(key, KNOWN_UNSUPPORTED_PART_FIELDS)
             )
-            fremd = [key for key in unknown if key not in benannt]
+            fremd = [
+                key for key in unknown
+                if not _ist_registriert(key, KNOWN_UNSUPPORTED_PART_FIELDS)
+            ]
             teile = []
             if benannt:
                 teile.append("bekannt, aber nicht im Register: " + ", ".join(benannt))
@@ -1543,7 +1597,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "Bild-Verweis -- blockiert (fail-closed). Erlaubt ist ein "
                 "String oder ein Objekt wie {'url': '...'}."
             )
-        unknown = sum(1 for key in value if key not in IMAGE_URL_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in value
+            if not _ist_registriert(key, IMAGE_URL_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"image_url enthaelt {unknown} ungepruefte(s) Feld(er) -- "
@@ -1552,9 +1609,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
         DatenschleuseGuardrail._validate_text_field(value.get("url"), "image_url.url")
         detail = value.get("detail")
-        if detail is not None and (
-            not isinstance(detail, str) or detail not in IMAGE_URL_DETAILS
-        ):
+        if detail is not None and not _ist_registriert(detail, IMAGE_URL_DETAILS):
             raise DatenschleuseBlocked(
                 f"image_url.detail (Typ {type(detail).__name__!r}) ist kein "
                 "bekannter Wert -- als Freitext-Kanal blockiert (fail-closed). "
@@ -1590,7 +1645,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "Caching-Marker -- blockiert (fail-closed). Erlaubt ist nur "
                 "ein Objekt wie {'type': 'ephemeral'}."
             )
-        unknown = sum(1 for key in value if key not in CACHE_CONTROL_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in value
+            if not _ist_registriert(key, CACHE_CONTROL_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"cache_control enthaelt {unknown} ungepruefte(s) Feld(er) -- "
