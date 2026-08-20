@@ -247,7 +247,9 @@ class TestTier3HardBlock(unittest.TestCase):
 
         # Vektor A: Freigabe-Flag gesetzt (soll Stufe 3 NICHT durchlassen).
         res_a = clf.classify("Der Patient hat HIV.")
-        approved = sc.is_release_approved({sc.SENSITIVITY_APPROVAL_KEY: True})
+        approved = sc.is_operator_release_approved(
+            {sc.OPERATOR_APPROVAL_KEY: True}
+        )
         self.assertTrue(approved)  # Flag ist gesetzt ...
         with self.assertRaises(sc.Tier3Blocked):  # ... aendert aber nichts:
             sc.enforce_tier_3_block(res_a)
@@ -279,7 +281,11 @@ class TestTier3HardBlock(unittest.TestCase):
 
         # Vektor D: leeres/falsches Freigabe-Flag.
         for approval_val in ("", None, False, "false", "0", "nope"):
-            self.assertFalse(sc.is_release_approved({sc.SENSITIVITY_APPROVAL_KEY: approval_val}))
+            self.assertFalse(
+                sc.is_operator_release_approved(
+                    {sc.OPERATOR_APPROVAL_KEY: approval_val}
+                )
+            )
 
         # Vektor E: Heuristik + Nutzerstufe 3 kombiniert bleibt Stufe 3.
         res_e = clf.classify("Der Patient hat HIV.", requested_level=3)
@@ -311,19 +317,39 @@ class TestTier2Gate(unittest.TestCase):
         res = clf.classify("Harmlos.")
         sc.enforce_tier_2_gate(res, approved=False)  # kein Block fuer Stufe 1
 
-    def test_is_release_approved_variants(self):
-        self.assertTrue(sc.is_release_approved({sc.SENSITIVITY_APPROVAL_KEY: True}))
-        self.assertTrue(sc.is_release_approved({sc.SENSITIVITY_APPROVAL_KEY: "true"}))
-        self.assertTrue(sc.is_release_approved({sc.SENSITIVITY_APPROVAL_KEY: "JA"}))
-        self.assertFalse(sc.is_release_approved({sc.SENSITIVITY_APPROVAL_KEY: False}))
-        self.assertFalse(sc.is_release_approved({}))
-        self.assertFalse(sc.is_release_approved(None))
-        self.assertFalse(sc.is_release_approved("nicht-dict"))
+    def test_operator_release_approved_variants(self):
+        """Die Werte-Semantik der Freigabe.
+
+        Gemessen an ``is_operator_release_approved`` -- der einzigen, die es
+        seit F10 noch gibt. Die frueher hier gepruefte
+        ``is_release_approved`` las den REQUEST-BODY; ihr Aufruf war der
+        Defekt aus Runde 1 und sie ist entfernt.
+        """
+        ja = sc.is_operator_release_approved
+        self.assertTrue(ja({sc.OPERATOR_APPROVAL_KEY: True}))
+        self.assertTrue(ja({sc.OPERATOR_APPROVAL_KEY: "true"}))
+        self.assertTrue(ja({sc.OPERATOR_APPROVAL_KEY: "JA"}))
+        self.assertFalse(ja({sc.OPERATOR_APPROVAL_KEY: False}))
+        self.assertFalse(ja({}))
+        self.assertFalse(ja(None))
+        self.assertFalse(ja("nicht-dict"))
+        # Und der Kern des Fixes: der CLIENT-Key gibt hier nichts frei.
+        self.assertFalse(ja({sc.SENSITIVITY_APPROVAL_KEY: True}))
+
+    def test_is_release_approved_ist_entfernt(self):
+        """F10: die Funktion darf nicht zurueckkommen. Ihr Aufruf war der
+        behobene Defekt -- sie herumliegen zu lassen war eine Einladung."""
+        self.assertFalse(
+            hasattr(sc, "is_release_approved"),
+            "is_release_approved liest den Request-Body -- genau der Defekt "
+            "aus Runde 1 (F2). Wer die Betreiber-Freigabe braucht, nimmt "
+            "is_operator_release_approved.",
+        )
 
     def test_missing_approval_is_safe_default(self):
         """'Freigabe fehlt' == blockiert (nicht automatisch annehmen)."""
         res = self._tier2()
-        approved = sc.is_release_approved({})  # nichts gesetzt
+        approved = sc.is_operator_release_approved({})  # nichts gesetzt
         self.assertFalse(approved)
         with self.assertRaises(sc.Tier2ApprovalRequired):
             sc.enforce_tier_2_gate(res, approved=approved)

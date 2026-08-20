@@ -461,16 +461,22 @@ def enforce_tier_3_block(classification: Classification) -> None:
         )
 
 
-def is_release_approved(metadata: Any) -> bool:
-    """Liest das Stufe-2-Freigabe-Flag aus den Request-Metadaten.
-
-    Erwartet ``metadata[SENSITIVITY_APPROVAL_KEY] is True`` (echtes bool True
-    oder die Strings 'true'/'1'/'yes'/'ja', case-insensitiv). Alles andere —
-    fehlend, None, False, leerer String, beliebiger Text — gilt als NICHT
-    freigegeben (sicherer Default)."""
-    if not isinstance(metadata, dict):
-        return False
-    return _approval_value_is_true(metadata.get(SENSITIVITY_APPROVAL_KEY))
+# ENTFERNT (Runde 4, F10): ``is_release_approved(metadata)``.
+#
+# Sie las die Freigabe aus ``metadata[SENSITIVITY_APPROVAL_KEY]`` -- also aus
+# dem Request-Body. Genau dieser Aufruf WAR der Defekt aus Runde 1 (F2): der
+# Kontrollierte konnte sein eigenes Kontroll-Gate abschalten (gemessen: aus
+# BLOCKED wurde PASSED).
+#
+# Der Aufruf wurde damals entfernt, die Funktion blieb -- exportiert und von
+# keiner Produktionsstelle mehr benutzt. Damit lag hier eine einladend
+# benannte Funktion herum, deren BENUTZUNG der behobene Defekt ist. Der
+# naechste Beitragende haette sie gefunden, fuer die richtige gehalten und
+# das Loch wieder aufgemacht.
+#
+# Wer die Betreiber-Freigabe braucht, nimmt ``is_operator_release_approved``
+# -- gleiche Werte-Semantik, ANDERER Key, und ausschliesslich fuer
+# Betreiber-Quellen (Key-/Team-Konfiguration), nie fuer den Request-Body.
 
 
 def _approval_value_is_true(val: Any) -> bool:
