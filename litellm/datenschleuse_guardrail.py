@@ -2085,6 +2085,17 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Kontroll-Gate abschalten (gemessen: aus BLOCKED wurde PASSED).
         # Ein Gate, das der Kontrollierte selbst abschalten kann, ist kein
         # Gate.
+        # Ein client-gesetztes Re-Id-Siegel zuerst weg -- vor JEDEM Lesen.
+        # Ein fremdes, gueltiges Siegel waere sonst ein Orakel auf fremde
+        # PII (Replay, siehe _strip_body_reid_map).
+        if self._strip_body_reid_map(data):
+            _LOG.warning(
+                "Re-Id-Siegel im Request-Body gefunden und entfernt. Das "
+                "Mapping setzt ausschliesslich die Guardrail selbst; ein "
+                "mitgeschicktes Siegel waere die Wiederverwendung eines "
+                "fremden (Gesetz 5)."
+            )
+
         if self._strip_body_approval(data):
             # Kein stiller No-op: ein Client, der die Freigabe in den Body
             # schreibt, glaubt sonst, sie wirke. Geloggt wird nur die
@@ -2402,6 +2413,56 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 if approval_key in meta:
                     meta.pop(approval_key, None)
                     gesetzt = True
+        return gesetzt
+
+    @staticmethod
+    def _strip_body_reid_map(data: Dict[str, Any]) -> bool:
+        """Entfernt ein CLIENT-gesetztes Re-Id-Siegel aus dem Request-Body.
+
+        Das Gegenstueck zu ``_strip_body_approval`` -- fuer den
+        Mapping-Schluessel gab es keines, und das war eine Luecke.
+
+        WARUM DAS NOETIG IST, obwohl das Siegel verschluesselt ist:
+        Verschluesselung schuetzt gegen FAELSCHEN, nicht gegen
+        WIEDERVERWENDEN. Das Siegel reist in ``metadata`` und geht damit an
+        die Logging-Callbacks -- es ist nicht geheim. Wer eines aus einem Log
+        fischt, braucht den Schluessel nicht: er schickt es in seiner EIGENEN
+        Anfrage mit, dazu einen Text mit ``<PERSON_0>``, und laesst sich die
+        fremden Klartextwerte in seine Antwort hinein-re-identifizieren. Ein
+        Orakel auf fremde PII.
+
+        GEMESSEN: ueber ``metadata`` scheiterte der Angriff, weil der Hook
+        diesen Slot spaeter ueberschreibt -- Glueck, keine Absicht. Ueber
+        ``litellm_metadata`` gelang er, weil dorthin nie geschrieben wird.
+        Auf ein zufaellig dichtes Loch verlaesst sich diese Guardrail nicht.
+
+        Laeuft ganz am ANFANG des Hooks, vor jedem Lesen: was der Client
+        gesetzt hat, existiert danach nicht mehr. Das ist die Ursache; die
+        deterministische Lesereihenfolge in ``_read_reid_map`` ist die
+        zweite Schranke.
+
+        NICHT gewaehlt: eine kryptografische Bindung des Siegels an den
+        konkreten Request. Sie braeuchte einen Wert, den die Guardrail in
+        pre_call UND post_call kennt und den der Client nicht kontrolliert.
+        Die Kandidaten (``litellm_call_id`` und Verwandte) reisen selbst im
+        Body und sind damit potenziell client-gesetzt -- die Bindung
+        brauchte also erst wieder genau dieses Strippen, um zu tragen. Sie
+        wuerde zusaetzlich still brechen, wenn der Wert zwischen pre_call und
+        post_call abweicht (Router, Retry): der Nutzer bekaeme Platzhalter
+        statt Klartext. Mehr Mechanik, neues Ausfallrisiko, kein zusaetzlich
+        geschlossenes Loch, sobald der Client den Schluessel gar nicht mehr
+        setzen kann.
+        """
+        gesetzt = False
+        for meta_key in ("metadata", "litellm_metadata"):
+            meta = data.get(meta_key)
+            if isinstance(meta, dict) and REID_MAP_KEY in meta:
+                meta.pop(REID_MAP_KEY, None)
+                gesetzt = True
+        # Auch der geflachte Weg -- ``_read_reid_map`` liest ihn ebenfalls.
+        if REID_MAP_KEY in data:
+            data.pop(REID_MAP_KEY, None)
+            gesetzt = True
         return gesetzt
 
     def _operator_approved(
@@ -3793,12 +3854,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         """
         if not isinstance(request_data, dict):
             return {}
+        # DETERMINISTISCH: der erste Kanal, der den Schluessel TRAEGT,
+        # gewinnt -- unabhaengig davon, ob er sich oeffnen laesst.
+        #
+        # Hier stand ``if geoeffnet: return geoeffnet``, also ein Durchfallen
+        # auf den naechsten Kanal, wenn das Mapping leer war. Ein LEERES
+        # Mapping ist aber ein gueltiges Ergebnis (PII-freier Request), kein
+        # "nichts gefunden, weitersuchen". Der Hook schreibt nur nach
+        # ``metadata``; ein Angreifer konnte deshalb ein fremdes Siegel in
+        # ``litellm_metadata`` legen und es bei jedem PII-freien Request
+        # gewinnen lassen -- fremde Klartextwerte in der eigenen Antwort.
+        # Zusammen mit dem Strippen in _strip_body_reid_map (die Ursache)
+        # ist dieser Weg zu.
         for meta_key in ("metadata", "litellm_metadata"):
             meta = request_data.get(meta_key)
             if isinstance(meta, dict) and REID_MAP_KEY in meta:
-                geoeffnet = open_reid_map(meta[REID_MAP_KEY])
-                if geoeffnet:
-                    return geoeffnet
+                return open_reid_map(meta[REID_MAP_KEY])
         # Fallback: direkt im request_data (manche Codepfade flatten Metadaten).
         if REID_MAP_KEY in request_data:
             return open_reid_map(request_data[REID_MAP_KEY])

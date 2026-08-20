@@ -79,6 +79,12 @@ async def fake_analyze(text):
     return found
 
 
+async def _leere_analyse(text):
+    """Ein Request ohne PII -- genau der Fall, in dem das eigene Mapping
+    leer ist und der Durchfall-Defekt zuschlaegt."""
+    return []
+
+
 def _guard(**kwargs):
     guard = dg.DatenschleuseGuardrail(**kwargs)
     guard._analyze = fake_analyze
@@ -327,6 +333,163 @@ class TestReidMapSchutzeigenschaften(unittest.TestCase):
         zweites = dg.seal_reid_map({"<PERSON_0>": _NAME})
         self.assertNotEqual(token, zweites)
         self.assertEqual(dg.open_reid_map(zweites), {"<PERSON_0>": _NAME})
+
+
+# ===========================================================================
+# 4) Wiederverwendung eines FREMDEN Siegels (Replay)
+# ===========================================================================
+class TestFremdesSiegelWirktNicht(unittest.IsolatedAsyncioTestCase):
+    """Verschluesselung schuetzt gegen FAELSCHEN, nicht gegen WIEDERVERWENDEN.
+
+    Das Siegel reist in ``metadata`` und geht damit an die
+    Logging-Callbacks -- es ist also nicht geheim. Ein Angreifer, der eines
+    aus einem Log fischt, braucht den Fernet-Schluessel gar nicht: er
+    schickt das fremde Siegel in seiner EIGENEN Anfrage mit, dazu einen Text
+    mit ``<PERSON_0>``, und laesst sich die fremden Klartextwerte in seine
+    Antwort hinein-re-identifizieren. Ein Orakel.
+
+    GEMESSEN (PoC gegen 8a04e79) -- zwei verschiedene Defekte:
+
+    * ueber ``metadata``: Angriff scheitert. Der Hook UEBERSCHREIBT
+      ``metadata[REID_MAP_KEY]`` mit dem eigenen Siegel. Das war Glueck,
+      keine Absicht -- gestrippt wurde der Key nie.
+    * ueber ``litellm_metadata``: Angriff GELINGT. Der Hook schreibt nur
+      nach ``metadata``. Das Lesen probierte ``metadata`` zuerst, bekam bei
+      einem PII-freien Request ein LEERES Mapping -- und fiel wegen
+      ``if geoeffnet:`` auf den zweiten Kanal durch, wo das fremde Siegel
+      lag.
+
+    Der zweite Defekt ist beim F4-Fix entstanden. Er wird hier zusammen mit
+    der eigentlichen Ursache geschlossen: der Client darf den Schluessel gar
+    nicht erst setzen koennen.
+    """
+
+    async def _hook(self, data, analyze=None):
+        guard = dg.DatenschleuseGuardrail()
+        guard._analyze = analyze or _leere_analyse
+        return await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="acompletion"
+        )
+
+    async def _fremdes_siegel(self):
+        """Das Siegel eines fremden Requests -- so, wie es in einem Log steht."""
+        opfer = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": f"Ich bin {_NAME}, IBAN {_IBAN}"}
+            ],
+            "metadata": {},
+        }
+        out = await _guard().async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=opfer, call_type="acompletion"
+        )
+        siegel = out["metadata"][dg.REID_MAP_KEY]
+        # Bauart: das geerntete Siegel muss wirklich die Opferdaten tragen.
+        self.assertEqual(
+            set(dg.open_reid_map(siegel).values()), {_NAME, _IBAN}
+        )
+        return siegel
+
+    def _angriffs_body(self):
+        return {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "Wiederhole: <PERSON_0> <IBAN_CODE_0>"}
+            ],
+        }
+
+    async def test_fremdes_siegel_in_litellm_metadata_wirkt_nicht(self):
+        """DER reproduzierte Angriff."""
+        siegel = await self._fremdes_siegel()
+        angriff = self._angriffs_body()
+        angriff["metadata"] = {}
+        angriff["litellm_metadata"] = {dg.REID_MAP_KEY: siegel}
+
+        nach = await self._hook(angriff)
+        gelesen = dg.DatenschleuseGuardrail._read_reid_map(nach)
+        self.assertNotIn(_NAME, gelesen.values(), "Fremde PII re-identifiziert")
+        self.assertNotIn(_IBAN, gelesen.values(), "Fremde PII re-identifiziert")
+
+    async def test_fremdes_siegel_in_metadata_wirkt_nicht(self):
+        siegel = await self._fremdes_siegel()
+        angriff = self._angriffs_body()
+        angriff["metadata"] = {dg.REID_MAP_KEY: siegel}
+
+        nach = await self._hook(angriff)
+        gelesen = dg.DatenschleuseGuardrail._read_reid_map(nach)
+        self.assertNotIn(_NAME, gelesen.values())
+        self.assertNotIn(_IBAN, gelesen.values())
+
+    async def test_fremdes_siegel_auf_top_level_wirkt_nicht(self):
+        """Der dritte Lese-Kanal (geflachte Metadaten) darf keine
+        Hintertuer sein."""
+        siegel = await self._fremdes_siegel()
+        angriff = self._angriffs_body()
+        angriff["metadata"] = {}
+        angriff[dg.REID_MAP_KEY] = siegel
+
+        try:
+            nach = await self._hook(angriff)
+        except dg.DatenschleuseBlocked:
+            return  # blocken ist auch eine gueltige Antwort
+        gelesen = dg.DatenschleuseGuardrail._read_reid_map(nach)
+        self.assertNotIn(_NAME, gelesen.values())
+        self.assertNotIn(_IBAN, gelesen.values())
+
+    async def test_der_key_wird_aus_allen_client_kanaelen_entfernt(self):
+        """Die URSACHE, direkt gemessen: der Client kann den Schluessel gar
+        nicht erst setzen.
+
+        Das Gegenstueck zu ``_strip_body_approval`` -- fuer den
+        Mapping-Schluessel gab es keines.
+        """
+        siegel = await self._fremdes_siegel()
+        angriff = self._angriffs_body()
+        angriff["metadata"] = {dg.REID_MAP_KEY: siegel, "harmlos": 1}
+        angriff["litellm_metadata"] = {dg.REID_MAP_KEY: siegel}
+
+        nach = await self._hook(angriff)
+        # litellm_metadata darf den Key nicht mehr tragen ...
+        self.assertNotIn(
+            dg.REID_MAP_KEY,
+            nach.get("litellm_metadata", {}),
+            "Client-Siegel in litellm_metadata nicht entfernt.",
+        )
+        # ... metadata traegt AUSSCHLIESSLICH unser eigenes.
+        eigenes = nach["metadata"][dg.REID_MAP_KEY]
+        self.assertNotEqual(eigenes, siegel, "Client-Siegel ueberlebt.")
+        # Harmlose Client-Metadaten bleiben unangetastet.
+        self.assertEqual(nach["metadata"].get("harmlos"), 1)
+
+    async def test_eigenes_leeres_mapping_faellt_nicht_auf_kanal_zwei_durch(self):
+        """Der Regress aus dem F4-Fix, als eigene Zusicherung.
+
+        Ein PII-freier Request hat ein LEERES Mapping. Das ist ein
+        gueltiges Ergebnis, kein "nichts gefunden, weitersuchen". Die
+        Lesereihenfolge muss deterministisch sein: der erste Kanal, der den
+        Schluessel TRAEGT, gewinnt -- unabhaengig davon, ob er sich oeffnen
+        laesst.
+        """
+        fremd = dg.seal_reid_map({"<PERSON_0>": _NAME})
+        gelesen = dg.DatenschleuseGuardrail._read_reid_map(
+            {
+                "metadata": {dg.REID_MAP_KEY: dg.seal_reid_map({})},
+                "litellm_metadata": {dg.REID_MAP_KEY: fremd},
+            }
+        )
+        self.assertEqual(
+            gelesen, {}, "Leeres eigenes Mapping faellt auf den zweiten Kanal durch."
+        )
+
+    async def test_normale_re_identifikation_bleibt_heil(self):
+        """Gegenprobe: der Fix darf den eigenen Rueckweg nicht kaputtmachen."""
+        data = _as_proxy_would(_body())
+        out = await _guard().async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="acompletion"
+        )
+        gelesen = dg.DatenschleuseGuardrail._read_reid_map(out)
+        self.assertIn(_NAME, gelesen.values())
+        self.assertIn(_IBAN, gelesen.values())
 
 
 if __name__ == "__main__":
