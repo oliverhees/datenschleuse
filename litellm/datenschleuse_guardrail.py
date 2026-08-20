@@ -48,6 +48,7 @@ Sicherheits-Rationale zu Streaming (Fail-closed vs. UX)
 from __future__ import annotations
 
 import base64
+import contextvars
 import copy
 import hashlib
 import hmac
@@ -87,8 +88,62 @@ except Exception:  # pragma: no cover
     _LITELLM_AVAILABLE = False
 
     class _GuardrailBase:  # minimaler Shim nur fuer Tests / Standalone
+        #: Nachbau von litellms PRE_CALL_EXECUTED_GUARDRAILS_KEY
+        #: (integrations/custom_guardrail.py). Der Shim muss die
+        #: Marker-Semantik tragen, sonst testet der Deployment-Pfad eine
+        #: Mechanik, die es in Produktion so nicht gibt.
+        _EXECUTED_KEY = "pre_call_executed_guardrails"
+
         def __init__(self, **kwargs: Any) -> None:
             self.guardrail_name = kwargs.get("guardrail_name", "datenschleuse-reid")
+
+        def _pre_call_marker(self) -> Optional[str]:
+            name = getattr(self, "guardrail_name", None)
+            return f"pre_call_executed:{name}" if name else None
+
+        def mark_pre_call_hook_ran(self, data: Dict[str, Any]) -> None:
+            marker = self._pre_call_marker()
+            if marker is None:
+                return
+            for meta_key in ("metadata", "litellm_metadata"):
+                meta = data.get(meta_key)
+                if isinstance(meta, dict):
+                    executed = meta.get(self._EXECUTED_KEY)
+                    if isinstance(executed, list):
+                        if marker not in executed:
+                            executed.append(marker)
+                    else:
+                        meta[self._EXECUTED_KEY] = [marker]
+                    return
+            data["metadata"] = {self._EXECUTED_KEY: [marker]}
+
+        def _pre_call_hook_already_ran(self, data: Dict[str, Any]) -> bool:
+            marker = self._pre_call_marker()
+            if marker is None:
+                return False
+            for meta_key in ("metadata", "litellm_metadata"):
+                meta = data.get(meta_key)
+                if isinstance(meta, dict):
+                    executed = meta.get(self._EXECUTED_KEY)
+                    if isinstance(executed, list) and marker in executed:
+                        return True
+            return False
+
+        async def async_pre_call_deployment_hook(
+            self, kwargs: Dict[str, Any], call_type: Any
+        ) -> Optional[dict]:
+            """Nachbau der Vorbedingungen aus
+            integrations/custom_guardrail.py:641-676."""
+            if not isinstance(kwargs.get("guardrails"), list):
+                return kwargs
+            if self._pre_call_hook_already_ran(kwargs):
+                return kwargs
+            roh = getattr(call_type, "value", call_type)
+            if roh not in ("completion", "acompletion"):
+                return kwargs
+            return await self.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=kwargs, call_type=roh
+            )
 
 
 # Key, unter dem wir unser eigenes Platzhalter->Klartext-Mapping ablegen.
@@ -143,9 +198,31 @@ IMAGE_POLICIES = ("redact", "block", "pass")
 #    vollstaendig beherrscht (Message-Feld-Register, Part-Register, QI-Layer,
 #    Re-Identifikation auf dem Rueckweg).
 #    - ``acompletion``: /v1/chat/completions am Proxy.
-#    - ``completion``:  synchroner Pfad ueber
-#      ``CustomGuardrail.async_pre_call_deployment_hook`` -- dort werden
-#      OpenAI-Chat-kwargs (mit ``messages``) uebergeben. KEIN toter Eintrag.
+#    - ``completion``:  kommt AUSSCHLIESSLICH aus
+#      ``CustomGuardrail.async_pre_call_deployment_hook``
+#      (integrations/custom_guardrail.py:668 reicht bei
+#      ``CallTypes.completion`` den String ``"completion"`` weiter).
+#
+#      KORREKTUR des alten Kommentars (DATENSCHLE-69, Security-F3). Hier stand
+#      "synchroner Pfad ... KEIN toter Eintrag" -- eine Behauptung ueber eine
+#      Route, deren Payload-FORM nie gemessen wurde. Genau die Verwechslung,
+#      die der Kasten weiter oben verbietet.
+#
+#      GEMESSEN gegen 1.97.0:
+#        * ``litellm.completion`` ist KEINE Coroutine und laeuft durch den
+#          synchronen ``wrapper`` (utils.py:1256). Der ruft
+#          ``async_pre_call_deployment_hook`` NIE auf -- das tut nur
+#          ``wrapper_async`` (utils.py:1558) an :1587, mit
+#          ``call_type = original_function.__name__``. Aus dem synchronen
+#          ``litellm.completion`` entsteht also nie ein
+#          ``CallTypes.completion``. Der alte Kommentar war insofern falsch.
+#        * Erreicht der Dispatcher trotzdem ``CallTypes.completion``, kommt
+#          der String korrekt bei uns an. Der Eintrag ist also nicht tot --
+#          nur anders belegt als behauptet.
+#        * Der Payload ist dort NICHT ein blanker Chat-Body, sondern
+#          router-aufgeloeste Deployment-kwargs. Ungeprueft blockten die hart:
+#          "Payload enthaelt 6 Top-Level-Feld(er) ..." -- fail-closed, aber
+#          Totalausfall. Deshalb PAYLOAD_FIELDS_DEPLOYMENT (siehe dort).
 CALL_TYPES_CHAT_MESSAGES = (
     "acompletion",
     "completion",
@@ -577,6 +654,76 @@ PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     "preset_cache_key",
     "id",
 })
+
+# --- 2a) DEPLOYMENT-PFAD: dasselbe Register, ein anderer Absender ---------
+# (DATENSCHLE-69, Security-F3)
+#
+# litellm ruft eine Guardrail an ZWEI Stellen: am Proxy (ProxyLogging.
+# pre_call_hook, Client-Body) und nach der Routing-Entscheidung
+# (CustomGuardrail.async_pre_call_deployment_hook, router-aufgeloeste
+# Deployment-kwargs). Beide landen in demselben ``async_pre_call_hook``.
+#
+# Der alte Kommentar behauptete, der Register-Eintrag ``"completion"`` sei
+# durch diesen zweiten Weg belegt -- ohne die FORM des Payloads dort je
+# gemessen zu haben. Genau die Verwechslung, die die eigene Doktrin verbietet:
+# "der call_type sagt nur, WELCHE Route spricht, nicht WIE ihr Payload
+# aussieht." Nachgemessen war der Befund ein Totalausfall: die Deployment-
+# kwargs blockten hart, jeder Request, fail-closed -- und die erste
+# Betreiberreaktion darauf ist, die Guardrail abzuschalten.
+#
+# GEMESSEN (litellm 1.97.0, echter Router mit echtem Deployment), die
+# Top-Level-Keys auf dem Deployment-Pfad:
+#   api_base, api_key, caching, client, guardrails, litellm_call_id,
+#   litellm_trace_id, max_retries, merge_reasoning_content_in_choices,
+#   messages, metadata, mock_response, model, model_info, stream, timeout,
+#   use_in_pass_through, use_litellm_proxy, use_xai_oauth
+# Dazu die fuenf ``user_api_key_*``-Keys, die litellm in
+# integrations/custom_guardrail.py:661-666 selbst aus den kwargs liest, um
+# UserAPIKeyAuth zu bauen, sowie ``guardrail_to_apply`` (:657).
+#
+# WARUM DAS KEIN AUFWEICHEN IST: dieses Register gilt AUSSCHLIESSLICH,
+# solange wir nachweislich im Deployment-Hook stehen (ContextVar, gesetzt in
+# unserem eigenen ``async_pre_call_deployment_hook``). Auf dem Client-Pfad
+# bleibt jeder dieser Keys geblockt -- ``api_base`` etwa leitet, client-
+# gesetzt, den kompletten Verkehr auf einen fremden Server um; auf dem
+# Deployment-Pfad setzt ihn der ROUTER. Derselbe Name, eine andere Herkunft,
+# ein anderes Vertrauensmodell. Der Deployment-Pfad bekommt ein GROESSERES
+# Register, kein laxeres: ein unbekannter Key blockt dort genauso.
+PAYLOAD_FIELDS_DEPLOYMENT = frozenset({
+    # Vom Router aus der Deployment-Konfiguration des BETREIBERS aufgeloest.
+    # Auf dem Client-Pfad blockt api_base als Transport-Kanal -- hier stammt
+    # er aus der config.yaml, nicht aus dem Request.
+    "api_base",
+    # Vom Router injizierte Betriebs-/Verbindungsschalter (gemessen).
+    "client",
+    "merge_reasoning_content_in_choices",
+    "use_in_pass_through",
+    "use_litellm_proxy",
+    "use_xai_oauth",
+    # Identitaet des Aufrufers, vom PROXY gesetzt und von litellm selbst
+    # gelesen (custom_guardrail.py:661-666). litellm strippt gleichnamige
+    # CLIENT-Metadaten ausdruecklich, weil ein Client sie sonst faelschen
+    # koennte -- auf dem Client-Pfad blocken sie deshalb weiterhin.
+    "user_api_key_user_id",
+    "user_api_key_team_id",
+    "user_api_key_end_user_id",
+    "user_api_key_hash",
+    "user_api_key_request_route",
+    # Setzt litellm selbst, wenn die Guardrail ueber apply_guardrail laeuft
+    # (custom_guardrail.py:657).
+    "guardrail_to_apply",
+})
+
+#: Merker fuer "wir stehen im Deployment-Hook". ContextVar und NICHT ein
+#: Instanz-Attribut: die Guardrail-Instanz ist prozessweit geteilt und
+#: bedient nebenlaeufige Requests. Ein Attribut waere ein Datenrennen, bei
+#: dem ein Client-Request das erweiterte Register eines gleichzeitigen
+#: Deployment-Requests erwischen koennte -- also ein Sicherheitsdefekt.
+#: ContextVars sind pro asyncio-Task isoliert.
+_DEPLOYMENT_PATH = contextvars.ContextVar(
+    "datenschleuse_deployment_path", default=False
+)
+
 
 # --- 2b) BEHANDELT: abgeleitete Kopien des Payloads -----------------------
 # Die dritte Kategorie neben "passiert" und "blockt": Keys, die den Payload
@@ -1926,6 +2073,32 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
         return data
 
+    # ---- Deployment-Pfad (DATENSCHLE-69, Security-F3) ---------------------
+    async def async_pre_call_deployment_hook(
+        self, kwargs: Dict[str, Any], call_type: Any
+    ) -> Optional[dict]:
+        """Der zweite Eingang der Guardrail -- NACH der Routing-Entscheidung.
+
+        Wir uebernehmen litellms komplette Vorlogik unveraendert (Marker
+        ``_pre_call_hook_already_ran``, ``should_run_guardrail``, Bau des
+        ``UserAPIKeyAuth``) und setzen ausschliesslich einen Merker, damit
+        ``_validate_payload_shape`` weiss, dass die Deployment-FORM erlaubt
+        ist. Kein Nachbau der Vorlogik: ein zweiter, leicht abweichender
+        Nachbau waere genau die Sorte Folgedefekt, die dieser Guardrail
+        wiederholt produziert hat.
+
+        Warum ueberhaupt maskiert wird und nicht bloss durchgereicht: laeuft
+        die Guardrail nur auf Modell-Ebene (``litellm_params.guardrails``) oder
+        im SDK ohne Proxy, ist DIESER Hook die einzige Maskierungsstelle. Ein
+        blosses Durchreichen waere dort ein stilles Leck -- schlimmer als der
+        Block, den wir gerade beheben.
+        """
+        token = _DEPLOYMENT_PATH.set(True)
+        try:
+            return await super().async_pre_call_deployment_hook(kwargs, call_type)
+        finally:
+            _DEPLOYMENT_PATH.reset(token)
+
     # ---- Betreiber-Freigabe (DATENSCHLE-69, Security-F2) ------------------
     #: Ersatzwert fuer das redigierte Header-Geheimnis. Konstant, damit er nie
     #: mit einem Client-Wert verwechselt werden kann.
@@ -2179,6 +2352,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
             | PAYLOAD_FIELDS_INFRASTRUCTURE
             | PAYLOAD_FIELDS_RESYNCED
         )
+        # Auf dem Deployment-Pfad kommen die vom ROUTER aufgeloesten Keys
+        # dazu (DATENSCHLE-69, Security-F3). Der Merker steht nur, solange wir
+        # nachweislich in unserem eigenen Deployment-Hook stehen -- der
+        # Client-Pfad sieht dieses Register nie.
+        im_deployment = _DEPLOYMENT_PATH.get()
+        if im_deployment:
+            erlaubt = erlaubt | PAYLOAD_FIELDS_DEPLOYMENT
         unbekannt = [key for key in data if key not in erlaubt]
         if unbekannt:
             benannt = sorted(
@@ -2199,12 +2379,23 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "Payload blockiert -- ungepruefte Top-Level-Felder [%s]. "
                 "Werte werden bewusst nicht geloggt (Gesetz 5).", diagnose,
             )
+            # Den KONTEXT nennen, sonst sucht ein Betreiber an der falschen
+            # Stelle: auf dem Deployment-Pfad stammen die Keys vom Router,
+            # nicht vom Client -- und die Abhilfe ist eine andere.
+            kontext = (
+                " Der Block stammt vom DEPLOYMENT-Pfad (nach der "
+                "Routing-Entscheidung): die Keys setzt dort litellms Router, "
+                "nicht der Client. Eine neue litellm-Version kann hier neue "
+                "Keys einfuehren -- dann gehoert der Key nach Pruefung in "
+                "PAYLOAD_FIELDS_DEPLOYMENT."
+                if im_deployment else ""
+            )
             raise DatenschleuseBlocked(
                 f"Payload enthaelt {len(unbekannt)} Top-Level-Feld(er), die "
                 f"die Datenschleuse nicht prueft ({diagnose}) -- deshalb "
                 f"blockiert (fail-closed). Geprueft werden auf der Route "
                 f"{route.name} ausschliesslich: "
-                f"{_PAYLOAD_FIELDS_HINT[route.name]}."
+                f"{_PAYLOAD_FIELDS_HINT[route.name]}.{kontext}"
             )
 
         # d) Bekanntes Feld, falscher Typ -- derselbe Defekt (DATENSCHLE-66 F1).
