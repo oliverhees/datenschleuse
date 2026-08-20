@@ -368,6 +368,43 @@ Sicherheit. Der `security`-Job löst deshalb erst auf (`pip install` +
 
 Das ist ein Behelf, kein Lockfile. Siehe Abschnitt 4.
 
+### Wohin die Funde gehen — und wer wann draufschaut
+
+Bis zum Security-Audit von DATENSCHLE-59 schrieben beide Workflows **nur eine
+Tabelle ins Job-Log**. Kein SARIF, kein Artefakt, keine Benachrichtigung. Der
+wöchentliche Lauf endete mit fünf grünen Haken, während darunter tausende Funde
+lagen. Ein grüner Haken über 3847 Befunden ist kein neutrales Signal, sondern ein
+**aktiv irreführendes**. Dazu löscht GitHub Job-Logs nach 90 Tagen: Wer in einem
+halben Jahr belegen will, was wir heute ausgeliefert haben, findet nichts mehr —
+womit der Zweck aus der Einleitung („nachträglich feststellbar, welche Software
+wir ausgeliefert haben") verfehlt wäre.
+
+Beide Workflows laden ihre Ergebnisse deshalb als **SARIF ins Code-Scanning**.
+Das Repo ist public, Code-Scanning ist damit kostenlos; die Funde landen
+dedupliziert und mit Verlauf pro CVE im Security-Tab. Zwei Details, die nicht
+Kosmetik sind:
+
+- **`category` pro Matrix-Job.** Ohne sie überschreiben sich die fünf Image-Jobs
+  gegenseitig, und im Security-Tab bliebe genau ein Image übrig.
+- **Upload VOR dem Gate** (in `ci.yml`). Der Gate-Schritt beendet den Job mit
+  `exit-code: 1`; alles danach läuft nicht mehr. Stünde der Upload dahinter,
+  würde ausgerechnet der *blockierende* Fund nie aufgezeichnet — dokumentiert
+  wären nur die harmlosen Läufe.
+- **Fork-PRs übersprungen.** Forks bekommen kein `security-events: write`. Ohne
+  die Bedingung scheiterte jeder Fork-PR am Upload statt an seiner Qualität.
+
+**Wer schaut wann drauf** — ohne diese Zeile ist auch das beste Dashboard nur
+ein Archiv:
+
+| Wann | Wer | Was |
+|------|-----|-----|
+| Montags nach dem Wochenlauf | der Teammate mit dem Wartungs-Work-Item | Security-Tab öffnen: Sind **neue** CRITICALs dazugekommen? Nur die Veränderung zählt, nicht der Absolutstand. |
+| Bei jedem Fund mit verfügbarem Fix | derselbe | Digest-Update nach Abschnitt 1 anstoßen — eigenes Work Item. |
+| Quartalsweise | Oliver | Gesamtstand gegen die Entscheidung aus `docs/adr/0001-image-cve-gate.md` prüfen: Gilt die Begründung noch? |
+
+Ohne festen Termin verfällt jede Berichtspflicht zu Hintergrundrauschen. Der
+Wochenlauf ist der Termin.
+
 ### Ausnahmen
 
 `.trivyignore.yaml` im Repo-Root. Die Regeln stehen als Kommentar in der Datei

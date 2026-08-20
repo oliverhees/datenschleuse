@@ -7,6 +7,8 @@ on:
 # Jobs, die mehr brauchen, bekommen es explizit und einzeln (aktuell keiner).
 permissions:
   contents: read
+  # Nur fuer den SARIF-Upload im `security`-Job (Audit-Fund MEDIUM-4).
+  security-events: write
 
 # SUPPLY-CHAIN-REGEL (DATENSCHLE-59), bindend fuer diese Datei:
 # JEDE `uses:`-Zeile wird auf einen Commit-SHA gepinnt, nie auf ein Tag.
@@ -118,6 +120,38 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN
           exit-code: "0"
           cache: true
+
+      # Schritt 1b: SARIF erzeugen und hochladen -- VOR dem Gate (MEDIUM-4).
+      #
+      # Die Reihenfolge ist der ganze Punkt: Schritt 2 beendet den Job mit
+      # exit-code 1, danach laeuft nichts mehr. Stuende der Upload dahinter,
+      # wuerde ausgerechnet der blockierende Fund NICHT im Security-Tab landen
+      # -- aufgezeichnet waeren nur die harmlosen Laeufe.
+      #
+      # Ohne das hier existieren die Funde nur als Tabelle im Job-Log, und
+      # GitHub loescht Job-Logs nach 90 Tagen.
+      - name: Trivy Dependencies -- SARIF erzeugen
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/depscan
+          scanners: vuln
+          severity: CRITICAL,HIGH,MEDIUM
+          format: sarif
+          output: trivy-deps.sarif
+          exit-code: "0"
+          trivyignores: .trivyignore.yaml
+          cache: true
+          skip-setup-trivy: true
+
+      # Forks haben kein `security-events: write` -- ohne diese Bedingung
+      # scheiterte jeder Fork-PR an einem Upload, nicht an seiner Qualitaet.
+      - name: SARIF ins Code-Scanning hochladen
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          sarif_file: trivy-deps.sarif
+          category: dependencies
 
       # Schritt 2: das Gate. Blockiert bei CRITICAL/HIGH -- aber nur, wenn es
       # einen Fix gibt (`ignore-unfixed`).

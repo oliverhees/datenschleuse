@@ -44,6 +44,9 @@ on:
 
 permissions:
   contents: read
+  # Fuer den SARIF-Upload ins Code-Scanning (DATENSCHLE-59, Audit-Fund MEDIUM-4).
+  # Bewusst nur hier und nur dieses eine zusaetzliche Recht.
+  security-events: write
 
 jobs:
   scan:
@@ -127,3 +130,44 @@ jobs:
           timeout: "20m"
           cache: true
           skip-setup-trivy: true
+
+      # Schritt 3: SARIF ins Code-Scanning hochladen (Audit-Fund MEDIUM-4).
+      #
+      # WARUM: Schritt 1 und 2 schreiben eine Tabelle ins Job-Log -- sonst
+      # nichts. Kein Artefakt, keine Benachrichtigung. Der woechentliche Lauf
+      # endet mit fuenf gruenen Haken, obwohl darunter tausende Funde liegen.
+      # Ein gruener Haken ueber 3847 Befunden ist kein neutrales, sondern ein
+      # aktiv irrefuehrendes Signal. Und GitHub loescht Job-Logs nach 90 Tagen:
+      # Wer im Januar wissen will, was wir im August ausgeliefert haben, findet
+      # nichts mehr.
+      #
+      # Das Repo ist public, damit ist Code-Scanning kostenlos. Die Funde landen
+      # dedupliziert und historisiert im Security-Tab, mit Verlauf pro CVE --
+      # "seit wann haben wir das?" wird damit beantwortbar.
+      #
+      # `category` ist bei einer Matrix PFLICHT: ohne sie ueberschreiben sich
+      # die fuenf Matrix-Jobs gegenseitig und es bliebe genau ein Image uebrig.
+      - name: Trivy ${{ matrix.name }} -- SARIF erzeugen
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.ref }}
+          scanners: vuln
+          severity: CRITICAL,HIGH,MEDIUM
+          format: sarif
+          output: trivy-${{ matrix.name }}.sarif
+          exit-code: "0"
+          trivyignores: .trivyignore.yaml
+          timeout: "20m"
+          cache: true
+          skip-setup-trivy: true
+
+      # Forks haben kein `security-events: write`. Ohne diese Bedingung wuerde
+      # jeder Fork-PR mit einem roten Upload-Schritt enden -- ein Fehlschlag,
+      # der nichts ueber die Sicherheit des PRs aussagt.
+      - name: SARIF ins Code-Scanning hochladen
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          sarif_file: trivy-${{ matrix.name }}.sarif
+          category: image-${{ matrix.name }}
