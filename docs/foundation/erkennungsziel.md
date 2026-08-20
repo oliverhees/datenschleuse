@@ -45,19 +45,27 @@ Security-Audit (zweizeiliges Label-Wert-Paar, „Nachname, Vorname").
 | Kennzahl | vorher (45 Cases) | erweitert (82 Cases) | mit Stoppwortliste |
 |---|---|---|---|
 | Recall (`must_detect`) | 100,0 % (43/43) | 100,0 % (54/54) | **100,0 % (54/54)** |
-| Precision | 100,0 % | 66,2 % | **81,8 %** |
+| Precision | 100,0 % | 67,5 % | **81,8 %** |
 | False Positives | 0 | 26 | **12** |
 | Störquote | (nicht erhoben) | 81,2 % (26/32) | **37,5 % (12/32)** |
 
 Die mittlere Spalte ist die ehrliche Ausgangslage: **vier von fünf PII-freien
 Texten wurden gestört.**
 
+> **Korrektur (QA-Audit gegen `42251c8`).** Diese Spalte wies vorher 66,2 %
+> Precision aus. Die Zahl war mit ihrer eigenen Zeile unvereinbar:
+> 54 TP und 26 FP ergeben 54/80 = **67,5 %**; 66,2 % entspricht 51/77, also dem
+> Korpus **vor** den drei Positiv-Kontrollen aus dem Security-Audit. Beim
+> Korpus-Update wurde nur die rechte Spalte nachgezogen. Nachgemessen am
+> laufenden Analyzer: 67,5 %. Alle übrigen Werte der Tabelle reproduzieren
+> unverändert.
+
 > **Revision nach Security-Audit.** Eine frühere Fassung dieses Dokuments wies
 > hier 96,2 % Precision und 6,2 % Störquote aus. Diese Zahlen waren unbrauchbar:
 > Sie wurden durch Stoppwort-Einträge erzeugt, die auch **echte Namen**
 > unterdrückten — vier von acht Recall-Kontrollnamen gingen im Klartext durch
 > (Details in [ADR-0002](../adr/0002-nicht-pii-wortliste.md)). Der Rückbau auf
-> das sicher Belegbare kostet 15 Prozentpunkte Precision. Die schlechtere Zahl
+> das sicher Belegbare kostet 14,4 Prozentpunkte Precision. Die schlechtere Zahl
 > ist die richtige.
 
 ### 1.3 Warum zusätzlich die Störquote

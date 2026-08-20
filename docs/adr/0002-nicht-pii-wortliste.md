@@ -202,7 +202,7 @@ eigenen Datei.
 | | ohne Liste | mit Liste |
 |---|---|---|
 | Recall (`must_detect`) | 100,0 % (TP=54 FN=0) | **100,0 % (TP=54 FN=0)** |
-| Precision | 66,2 % | **81,8 %** |
+| Precision | 67,5 % | **81,8 %** |
 | False Positives | 26 | **12** |
 | Störquote | 81,2 % (26/32) | **37,5 % (12/32)** |
 
@@ -215,8 +215,13 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
 > Historische Einordnung: Eine frühere Fassung dieser Liste meldete 96,2 %
 > Precision und 6,2 % Störquote. Diese Zahlen waren **unbrauchbar** — sie
 > wurden durch Einträge erkauft, die echte Namen unterdrückten (F1/F2). Der
-> Rückbau kostet 15 Prozentpunkte Precision und gewinnt die Korrektheit
+> Rückbau kostet 14,4 Prozentpunkte Precision und gewinnt die Korrektheit
 > zurück.
+
+> Korrektur (QA-Audit gegen `42251c8`): Die linke Spalte wies vorher 66,2 %
+> aus. 54 TP und 26 FP ergeben 67,5 %; 66,2 % stammt aus dem Korpus vor den
+> drei Positiv-Kontrollen des Security-Audits und wurde beim Korpus-Update
+> nicht nachgezogen. Am laufenden Analyzer nachgemessen.
 
 **Schwerer / zu beachten für künftige Work Items:**
 
