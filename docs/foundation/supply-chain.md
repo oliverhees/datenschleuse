@@ -201,6 +201,40 @@ Tag — dann ist der gesuchte Commit-SHA `.object.sha` **des dereferenzierten
 Objekts**, nicht der des Tag-Objekts. Im Zweifel gegenprüfen mit
 `gh api repos/<owner>/<repo>/commits/<sha> --jq .sha`.
 
+### Durchsetzung: `test/test_action_pins.py`
+
+Diese Regel hatte bis zum Security-Audit **keinen Prüfmechanismus** — und wurde
+prompt in genau dem PR gebrochen, der sie aufstellte (Audit-Fund MEDIUM-1). Eine
+Regel ohne Durchsetzung ist eine Empfehlung. Der Test läuft in der normalen Suite
+und arbeitet auf zwei Ebenen:
+
+- **Offline (immer).** Form: 40 Hex-Zeichen, `# vX.Y.Z`-Kommentar vorhanden,
+  keine beweglichen Refs. Das allein hätte MEDIUM-1 **nicht** gefunden — ein
+  Tag-Objekt hat ebenfalls 40 Hex-Zeichen. Es fängt den viel häufigeren Fall
+  `@v4` / `@main`.
+- **Online (opt-in, `DS_CHECK_ACTION_PINS_ONLINE=1`).** Fragt GitHub, ob der SHA
+  wirklich ein *Commit* ist. `repos/<owner>/<repo>/commits/<tag-objekt-id>`
+  antwortet mit **HTTP 422** — daran ist der Fall eindeutig erkennbar. Das ist
+  die Prüfung, die MEDIUM-1 gefunden hätte; gegen den Stand `947bd36`
+  nachgestellt, schlägt sie dort fehl.
+
+Opt-in ist die Online-Ebene, damit die normale Suite offline und deterministisch
+bleibt. **Vor jedem Merge einer Workflow-Änderung** gehört sie trotzdem gelaufen:
+
+```bash
+DS_CHECK_ACTION_PINS_ONLINE=1 PYTHONPATH=litellm \
+  python3 -m unittest discover -s test -p "test_action_pins.py"
+```
+
+Beim Pinnen von `github/codeql-action` (Audit-Fund MEDIUM-4) ist derselbe Fall
+sofort wieder aufgetreten: Auch dessen `v4.37.7` ist ein annotiertes Tag. Zweimal
+in einer Änderung ist kein Schlamperei-Problem, sondern ein fehlender Check.
+
+Ein Detail, das der Test selbst zutage gefördert hat: Bei Unterverzeichnis-Actions
+(`github/codeql-action/upload-sarif@…`) sind nur die **ersten zwei** Pfadsegmente
+das Repository; der Rest ist ein Pfad darin. Wer das nicht trennt, bekommt einen
+404 und hält einen korrekten Pin für falsch.
+
 ---
 
 ## 3. CVE-Scan
