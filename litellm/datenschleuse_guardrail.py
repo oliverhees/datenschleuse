@@ -474,6 +474,34 @@ KNOWN_UNSUPPORTED_PART_FIELDS = frozenset({
     "partial",
 })
 
+# Part-TYPEN, die es in der Praxis gibt und die wir bewusst NICHT
+# unterstuetzen. Sie blocken wie jeder unbekannte Typ -- werden in der
+# Meldung aber beim Namen genannt, damit ein Betreiber eine BEKANNTE,
+# akzeptierte Einschraenkung von einem echten Bug unterscheiden kann.
+# Dieselbe Bauart wie KNOWN_UNSUPPORTED_CITATION_TYPES, eine Ebene hoeher.
+#
+# Anlass (QA-Audit zu 2165cf2): Anthropics natives Web-Search-Tool verlangt
+# fuer die Fortsetzung, dass der Client die Assistant-Bloecke unveraendert
+# zurueckschickt -- diese beiden eingeschlossen. Ein spec-konformer Client
+# schickt sie also IMMER mit, und der Betreiber sah dafuer bisher exakt die
+# Meldung, die auch ein Tippfehler im Part-Typ ausloest.
+#
+# Gesetz 5: die Namen stammen aus dieser konstanten Liste, nie aus dem
+# Request. Genannt wird ein Typ nur, wenn der Client-Wert exakt einem
+# Eintrag hier entspricht -- der ausgegebene String ist dann unsere
+# Konstante, nicht die Eingabe.
+KNOWN_UNSUPPORTED_PART_TYPES = frozenset({
+    "server_tool_use",
+    "web_search_tool_result",
+})
+
+# Konstanter Verweis auf die Stelle, an der die Einschraenkung begruendet
+# steht. Ohne ihn hat ein Betreiber keinen Pfad zur Doku.
+_WEB_SEARCH_LIMITATION_DOC = (
+    "docs/foundation/security-baseline.md "
+    "(\"Bekannte Einschraenkung: Anthropics natives Web-Search-Tool\")"
+)
+
 # Konstante Hinweistexte pro Part-Typ (nie Client-Werte, Gesetz 5).
 _ALLOWED_PART_FIELDS_HINT = {
     part_type: ", ".join(sorted(fields))
@@ -1389,14 +1417,37 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
         part_type = part.get("type")
         if not isinstance(part_type, str) or part_type not in ALLOWED_PART_TYPES:
-            # part_type ist voll client-kontrolliert (beliebiger Inhalt,
-            # beliebiger Typ, beliebige Laenge) und darf deshalb NIE roh in
-            # die Meldung -- nur sein Python-Typname (DATENSCHLE-64,
-            # zweites Security-Finding).
+            if (
+                isinstance(part_type, str)
+                and part_type in KNOWN_UNSUPPORTED_PART_TYPES
+            ):
+                # Der ausgegebene Name ist unsere Konstante (der Vergleich
+                # erzwingt Gleichheit), nicht der Request -- kein
+                # Client-Wert, keine unbegrenzte Laenge.
+                grund = (
+                    f"Content-Part-Typ '{part_type}' gehoert zu Anthropics "
+                    "nativem Web-Search-Tool und hat in der Datenschleuse "
+                    "keinen geprueften Pfad"
+                )
+                hinweis = (
+                    " Bekannte, akzeptierte Einschraenkung, kein Fehler "
+                    "dieser Anfrage: Multi-Turn mit Anthropics Web-Search "
+                    "funktioniert durch diese Datenschleuse nicht. "
+                    f"Begruendung in {_WEB_SEARCH_LIMITATION_DOC}."
+                )
+            else:
+                # part_type ist voll client-kontrolliert (beliebiger Inhalt,
+                # beliebiger Typ, beliebige Laenge) und darf deshalb NIE roh
+                # in die Meldung -- nur sein Python-Typname (DATENSCHLE-64,
+                # zweites Security-Finding).
+                grund = (
+                    "Content-Part mit nicht erlaubtem Typ "
+                    f"({type(part_type).__name__}) wird von der "
+                    "Datenschleuse nicht geprueft"
+                )
+                hinweis = ""
             raise DatenschleuseBlocked(
-                "Content-Part mit nicht erlaubtem Typ "
-                f"({type(part_type).__name__}) wird von der Datenschleuse "
-                "nicht geprueft und ist deshalb blockiert (fail-closed). "
+                f"{grund} -- blockiert (fail-closed).{hinweis} "
                 f"Erlaubt sind nur: {_ALLOWED_PART_TYPES_HINT}."
             )
 
