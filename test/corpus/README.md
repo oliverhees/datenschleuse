@@ -85,6 +85,25 @@ unnötig maskiert). Der Zielwert gewichtet Recall daher höher:
 `known_gap`-Fälle zählen **nicht** gegen diese Ziele — sie sind der dokumentierte
 Backlog für zukünftige Recognizer.
 
+### Aktueller Stand: Ziel nicht erreicht
+
+Das Precision-Ziel ist **rot**. Der Korpus beprobte auf der Negativ-Seite lange
+nur die Regex-Recognizer (IBAN, Telefon, KFZ, Aktenzeichen, Firma) — die
+statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **66,2 %**
+bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört).
+
+Der gemeldete **Recall von 100 % ist ebenfalls kein Qualitätsbeleg**:
+`de_core_news_lg` gibt für PERSON in seinen eigenen Metadaten 92,02 % Recall an.
+Ein Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
+Evaluationsmenge, ist zu leicht. Die Härtung des Korpus ist ein eigenes Work
+Item.
+
+Das eingecheckte `benchmark-results.json` stammt noch aus einem Lauf mit
+unvollständig beprobter Negativ-Seite und zeigt deshalb zu gute
+Precision-Werte. Es wird hier bewusst nicht von Hand korrigiert — es ist ein
+Maschinen-Artefakt und wird durch einen echten Lauf ersetzt, nicht durch eine
+Handeintragung. Bis dahin ist es kein Beleg.
+
 ## Aufruf
 
 Voraussetzung: Der Presidio-Analyzer läuft (via `docker-compose.yml`) und ist
