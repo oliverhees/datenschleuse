@@ -9,4 +9,51 @@
 # UPDATE-VERFAHREN: docs/foundation/supply-chain.md ("Digest-Update").
 FROM mcr.microsoft.com/presidio-analyzer:2.2.362@sha256:286e3fa7f3a7426e775e8564fe1870f1ba8f999d3ab8bbb8cc46a44355d9d6e9
 
+# ---------------------------------------------------------------------------
+# Sicherheits-Updates der Distributions-Pakete (DATENSCHLE-83)
+# ---------------------------------------------------------------------------
+# Das Basis-Image (Debian 13 trixie) liefert Pakete mit bekannten, BEHEBBAREN
+# kritischen Luecken aus -- gemessen, nicht vermutet:
+#   libgnutls30t64  CVE-2026-33845  3.8.9-3+deb13u2 -> 3.8.9-3+deb13u4
+#   libssl3t64      CVE-2026-31789  3.5.4-1~deb13u2 -> 3.5.5-1~deb13u2
+#   openssl         CVE-2026-31789  3.5.4-1~deb13u2 -> 3.5.5-1~deb13u2
+# Microsoft aktualisiert das Image nicht in unserem Takt; da wir ohnehin eine
+# eigene Schicht bauen, holen wir die Updates selbst.
+#
+# WARUM `upgrade` UND NICHT GEPINNTE PAKETVERSIONEN (bewusste Entscheidung):
+# Ein `apt-get install pkg=<exakte-version>` waere auf den ersten Blick
+# deterministisch und passt besser zum Digest-Pinning des Supply-Chain-Branches.
+# Es ist hier aber die schlechtere Wahl, aus drei Gruenden:
+#
+#  1. Debians Pool haelt nur die JEWEILS AKTUELLE Version vor. Sobald deb13u5
+#     erscheint, verschwindet deb13u4 -- der Build bricht dann mit "Version not
+#     found" ab, und zwar exakt in dem Moment, in dem ein NEUES Sicherheits-
+#     update erscheint. Ein Pin wuerde den Build also ausgerechnet dann
+#     zerstoeren, wenn er am dringendsten laufen muesste. Echte Determinismus-
+#     Pins braeuchten snapshot.debian.org als Quelle -- eigene Infrastruktur-
+#     Entscheidung, eigenes Work Item, nicht Teil dieses Tickets.
+#  2. Ein Pin friert genau drei Pakete ein. Jede weitere Luecke im Basis-Image
+#     braeuchte ein eigenes Work Item -- Sicherheitsarbeit im Handbetrieb.
+#  3. Reproduzierbarkeit fuer BETREIBER haengt am Digest des ERGEBNIS-Images,
+#     nicht am Rezept. Der Input ist ueber das FROM-Digest festgenagelt, das
+#     Ergebnis wird in CI gescannt (Trivy) -- Drift wird damit gemessen statt
+#     geglaubt.
+#
+# EHRLICHE KONSEQUENZ, damit sie niemanden ueberrascht: Dieselbe Dockerfile an
+# zwei verschiedenen Tagen gebaut kann unterschiedliche Paketstaende enthalten.
+# Der BUILD-ZEITPUNKT bestimmt das Ergebnis. Wer bitgenaue Reproduzierbarkeit
+# braucht, referenziert das gebaute Image per Digest, nicht diese Datei.
+#
+# `USER root` ist noetig (das Basis-Image laeuft als UID 1001) und wird
+# unmittelbar danach wieder zurueckgesetzt -- ein als root laufender Container
+# waere ein schlechterer Tausch als die CVEs, die wir hier schliessen.
+USER root
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+USER 1001
+
+# Sprachmodell bewusst NACH dem Zurueckschalten auf UID 1001 -- so gehoert es
+# demselben Nutzer wie zuvor und die Schicht verhaelt sich unveraendert.
 RUN python -m spacy download de_core_news_lg
