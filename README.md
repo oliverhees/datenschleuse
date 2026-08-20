@@ -32,6 +32,7 @@
   - [Fail-Policy](#fail-policy-verfügbarkeit-vs-datenschutz)
   - [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen)
   - [Quasi-Identifier](#quasi-identifier-session-übergreifende-akkumulation)
+  - [Zitate im Multi-Turn](#zitate-citations-was-durchgeht-und-was-nicht)
 - [Was erkannt wird](#-was-erkannt-wird)
 - [Eigene Begriffe und Muster](docs/EIGENE-MUSTER.md)
 - [Ehrliche DSGVO-Einordnung](#️-ehrliche-dsgvo-einordnung-bitte-lesen)
@@ -75,6 +76,7 @@ Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, 
 - **Schutzklassen-Modell** — 3-Stufen-Sensitivitätsklassifizierung, Stufe 3 (Art. 9/10 DSGVO) ist eine harte Code-Garantie, nie konfigurierbar.
 - **Mehrere Modelle wählbar** — mehrere `model_list`-Einträge, automatische Erkennung durch OpenAI-kompatible Clients (inkl. Hermes' Modell-Picker).
 - **Eingebautes Admin-Dashboard** — LiteLLM Admin-UI (`/ui`) zeigt Zeitpunkt, Modell, Kosten, Guardrail-Ergebnisse — **nie Klartext-Content** (`turn_off_message_logging`, live verifiziert: die Spalten sind komplett leer).
+- **Zitate (`citations`) im Multi-Turn** — Anthropic hängt Zitat-Blöcke an Assistant-Nachrichten; schickt dein Client die Historie zurück, laufen die **Dokument-Zitate** durch: Struktur wird geprüft, der Freitext darin (zitierte Textstelle, Dokumenttitel) wird maskiert wie jeder andere Text, und in der Antwort stehen wieder die echten Werte — gestreamt wie ungestreamt. Zitate aus Web- und Suchergebnissen sind **nicht** dabei: [Zitate: was durchgeht und was nicht](#zitate-citations-was-durchgeht-und-was-nicht).
 - **Fail-closed by default** — Presidio nicht erreichbar → Request wird geblockt, nie unmaskiert durchgelassen.
 - **AGPL-3.0** — der Kern ist echtes Open Source, keine Marketing-Lizenz.
 
@@ -148,13 +150,17 @@ Welche Felder einer **Nachricht** dabei wie behandelt werden, ist abschließend 
 
 Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Das ist die einzige Prüfung, die unabhängig davon greift, welchen Weg ein Wert genommen hat.
 
-Der Grund für diese Form: dieselbe Lücke ist dreimal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
+Der Grund für diese Form: dieselbe Lücke ist viermal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`, Felder innerhalb eines Parts). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
 
-Eine Ebene ist noch offen, und das sagen wir lieber, als es zu verschweigen: Innerhalb eines **content-Parts** greift die Liste bisher auf den Part-*Typ*; die *Feldebene* innerhalb eines Parts ist noch in Arbeit. Bis der Fix draußen ist, gilt „alles andere wird blockiert" auf dieser Ebene also nicht — verlass dich dort nicht darauf. Der Fix ist als eigenes Arbeitspaket terminiert. Die Einzelheiten halten wir bis dahin zurück: eine offene Lücke beschreiben wir im Umfang, nicht als Anleitung.
+Das gilt auch **innerhalb** eines content-Parts: Neben dem Part-*Typ* ist jetzt auch die *Feldebene* erfasst — ein Part mit erlaubtem Typ darf keine zusätzlichen, ungeprüften Felder mehr mitbringen. Damit ist die zuvor an dieser Stelle dokumentierte offene Ebene geschlossen; die Zusage „alles andere wird blockiert" gilt auf allen Ebenen einer Nachricht.
+
+Eine Grenze, die bleibt: „validiert" heißt Struktur, nicht Inhalt. Bei `DATENSCHLEUSE_IMAGE_POLICY=pass` wird die Bild-URL unverändert weitergereicht — steht in ihrem Pfad oder ihrer Query ein personenbezogener Wert, wird der nicht maskiert. Für Bild-URLs aus Nutzereingaben sind `redact` oder `block` die richtige Wahl.
 
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
 ## 🛡️ Sicherheitsmodell
+
+Dieser Abschnitt erklärt die Entscheidungen. Die **verbindliche Fassung** — welches Feld einer Anfrage maskiert, welches nur validiert und welches blockiert wird, jeweils mit Begründung — steht in [`docs/foundation/security-baseline.md`](docs/foundation/security-baseline.md). Wenn eine Anfrage blockiert und du wissen willst warum, schlägst du dort nach.
 
 ### Fail-Policy: Verfügbarkeit vs. Datenschutz
 
@@ -194,6 +200,20 @@ Fünf deutsche QI-Typen werden über eigene Recognizer erkannt — **Postleitzah
 Schwellwert konfigurierbar über `qi_risk_preset` in `litellm/config.yaml`: `utility` (5, permissiv) · `balanced` (3, **Default**) · `paranoid` (1, maximal streng). Ist `qi_risk_preset` nicht gesetzt, bleibt der QI-Layer komplett aus.
 
 > **Ehrliche Grenze:** LiteLLM erzeugt keine stabile Session-ID von sich aus — der Client muss eine mitschicken (`litellm_session_id` bzw. Header `x-litellm-session-id`). Fehlt sie, fällt die Datenschleuse auf den API-Key-Hash als groben Session-Proxy zurück (ein Key ≈ ein Nutzer, bündelt parallele Chats). Akzeptable Näherung, keine exakte Konversations-Grenze.
+
+### Zitate (`citations`): was durchgeht und was nicht
+
+Arbeitest du mit Anthropic-Modellen und Dokument-Zitaten, hängen an den Antworten `citations`-Blöcke. Schickt dein Client die Historie zurück — der Normalfall im Multi-Turn — laufen die durch die Datenschleuse: Die Struktur wird gegen ein festes Register geprüft, der Freitext darin (zitierte Textstelle, Dokumenttitel) wird maskiert wie jeder andere Text, und in der Antwort werden die Platzhalter wieder durch die echten Werte ersetzt — im Stream genauso wie ohne.
+
+**Durch dürfen dabei nur die drei Dokument-Zitattypen** (`char_location`, `page_location`, `content_block_location`). Die beiden übrigen — `search_result_location` und `web_search_result_location` — blockieren: sie tragen mit `encrypted_index` einen opaken Provider-Token ohne dokumentierte Längengrenze, der byte-identisch durchlaufen müsste und deshalb nicht maskierbar ist.
+
+Drei Dinge, die du als Betreiber kennen musst:
+
+- **Zitat-Positionen können nach der Re-Identifizierung verrutschen.** Die Zeichen-Indizes eines Zitats (`start_char_index`/`end_char_index`) beziehen sich auf das Dokument **so, wie es gesendet wurde** — also auf die maskierte Fassung. Ist ein Platzhalter länger oder kürzer als der echte Wert, zeigen sie im zurückübersetzten Klartext nicht mehr exakt auf dieselbe Stelle. Der zitierte Text selbst stimmt, nur die Positionsangabe wandert. Zitate auf Seiten- oder Block-Ebene sind davon nicht betroffen.
+- **Web-Search-Zitate blockieren die Folgeanfrage.** Nutzt du Anthropics eingebautes Web-Search-Tool, schickt der Client im nächsten Turn die Such-Blöcke unverändert mit zurück. Die Datenschleuse blockt das fail-closed, und zwar an **zwei** Stellen: am Part-Typ (`server_tool_use`, `web_search_tool_result`) und am Zitat-Typ (`web_search_result_location`). Nur eine davon zu öffnen würde nichts reparieren — die Anfrage scheiterte dann eben an der anderen. **Multi-Turn mit Anthropic-Web-Search funktioniert durch diese Datenschleuse nicht.** Das ist eine bewusst akzeptierte Einschränkung, kein Bug — die Blockmeldung nennt die Part-Typen beim Namen und verweist auf die Baseline, damit du das auseinanderhalten kannst. Kommt ein Web-Search-Zitat in einer *Antwort* an, werden dessen Platzhalter sehr wohl aufgelöst — der Rückweg deckt alle fünf Zitattypen ab.
+- **Der erste Turn ist damit nicht „geprüft und in Ordnung".** Das Top-Level-Feld `tools`, über das Web-Search überhaupt erst aktiviert wird, prüft dieser Guardrail derzeit gar nicht (eigenes Register in Arbeit). Er läuft durch, weil dort nichts hinschaut — nicht, weil dort etwas freigegeben hätte.
+
+Warum wir das so gelassen haben und was es kosten würde, es zu öffnen: [`docs/foundation/security-baseline.md`](docs/foundation/security-baseline.md) → „Bekannte Einschränkung: Anthropics natives Web-Search-Tool".
 
 ## 🇩🇪 Was erkannt wird
 

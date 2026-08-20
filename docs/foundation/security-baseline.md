@@ -30,32 +30,142 @@ Historie derselben Lücke — der Grund für diese Regel:
 - DATENSCHLE-64: der `content`-**Container** selbst (dict statt Liste)
 - DATENSCHLE-66: alle **Felder neben `content`**, allen voran
   `tool_calls[].function.arguments` (für agentische Clients der Normalfall)
+- DATENSCHLE-65: die **Felder innerhalb eines Content-Parts** — die Allowlist
+  griff dort bis dahin nur auf den Part-**Typ**
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
-`MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
-Tabelle werden gemeinsam geändert, nie einzeln):
+`MESSAGE_FIELDS_VALIDATED` und `PART_FIELDS_MASKED` / `PART_FIELDS_VALIDATED`
+in `litellm/datenschleuse_guardrail.py` — Code und Tabelle werden gemeinsam
+geändert, nie einzeln):
 
 | Ebene | maskiert | validiert (nicht maskiert) | Rest |
 |---|---|---|---|
 | Message | `content`, `name`, `refusal`, `reasoning_content`, `tool_calls`, `function_call` | `role`, `tool_call_id`, `cache_control` | blockiert |
 | tool_call | `function` | `id`, `type`, `index` | blockiert |
 | function | `name`, `arguments` | — | blockiert |
-| content-Part | `text` | `image_url` (nach Image-Policy) | Part-**Typ** blockiert; Part-**Felder** ⚠️ siehe unten |
+| content-Part `text` | `text`, `citations` (nur die Freitext-Felder, s.u.) | `type`, `cache_control` | blockiert |
+| content-Part `image_url` | — | `type`, `image_url` (nach Image-Policy), `cache_control` | blockiert |
+| `image_url`-Container | — | `url`, `detail` | blockiert |
+| `citations[]` (nur `char_location`, `page_location`, `content_block_location`) | `cited_text`, `document_title` | `type`, `document_index`, die beiden Positions-Indizes | blockiert |
 
-> ⚠️ **Bekannte Abweichung auf der Part-Ebene (DATENSCHLE-65).** Die Allowlist
-> greift für content-Parts derzeit auf den Part-**Typ**; die **Feldebene**
-> innerhalb eines Parts ist noch nicht erfasst und in Arbeit. Die Zeile oben
-> beschreibt insoweit den Soll-, nicht den Ist-Zustand: die Zusage „Rest
-> blockiert" gilt auf der Part-Ebene bis zum Merge von **DATENSCHLE-65**
-> **nicht**. Der Defekt stammt aus DATENSCHLE-57.
->
-> Der genaue Umfang steht am Work Item, nicht hier — Begründung im Abschnitt
-> „Offene Schwachstellen in eigener Doku".
->
-> Diese Warnung bleibt stehen, bis DATENSCHLE-65 gemerged ist. Eine
-> dokumentierte Sicherheitszusage, auf die sich ein Betreiber verlässt, ist
-> selbst ein Sicherheitsmerkmal — eine zu weit gefasste Zusage ist ein Defekt,
-> auch wenn der Code darunter älter ist als sie.
+Die Part-Ebene ist damit auf **beiden** Achsen geschlossen: Allowlist für den
+Part-**Typ** (DATENSCHLE-57) und Allowlist für die **Felder** innerhalb eines
+Parts (DATENSCHLE-65). Bis DATENSCHLE-65 galt die Zusage „Rest blockiert" nur
+für den Typ — ein Part mit erlaubtem Typ durfte zusätzliche, ungeprüfte Felder
+tragen. Dasselbe gilt seither eine Ebene tiefer für den `image_url`-Container,
+dessen Zusatzfelder die Bild-Policy unverändert überlebten.
+
+`cache_control` ist auf Part-Ebene **zugelassen und validiert, nicht
+maskiert** — Anthropic-Clients hängen den Marker an Content-Blöcke, ein Block
+wäre Client-Breakage. Er trägt keinen Freitext (geschlossene Wertemengen für
+`type` und `ttl`), deshalb gilt er für Text- **und** Bild-Parts.
+
+`citations` ist der eine Fall, der **beides** ist: Struktur validiert, Inhalt
+maskiert. Anthropic hängt das Array an Assistant-Text-Blöcke; schickt ein
+Client die Historie zurück — der Normalfall im Multi-Turn — trägt die
+Assistant-Nachricht es. Seine Freitext-Felder `cited_text` (wörtlicher
+Dokumentinhalt) und `document_title` (der vom Nutzer vergebene Titel, etwa
+`Arztbrief_Mustermann.pdf`) laufen deshalb durch den Masker wie jeder andere
+Text; die Indizes bleiben unverändert, sonst zeigt das Zitat nach der
+Schleuse auf eine andere Stelle.
+
+Warum nicht einfach blockieren, sobald `cited_text` da ist: das Feld ist im
+Request-Schema der Messages-API **Pflicht** und wird beim Echo ausdrücklich
+zurückerwartet. Eine Allowlist, die es blockt, lässt jede reale
+Multi-Turn-Anfrage mit Zitaten weiter scheitern — fail-closed wäre das dem
+Namen nach, praktisch wäre es eine Dauerstörung.
+
+Bewusst **nicht** zugelassen sind die beiden übrigen Zitat-Typen
+`search_result_location` und `web_search_result_location`: sie tragen
+`source`, `url` und `title` als Freitext sowie `encrypted_index`, ein opakes
+Provider-Token, das den Provider byte-identisch erreichen muss. Ebenso blockt
+`file_id` — es existiert nur antwortseitig, ein schema-konformer Client
+sendet es nie.
+
+> **Korrektur (QA-Audit zu `1e197f9`).** Eine frühere Fassung dieses
+> Abschnitts begründete beide Blocks damit, die Typen entstünden
+> „ausschließlich aus Part-Typen, die die Datenschleuse ohnehin am Part-Typ
+> blockt". Für `search_result_location` stimmt das — der Typ setzt einen
+> `search_result`-Content-Part voraus, und der blockt. **Für
+> `web_search_result_location` stimmt es nicht.** Anthropics natives
+> Web-Search-Server-Tool wird über das Top-Level-Feld `tools` aktiviert
+> (`{"type": "web_search_20250305", "name": "web_search"}`); es braucht
+> keinen Content-Part. Das Zitat hängt anschließend an einem ganz normalen
+> `text`-Block. Die Aussage war also falsch, und mit ihr die Einordnung
+> „toter Code".
+
+### Bekannte Einschränkung: Anthropics natives Web-Search-Tool
+
+**Multi-Turn-Konversationen mit Anthropics Web-Search-Server-Tool
+funktionieren durch die Datenschleuse nicht.** Das ist eine bewusst
+akzeptierte Einschränkung, kein Versehen — und ein beworbenes Kernfeature,
+also für Betreiber relevant.
+
+Was passiert: Der erste Turn läuft durch. Antwortet das Modell mit
+Web-Search-Zitaten und schickt der Client die Historie zurück — der Normalfall
+im Multi-Turn — blockt die Folgeanfrage fail-closed.
+
+Der Block greift dabei an **zwei** Stellen, nicht an einer:
+
+1. **Am Part-Typ.** Anthropic verlangt für die Fortsetzung ausdrücklich,
+   dass der Client die Assistant-Blöcke unverändert zurückschickt,
+   `server_tool_use` und `web_search_tool_result` eingeschlossen — mit
+   `encrypted_content`, das sonst mit einem 400 quittiert wird. Beide
+   Part-Typen stehen nicht im Register und blocken.
+2. **Am Zitat-Typ.** `web_search_result_location` ist nicht zugelassen.
+
+**Warum wir den Zitat-Typ trotzdem nicht öffnen.** Ihn allein zuzulassen
+würde den Kundenfall *nicht* reparieren: die Anfrage blockte dann eben eine
+Ebene höher am Part-Typ. Bezahlt wäre das mit einem `encrypted_index`, für
+das Anthropic weder Zeichenmenge noch Länge dokumentiert — ein opaker
+Provider-Token-Kanal ohne belegbare Obergrenze, der byte-identisch
+durchlaufen muss und deshalb nicht maskiert werden kann. Realer
+Sicherheitspreis, kein funktionaler Gegenwert. Wer die Web-Search-Kette
+unterstützen will, braucht ein eigenes Work Item, das **beide** Ebenen
+zusammen behandelt.
+
+Was heute schon gilt: Kommt ein Web-Search-Zitat auf dem **Rückweg** an,
+werden seine Platzhalter aufgelöst (siehe oben). Der Kunde sieht dort also
+keine `<PERSON_0>`.
+
+Ergänzend, außerhalb dieses Work Items: Das Top-Level-Feld `tools` wird von
+diesem Guardrail nicht geprüft. Das eigene Register dafür entsteht in
+DATENSCHLE-69.
+
+Zwei Grenzen, die für Betreiber zählen:
+- Die Zitat-Indizes beziehen sich auf das Dokument **wie gesendet**, also auf
+  die maskierte Fassung. Ändert ein Platzhalter die Länge, zeigen
+  `start_char_index`/`end_char_index` im re-identifizierten Klartext nicht
+  mehr exakt auf dieselbe Stelle. `page_location` und die Block-Index-Typen
+  sind davon nicht betroffen.
+- Die Re-Identifikation deckt Zitate im **Antwort**-Pfad ab: nicht-gestreamt
+  über `provider_specific_fields.citations`, im Stream über
+  `provider_specific_fields.citation` (das `citations_delta`-Event). Sie gilt
+  für **alle fünf** Zitat-Typen, auch die, die der Hinweg blockt — der
+  Rückweg ist ein Einlöse-Pfad zum Kunden, kein Prüf-Pfad, und ersetzt
+  ausschließlich Platzhalter, die dieser Request selbst vergeben hat.
+  Mit-abgedeckt ist `supported_text`, ein von LiteLLM erfundenes Feld, das
+  den vollen stützenden Antworttext trägt. Nicht angefasst werden
+  `encrypted_index` und `file_id` (opake Provider-Token).
+
+  > **Korrektur (QA-Audit zu `1e197f9`).** Eine frühere Fassung behauptete,
+  > der Antwort-Pfad „kann durch diesen Proxy nicht auftreten", weil Zitate
+  > dort nur aus `document`-Parts entstünden. Das war aus demselben Grund
+  > falsch wie oben (Web-Search braucht keinen Content-Part) — und der Pfad
+  > war tatsächlich defekt: der Haupttext kam im Klartext an, dasselbe Zitat
+  > trug den rohen Platzhalter. Behoben; kein Vertraulichkeitsleck, ein
+  > stehengebliebener Platzhalter ist die sichere Fehlerrichtung.
+
+**„Validiert" heißt Struktur, nicht Inhalt.** In der Tabelle bedeutet
+„validiert" ausschließlich: das Feld hat den erwarteten Typ und — wo eine
+geschlossene Wertemenge existiert (`cache_control.type`, `cache_control.ttl`,
+`image_url.detail`) — einen Wert daraus. Es bedeutet **nicht**, dass der Inhalt
+auf PII geprüft wird. Konkret bei `image_url.url`: geprüft wird, dass es ein
+String ist, nicht was darin steht. Bei `image_policy="pass"` verlässt dieser
+String den Proxy unverändert — eine URL kann also personenbezogene Daten in
+Pfad oder Query tragen und wird dabei nicht maskiert. Wer Bild-URLs aus
+Nutzereingaben zusammensetzt, betreibt `pass` auf eigenes Risiko;
+`redact` oder `block` sind die Voreinstellungen der Wahl.
 
 Regeln dazu:
 - IDs werden **validiert statt maskiert**: ihr Wert muss byte-identisch
@@ -91,6 +201,15 @@ Regeln dazu:
   aus unserem eigenen konstanten Vokabular; frei gewählte Feldnamen erscheinen
   ausschließlich als stabiler Fingerprint. Ein Feldname ist Client-Inhalt und
   kann selbst PII sein — Werte erscheinen nie, weder im Log noch am Client.
+- **Bekannte Provider-Felder werden benannt, nicht einzeln entdeckt.** Zu
+  jeder Ebene gehört eine Liste real existierender Felder, die wir bewusst
+  NICHT behandeln (`KNOWN_UNSUPPORTED_MESSAGE_FIELDS`,
+  `KNOWN_UNSUPPORTED_PART_FIELDS`). Sie blocken wie jedes unbekannte Feld,
+  werden dem Betreiber aber beim Namen genannt, damit er nicht per
+  Trial-and-Error gegen die Allowlist raten muss. Was dort fehlt und was
+  bewusst nicht behandelt wird, steht im Code am Register.
+- **Offene Schwachstellen werden im Umfang beschrieben, nie im Bauplan** —
+  ausgeführt im eigenen Abschnitt „Offene Schwachstellen in eigener Doku".
 
 ### Feld-Fingerprint — Formel
 
@@ -193,6 +312,9 @@ verlassen darf — er darf daraus nicht ableiten können, wie er es auslöst.
 - Der vollständige Sachverhalt gehört ans Work Item. Plane ist intern, dieses
   Repository ist öffentlich: jede Zeile hier ist eine Veröffentlichung.
 - Nach dem Merge des Fixes darf die Beschreibung vollständig werden — vorher nicht.
+  Ein veröffentlichter Payload bleibt genau so lange nutzbar, wie der Fix
+  braucht; das ist das Zeitfenster, das diese Regel schließt. Auch nach dem
+  Fix gehört ein neuer Payload nicht in die Doku.
 
 Das ist kein Widerspruch zum Klartext-Gebot: Vollständigkeit gilt nach innen,
 Zurückhaltung nach außen. Eine zu weit gefasste Sicherheitszusage ist ein Defekt

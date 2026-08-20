@@ -226,6 +226,305 @@ _LOG = logging.getLogger("datenschleuse")
 _ALLOWED_FIELDS_HINT = ", ".join(sorted(ALLOWED_MESSAGE_FIELDS))
 
 
+# ===========================================================================
+# PART-FELD-REGISTER (DATENSCHLE-65)
+# ===========================================================================
+# Vierte Wiederholung derselben Bauart, jetzt eine Ebene unter dem
+# Message-Register: DATENSCHLE-57 hat den Part-TYP auf eine Allowlist
+# gestellt, die FELDER eines Parts blieben ungeprueft. Ein Text-Part durfte
+# beliebige Zusatzschluessel tragen, und die gingen unveraendert ans Modell
+# (verifizierter PoC: ``{"type":"text","text":"hi","zusatz":"<PII>"}``).
+#
+# Akut statt akademisch macht das ``cache_control``: DATENSCHLE-66
+# legitimiert den Marker auf MESSAGE-Ebene, Anthropic-Clients haengen ihn
+# aber an CONTENT-PARTS. "Part mit Zusatzfeld" ist damit kein exotischer
+# Angriff, sondern Normalbetrieb -- der Marker MUSS durchgehen, waehrend
+# alles Unbekannte blockt. Genau dafuer braucht es ein Register statt eines
+# weiteren if-Zweiges.
+#
+# Aufbau bewusst identisch zum Message-Register (gleiche Namen, gleiche
+# Zweiteilung), nur pro Part-Typ geschluesselt: jedes Feld eines Parts steht
+# in genau einer der beiden Listen. Was in keiner steht, blockt fail-closed.
+
+# 1) MASKIERT: freier Text, der ans Zielmodell geht -> Presidio + Masker.
+PART_FIELDS_MASKED = {
+    # ``citations`` steht bewusst HIER und nicht bei den validierten Feldern,
+    # obwohl seine Struktur streng validiert wird: es TRAEGT Freitext
+    # (``cited_text``, ``document_title``) und dieser Freitext geht durch
+    # Presidio + Masker. Wer im Register nachschlaegt, ob ein Feld ein
+    # Textkanal ans Modell ist, muss hier fuendig werden -- unter "erreicht
+    # den Provider unveraendert" waere es schlicht falsch einsortiert.
+    # Details siehe _validate_citations / _mask_citations.
+    "text": ("text", "citations"),
+    # Bild-Parts tragen keinen Text. Ihre Nutzlast laeuft ueber die
+    # Bild-Policy (redact/block/pass), nicht ueber den Masker.
+    "image_url": (),
+}
+
+# 2) VALIDIERT: kein Freitext, muss den Provider unveraendert erreichen --
+#    und wird deshalb gegen ein enges Format geprueft, sonst waere es der
+#    bequemste Schmuggelkanal des Parts.
+PART_FIELDS_VALIDATED = {
+    "text": ("type", "cache_control"),
+    # ``cache_control`` auch hier: Anthropic erlaubt den Marker auf JEDEM
+    # Content-Block, Bilder eingeschlossen. Er ist vollstaendig validiert
+    # (Objekt mit hoechstens ``type``/``ttl`` aus geschlossenen Wertemengen),
+    # traegt also keinerlei Freitext -- ihn nur auf Text-Parts zuzulassen
+    # waere reine Client-Breakage ohne Sicherheitsgewinn.
+    "image_url": ("type", "image_url", "cache_control"),
+}
+
+ALLOWED_PART_FIELDS = {
+    part_type: frozenset(PART_FIELDS_MASKED[part_type] + PART_FIELDS_VALIDATED[part_type])
+    for part_type in PART_FIELDS_MASKED
+}
+
+# Der Part-TYP-Allowlist aus DATENSCHLE-57 -- jetzt aus dem Register
+# abgeleitet statt als zweite Wahrheit danebenstehend.
+ALLOWED_PART_TYPES = frozenset(ALLOWED_PART_FIELDS)
+
+# Felder des ``image_url``-Containers (eine Ebene unter dem Part). Auch der
+# ist client-kontrolliert, und ``_handle_image_part`` ersetzt ausschliesslich
+# ``url`` -- jedes weitere Feld ueberlebte die Bild-Policy unveraendert.
+# ``detail`` ist der einzige weitere Schluessel, den die OpenAI-API kennt.
+IMAGE_URL_ALLOWED_FIELDS = frozenset({"url", "detail"})
+IMAGE_URL_DETAILS = frozenset({"auto", "low", "high"})
+
+# ===========================================================================
+# CITATIONS-REGISTER (DATENSCHLE-65)
+# ===========================================================================
+# Anthropic haengt an Assistant-Text-Bloecke ein ``citations``-Array. Schickt
+# ein Client die History zurueck -- der Normalfall im Multi-Turn -- traegt die
+# Assistant-Nachricht dieses Feld. Bis hierher blockte es als unbekanntes
+# Part-Feld und riss damit die GANZE Folgeanfrage mit. Das war eine
+# Regression aus genau diesem Work Item.
+#
+# Warum MASKIEREN und nicht durchreichen: ``cited_text`` ist wortwoertlicher
+# Dokumentinhalt, ``document_title`` der vom Nutzer vergebene Dokumenttitel
+# ("Arztbrief_Mustermann.pdf"). Beides ist Freitext und kann PII tragen --
+# also derselbe Weg wie jeder andere Text: Presidio + Masker.
+#
+# Warum nicht BLOCKEN, sobald ``cited_text`` da ist: das Feld ist im
+# Request-Schema PFLICHT (Anthropic Messages API, TextCitationParam) und
+# wird beim Echo ausdruecklich zurueckerwartet -- die Doku haelt sogar fest,
+# dass es dabei nicht auf die Input-Tokens zaehlt. Eine Allowlist, die es
+# blockt, laesst die Regression fuer jeden realen Zitat-Nutzer bestehen und
+# waere nur im kuenstlichen Testfall gruen.
+#
+# Warum trotzdem eine ENGE Struktur-Validierung obendrauf: alles, was nicht
+# Freitext ist, sind Indizes -- und ein ungeprueftes Indexfeld waere der
+# bequemste Schmuggelkanal des Zitats. Gleiche Bauart wie cache_control.
+
+# 1) MASKIERT: Freitext im Zitat -> Presidio + Masker (siehe _mask_citations).
+CITATION_FIELDS_MASKED = {
+    "char_location": ("cited_text", "document_title"),
+    "page_location": ("cited_text", "document_title"),
+    "content_block_location": ("cited_text", "document_title"),
+}
+
+# 2) INDIZES: reine Zahlen, muessen den Provider unveraendert erreichen,
+#    sonst zeigt das Zitat auf die falsche Stelle.
+CITATION_INDEX_FIELDS = {
+    "char_location": ("document_index", "start_char_index", "end_char_index"),
+    "page_location": ("document_index", "start_page_number", "end_page_number"),
+    "content_block_location": (
+        "document_index", "start_block_index", "end_block_index",
+    ),
+}
+
+ALLOWED_CITATION_FIELDS = {
+    citation_type: frozenset(
+        ("type",) + CITATION_FIELDS_MASKED[citation_type]
+        + CITATION_INDEX_FIELDS[citation_type]
+    )
+    for citation_type in CITATION_FIELDS_MASKED
+}
+ALLOWED_CITATION_TYPES = frozenset(ALLOWED_CITATION_FIELDS)
+
+# Die beiden uebrigen Zitat-Typen der Messages-API. Sie blocken bewusst:
+#   search_result_location      -- traegt ``source``/``title`` als Freitext
+#   web_search_result_location  -- traegt ``url``/``title`` als Freitext UND
+#                                  ``encrypted_index``, das den Provider
+#                                  byte-identisch erreichen muss
+#
+# KORREKTUR (QA-Audit zu 1e197f9): Hier stand, beide entstuenden
+# "ausschliesslich aus Part-Typen, die die Datenschleuse ohnehin am Part-TYP
+# blockt", ein Pfad hier waere deshalb toter Code. Fuer
+# ``search_result_location`` stimmt das -- der Typ setzt einen
+# ``search_result``-Part voraus, und der blockt. Fuer
+# ``web_search_result_location`` stimmt es NICHT: Anthropics natives
+# Web-Search-Tool wird ueber das TOP-LEVEL-Feld ``tools`` aktiviert
+# ({"type": "web_search_20250305", "name": "web_search"}), braucht keinen
+# Content-Part, und das Zitat haengt danach an einem normalen ``text``-Block.
+# Der Typ ist also erreichbar. Die Begruendung war falsch.
+#
+# WARUM ER TROTZDEM BLOCKT -- neu begruendet statt stillschweigend behalten:
+# Ihn allein zu oeffnen repariert den Kundenfall nicht. Anthropic verlangt
+# fuer die Fortsetzung, dass der Client die Assistant-Bloecke unveraendert
+# zurueckschickt, ``server_tool_use`` und ``web_search_tool_result``
+# eingeschlossen -- die blocken am PART-Typ, eine Ebene hoeher. Die Anfrage
+# scheitert dann eben dort. Bezahlt waere das mit ``encrypted_index``, fuer
+# das Anthropic weder Zeichenmenge noch Laenge dokumentiert: ein opaker
+# Provider-Token-Kanal ohne belegbare Obergrenze, der nicht maskiert werden
+# darf. Realer Sicherheitspreis, kein funktionaler Gegenwert.
+#
+# FOLGE, ehrlich benannt: Multi-Turn mit Anthropics Web-Search funktioniert
+# durch diese Datenschleuse nicht. Bekannte, akzeptierte Einschraenkung --
+# siehe docs/foundation/security-baseline.md. Wer sie aufheben will, braucht
+# ein Work Item, das BEIDE Ebenen zusammen behandelt.
+#
+# Der RUECKWEG ist davon unberuehrt: kommt ein Web-Search-Zitat in einer
+# Antwort an, werden seine Platzhalter aufgeloest
+# (CITATION_RESPONSE_TEXT_FIELDS deckt alle fuenf Typen ab).
+KNOWN_UNSUPPORTED_CITATION_TYPES = frozenset({
+    "search_result_location",
+    "web_search_result_location",
+})
+
+# ``file_id`` gibt es NUR response-seitig; das Request-Schema kennt es nicht.
+# Ein schema-konformer Client schickt es nie. Durchlassen hiesse, einen
+# weiteren opaken String-Kanal zu oeffnen, ohne dass irgendetwas ihn braucht.
+KNOWN_UNSUPPORTED_CITATION_FIELDS = frozenset({"file_id"})
+
+# Jedes Zitat kostet bis zu zwei Analyzer-Durchlaeufe. Vor DATENSCHLE-65
+# blockte ``citations`` und kostete null -- die Grenze gehoert deshalb mit
+# der Oeffnung zusammen, sonst ist eine lange Liste ein Lastkanal (F7).
+MAX_CITATIONS_PER_PART = 1000
+
+# Indizes sind Positionen in einem Dokument. Eine Obergrenze macht das Feld
+# als Zahlenkanal weitgehend unbrauchbar (Telefonnummern sind groesser),
+# ohne realistische Dokumente einzuschraenken. Ehrlich bleibt: eine KURZE
+# Zahl bleibt eine Zahl -- das schliesst der Deckel nicht.
+MAX_CITATION_INDEX = 1_000_000_000
+
+# Freitext-Felder eines Zitats auf dem RUECKWEG (QA-Audit F1).
+#
+# Bewusst BREITER als CITATION_FIELDS_MASKED: der Hinweg laesst nur die drei
+# Dokument-Zitattypen durch, die ANTWORT kann jeden Typ tragen -- ein
+# Web-Search-Zitat entsteht serverseitig ueber das Top-Level-Feld ``tools``
+# und musste nie durch den Hinweg.
+#
+# Warum die Breite hier keine Sicherheitsfrage ist: der Rueckweg ist ein
+# EINLOESE-Pfad, kein Pruef-Pfad. ``reidentify_full`` ersetzt ausschliesslich
+# Platzhalter, die dieser Request selbst vergeben hat, und das Ergebnis geht
+# an den KUNDEN, nicht an den Provider. Ein Feld zu viel kann hier nichts
+# leaken; ein Feld zu wenig laesst einen Platzhalter beim Kunden stehen.
+# Deshalb ist die Fehlerrichtung hier die umgekehrte als auf dem Hinweg:
+# grosszuegig statt fail-closed.
+#
+# ``encrypted_index`` und ``file_id`` stehen bewusst NICHT hier: opake
+# Provider-Token, die byte-identisch bleiben muessen.
+CITATION_RESPONSE_TEXT_FIELDS = (
+    "cited_text",       # alle fuenf Zitat-Typen
+    "document_title",   # die drei Dokument-Typen
+    "title",            # search_result_location, web_search_result_location
+    "source",           # search_result_location
+    "url",              # web_search_result_location
+    # ``supported_text`` steht in KEINER Anthropic-Doku -- LiteLLM erfindet
+    # das Feld beim Normalisieren und fuellt es mit ``content["text"]``, also
+    # dem VOLLEN Text des Assistant-Blocks, den das Zitat stuetzt
+    # (transformation.py, ## CITATIONS). Damit ist es derselbe Freitext wie
+    # der Antworttext selbst und traegt dieselben Platzhalter. Wer nur die
+    # Anthropic-Feldnamen kennt, laesst hier einen kompletten
+    # Antworttext-Klon mit rohen Platzhaltern beim Kunden stehen.
+    "supported_text",
+)
+
+_ALLOWED_CITATION_TYPES_HINT = ", ".join(sorted(ALLOWED_CITATION_TYPES))
+_ALLOWED_CITATION_FIELDS_HINT = {
+    citation_type: ", ".join(sorted(fields))
+    for citation_type, fields in ALLOWED_CITATION_FIELDS.items()
+}
+
+# Part-Felder, die es bei realen Providern gibt, die die Datenschleuse aber
+# (noch) NICHT behandelt. Sie blocken wie jedes unbekannte Feld -- werden in
+# der Meldung aber beim Namen genannt, damit ein Betreiber nicht per
+# Trial-and-Error gegen die Allowlist raten muss. Die Namen stammen aus
+# dieser konstanten Liste, nie aus dem Request (Gesetz 5).
+#
+# Bewusst EINMAL vollstaendig erfasst statt Feld fuer Feld entdeckt:
+#   OpenAI      -- input_audio, file, refusal (Assistant-Output-Part)
+#   Anthropic   -- source, title, context, thinking, signature,
+#                  data, id, name, input, content, is_error, tool_use_id
+#                  (``citations`` stand hier ebenfalls und ist mit
+#                  DATENSCHLE-65 ins Register gewandert -- siehe unten)
+#   Google/Vertex (ueber LiteLLM) -- inline_data, file_data, function_call,
+#                  function_response, thought, video_metadata
+#   LiteLLM     -- provider_specific_fields, index, partial
+# Sie alle sind entweder eigene Part-TYPEN (blocken bereits ueber den Typ)
+# oder Nutzlast-Felder, fuer die es keinen geprueften Pfad gibt. Ein
+# kuenftiges Feld hier einzutragen ist eine bewusste Entscheidung mit Work
+# Item -- kein stillschweigendes Durchreichen.
+KNOWN_UNSUPPORTED_PART_FIELDS = frozenset({
+    "input_audio",
+    "file",
+    "refusal",
+    "source",
+    "title",
+    "context",
+    "thinking",
+    "signature",
+    "data",
+    "id",
+    "name",
+    "input",
+    "content",
+    "is_error",
+    "tool_use_id",
+    "inline_data",
+    "file_data",
+    "function_call",
+    "function_response",
+    "thought",
+    "video_metadata",
+    "provider_specific_fields",
+    "index",
+    "partial",
+})
+
+# Part-TYPEN, die es in der Praxis gibt und die wir bewusst NICHT
+# unterstuetzen. Sie blocken wie jeder unbekannte Typ -- werden in der
+# Meldung aber beim Namen genannt, damit ein Betreiber eine BEKANNTE,
+# akzeptierte Einschraenkung von einem echten Bug unterscheiden kann.
+# Dieselbe Bauart wie KNOWN_UNSUPPORTED_CITATION_TYPES, eine Ebene hoeher.
+#
+# Anlass (QA-Audit zu 2165cf2): Anthropics natives Web-Search-Tool verlangt
+# fuer die Fortsetzung, dass der Client die Assistant-Bloecke unveraendert
+# zurueckschickt -- diese beiden eingeschlossen. Ein spec-konformer Client
+# schickt sie also IMMER mit, und der Betreiber sah dafuer bisher exakt die
+# Meldung, die auch ein Tippfehler im Part-Typ ausloest.
+#
+# Gesetz 5: die Namen stammen aus dieser konstanten Liste, nie aus dem
+# Request. Genannt wird ein Typ nur, wenn der Client-Wert exakt einem
+# Eintrag hier entspricht -- der ausgegebene String ist dann unsere
+# Konstante, nicht die Eingabe.
+KNOWN_UNSUPPORTED_PART_TYPES = frozenset({
+    "server_tool_use",
+    "web_search_tool_result",
+})
+
+# Konstanter Verweis auf die Stelle, an der die Einschraenkung begruendet
+# steht. Ohne ihn hat ein Betreiber keinen Pfad zur Doku.
+#
+# Der zitierte Abschnittstitel ist bewusst NUR der ASCII-identische Teil
+# der echten Ueberschrift (Review-Finding S1): sie lautet "Bekannte
+# Einschraenkung: ..." mit Umlaut-ae. Wer den hier ausgegebenen Text per
+# Ctrl+F sucht, faende die transliterierte Fassung nicht -- der Reststring
+# "Anthropics natives Web-Search-Tool" steht dagegen zeichengleich im
+# Dokument. Meldungen bleiben ASCII (sie gehen durch fremde Log-Pipelines).
+_WEB_SEARCH_LIMITATION_DOC = (
+    "im Repo unter docs/foundation/security-baseline.md, "
+    "Abschnitt \"Anthropics natives Web-Search-Tool\""
+)
+
+# Konstante Hinweistexte pro Part-Typ (nie Client-Werte, Gesetz 5).
+_ALLOWED_PART_FIELDS_HINT = {
+    part_type: ", ".join(sorted(fields))
+    for part_type, fields in ALLOWED_PART_FIELDS.items()
+}
+_ALLOWED_PART_TYPES_HINT = ", ".join(sorted(ALLOWED_PART_TYPES))
+
+
 def _image_part_url(part: Dict[str, Any]) -> str:
     """Liest die URL aus einem ``image_url``-Part. Das OpenAI-Format ist
     ``{"type": "image_url", "image_url": {"url": "..."}}``, manche Clients
@@ -503,6 +802,116 @@ def reidentify_full(text: str, mapping: Dict[str, str]) -> str:
     return text
 
 
+def _ist_echter_str(wert: Any) -> bool:
+    """``True`` nur fuer exakt ``str`` -- Subklassen sind es ausdruecklich NICHT.
+
+    ``isinstance`` waere hier die falsche Frage. Eine ``str``-Subklasse darf
+    ``__hash__`` und ``__eq__`` ueberschreiben und sich damit wie ein
+    beliebiger anderer String verhalten, waehrend sie inhaltlich etwas voellig
+    anderes traegt. Fuer die Identitaetsfrage "ist dieser Wert wirklich der
+    String, als der er sich ausgibt?" zaehlt deshalb nur der exakte Typ.
+    """
+    return type(wert) is str
+
+
+def _ist_registriert(wert: Any, register: Any) -> bool:
+    """Mitgliedschaft UND Typidentitaet in einer Frage.
+
+    Der strukturelle Kern von DATENSCHLE-65 (Review-Finding W1 zu ``e6b53b8``,
+    empirisch belegt, dreimal gefunden): ``x in frozenset`` prueft ueber
+    ``__hash__``/``__eq__`` -- benutzt (formatiert, geloggt, weiterverarbeitet)
+    wird danach aber die INSTANZ. Eine ``str``-Subklasse, die sich wie ein
+    Registereintrag hasht und vergleicht, aber beliebigen Inhalt traegt,
+    schleust diesen Inhalt damit durch jede Registerpruefung:
+
+      * gegen ein ``KNOWN_UNSUPPORTED_*``-Register wird sie BENANNT -- ihr
+        Klartext landet in der Blockmeldung und in ``_LOG.warning``, die in
+        derselben Zeile zusichert, keine Werte zu loggen (Gesetz 5),
+      * gegen eine ALLOWLIST gilt sie als erlaubt -- fail-closed ist
+        ausgehebelt, und sie wird als der getarnte Wert weiterverarbeitet
+        bzw. geht als Feldname unveraendert ans Zielmodell.
+
+    Der erste Fix dieses Befunds (``ef29bf8``) war lokal gedacht und hat zwei
+    Stellen repariert; drei baugleiche Nachbarn im selben File blieben stehen.
+    Deshalb steht die Pruefung jetzt EINMAL hier und wird ueberall benutzt, wo
+    ein Client-Wert gegen ein Register oder eine Allowlist gehalten wird und
+    das Ergebnis anschliessend benannt, geloggt oder als erlaubt behandelt
+    wird. Wer ein neues Register einfuehrt, hat damit genau eine richtige
+    Funktion zur Auswahl statt eines Musters zum Nachbauen.
+
+    VORBEDINGUNG -- nicht ueberlesen (Review-Finding W3):
+    Diese Hilfe ist NUR dort richtig, wo ein ``False`` BLOCKT. Sie verschaerft
+    die Pruefung, und das ist genau dann ein Sicherheitsgewinn, wenn der
+    strengere Zweig der fail-closed-Zweig ist.
+
+    Wo ein ``False`` dagegen etwas UEBERSPRINGT, dreht sie die Wirkung um.
+    Beispiel im selben File: das ``call_type``-Gate in
+    ``async_pre_call_hook`` (Suchbegriff dort: ``aufruftyp``) entscheidet
+    "unbekannter Aufruftyp -> ``return data``", also Maskierung ueberspringen.
+    ``type(CallTypes.acompletion) is str`` ist ``False`` -- die Hilfe dort
+    einzusetzen wuerde JEDEN dispatchten Request ungemaskiert durchreichen.
+    Fail-open, aus einer Zeile, die nach Haertung aussieht.
+
+    Faustregel vor dem Einsetzen: "Was passiert, wenn das hier ``False``
+    liefert?" Lautet die Antwort "blocken" -> richtig. Lautet sie
+    "durchlassen", "ueberspringen" oder "Default nehmen" -> falsch, und die
+    Stelle braucht eine eigene Begruendung statt dieser Hilfe.
+
+    Verhaltens-Neutralitaet: fuer echtes ``str`` ist das Ergebnis identisch
+    mit ``wert in register``; fuer alles Nicht-``str`` (int, dict, None ...)
+    ist es ``False``, also derselbe fail-closed-Zweig wie bisher. Nur die
+    getarnte Subklasse wechselt die Seite -- und zwar in den generischen
+    Block-Zweig, wo sie unbenannt blockt.
+    """
+    return _ist_echter_str(wert) and wert in register
+
+
+# Typnamen, die als Diagnose ausgegeben werden duerfen. Bewusst genau die
+# Typen, die ``json.loads`` erzeugen kann, plus die Python-Nachbarn, die ein
+# In-Process-Aufrufer legitim uebergibt. Alles andere ist ein Klassenname aus
+# fremder Feder -- und der ist frei waehlbar.
+SICHERE_TYPNAMEN = frozenset({
+    "str", "int", "float", "bool", "bytes", "bytearray", "complex",
+    "list", "tuple", "dict", "set", "frozenset", "NoneType",
+})
+
+_UNBEKANNTER_TYP = "unbekannt"
+
+
+def _typname(wert: Any) -> str:
+    """Der Python-Typname eines Wertes -- aber nur, wenn er aus unserem
+    Vokabular stammt.
+
+    Review-Finding C2 (extern, empirisch belegt): ``_typname(x)`` ist
+    KEIN konstanter Wert. Ein Klassenname ist frei waehlbar, und
+    ``type(nutzlast, (str,), {...})`` macht daraus einen beliebig langen
+    Client-String. Die Meldungen dieser Datei geben den Typnamen aus, gerade
+    WEIL der Wert selbst nicht ausgegeben werden darf (Gesetz 5) -- damit war
+    die Ausweichroute genauso offen wie der Hauptweg.
+
+    Besonders unangenehm: dieser Sink wurde durch die Registerhaertung
+    (``_ist_registriert``) erst gut erreichbar. Vorher passierte eine
+    getarnte Subklasse die Allowlist stillschweigend; jetzt landet sie im
+    generischen Zweig -- und genau der formatiert den Typnamen. Ein Fix, der
+    einen zweiten Kanal oeffnet, ist kein Fix.
+
+    Verhaltens-Neutralitaet: fuer alles, was ueber HTTP ankommen kann
+    (``json.loads`` erzeugt nur str/int/float/bool/list/dict/NoneType), ist
+    die Ausgabe unveraendert -- ein Betreiber sieht weiterhin, dass in
+    ``type`` ein dict statt eines Strings stand. Nur exotische Fremdklassen
+    verlieren ihren Namen, und deren Name ist genau das Problem.
+
+    Der Vergleich laeuft ueber ``_ist_registriert``: ``__name__`` darf selbst
+    eine str-Subklasse sein (CPython prueft beim Setzen nur ``PyUnicode``),
+    also gilt hier dieselbe Identitaetsfrage wie ueberall sonst.
+    """
+    return (
+        type(wert).__name__
+        if _ist_registriert(type(wert).__name__, SICHERE_TYPNAMEN)
+        else _UNBEKANNTER_TYP
+    )
+
+
 def _field_fingerprint(name: Any) -> str:
     """Stabiler, wertfreier Kurz-Fingerprint eines Feldnamens.
 
@@ -513,7 +922,22 @@ def _field_fingerprint(name: Any) -> str:
     Handhabe: derselbe Feldname ergibt denselben Wert, damit laesst sich ein
     blockendes Feld eingrenzen, ohne dass sein Inhalt das System verlaesst.
     """
-    return hashlib.sha256(repr(name).encode("utf-8")).hexdigest()[:8]
+    # ``repr(name)`` laeuft auf einem CLIENT-Objekt, ruft also fremden Code
+    # (Review-Finding W5). Ein ``__repr__``, das wirft oder kein ``str``
+    # liefert, verliesse diese Funktion sonst als TypeError/Beliebiges statt
+    # als DatenschleuseBlocked -- und ob DAS fail-closed ist, entschiede
+    # LiteLLMs Fehlerbehandlung. Darauf darf ein Guardrail nicht wetten:
+    # lieber ein konstanter Fingerprint als ein unkontrollierter Fehlerpfad.
+    try:
+        roh = repr(name)
+    except Exception:
+        return "unlesbar"
+    if not _ist_echter_str(roh):
+        # ``repr`` MUSS laut Protokoll ``str`` liefern; CPython erzwingt das
+        # fuer den Builtin, aber wir formatieren das Ergebnis weiter --
+        # deshalb hier dieselbe Identitaetsfrage wie ueberall sonst.
+        return "unlesbar"
+    return hashlib.sha256(roh.encode("utf-8")).hexdigest()[:8]
 
 
 class _UnsafeJson(Exception):
@@ -841,11 +1265,34 @@ class DatenschleuseGuardrail(_GuardrailBase):
             or os.getenv("PRESIDIO_IMAGE_REDACTOR_API_BASE")
             or ""
         ).rstrip("/")
-        policy = (kwargs.pop("image_policy", None) or image_policy or os.getenv("DATENSCHLEUSE_IMAGE_POLICY") or "").strip().lower()
+        # ``str(...)`` VOR ``.strip().lower()`` ist Absicht (Review-Finding
+        # W4): ohne den Aufruf laufen ``strip``/``lower`` als METHODEN DES
+        # UEBERGEBENEN OBJEKTS. Eine str-Subklasse, die dort luegt, haette
+        # sich als 'pass' ausgeben und die Bild-Policy aushebeln koennen.
+        # ``str(x)`` liefert dagegen immer ein exaktes ``str`` -- ein
+        # ueberschriebenes ``__str__`` bestimmt zwar den INHALT, aber der
+        # nachfolgende Vergleich urteilt dann ehrlich ueber genau diesen
+        # Inhalt. Danach ist ``policy`` nachweislich exaktes ``str``.
+        policy = str(
+            kwargs.pop("image_policy", None)
+            or image_policy
+            or os.getenv("DATENSCHLEUSE_IMAGE_POLICY")
+            or ""
+        ).strip().lower()
         if not policy:
             # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
             # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
             policy = "redact" if self.image_redactor_url else "block"
+        # Bewusst OHNE ``_ist_registriert``: ``policy`` ist oben durch
+        # ``str(...)`` gelaufen und damit nachweislich exaktes ``str`` --
+        # die Hilfe wuerde hier nichts hinzufuegen.
+        #
+        # Die fruehere Begruendung an dieser Stelle war falsch (W4): sie
+        # berief sich auf ``.strip().lower()`` allein, und die sind
+        # ueberschreibbar. Dass die Entscheidung trotzdem richtig war, macht
+        # die Begruendung nicht richtig -- und der Naechste prueft die
+        # Begruendung, findet sie hinfaellig und kippt die Entscheidung.
+        # Deshalb ist die Zusage jetzt wahr gemacht statt abgeschwaecht.
         if policy not in IMAGE_POLICIES:
             raise ValueError(
                 f"image_policy={policy!r} unbekannt — erlaubt: {', '.join(sorted(IMAGE_POLICIES))}"
@@ -1118,6 +1565,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
     ) -> dict:
         """Maskiert PII in allen Chat-Messages und legt das Re-Id-Mapping in
         den Metadaten ab. Nur fuer Chat-/Text-Completions relevant."""
+        # Aufruftyp-Gate. Bewusst OHNE ``_ist_registriert`` -- und hier waere
+        # die Hilfe nicht nur ueberfluessig, sondern FALSCH (Review-Finding
+        # W3/W4; die fruehere Begruendung an dieser Stelle war zu bequem):
+        #
+        # Ein ``False`` blockt hier nicht, es UEBERSPRINGT die Maskierung
+        # (``return data``). LiteLLM definiert ``class CallTypes(str, Enum)``;
+        # fuer dessen Member ist ``type(x) is str`` ``False``. Die Hilfe hier
+        # einzusetzen wuerde also jeden dispatchten Request ungemaskiert
+        # durchreichen -- fail-open aus einer Zeile, die nach Haertung
+        # aussieht. Siehe die VORBEDINGUNG im Docstring von
+        # ``_ist_registriert``.
+        #
+        # Der Parameter stammt ohnehin von LiteLLM, nicht aus dem Request.
+        # Und wer die Maskierung ueberspringen will, braucht keine Subklasse:
+        # ein beliebiger unbekannter String genuegt -- gewolltes Verhalten
+        # fuer Nicht-Chat-Aufrufe.
         if call_type not in ("completion", "text_completion", "acompletion", None):
             return data
 
@@ -1146,7 +1609,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Fehlt der Key ganz (None), ist das kein Chat-Request -> unveraendert.
         if messages is not None and not isinstance(messages, list):
             raise DatenschleuseBlocked(
-                f"messages vom Typ {type(messages).__name__!r} wird von der "
+                f"messages vom Typ {_typname(messages)!r} wird von der "
                 "Datenschleuse nicht geprueft und ist deshalb blockiert "
                 "(fail-closed). Erlaubt ist nur eine Liste von Nachrichten."
             )
@@ -1158,7 +1621,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # ans Modell weitergereicht. Was nicht geprueft werden
                     # kann, passiert nicht (Gesetz: fail-closed).
                     raise DatenschleuseBlocked(
-                        f"Nachricht vom Typ {type(msg).__name__!r} wird von der "
+                        f"Nachricht vom Typ {_typname(msg)!r} wird von der "
                         "Datenschleuse nicht geprueft und ist deshalb blockiert "
                         "(fail-closed). Erlaubt sind nur Nachrichten-Objekte."
                     )
@@ -1169,7 +1632,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 self._validate_message_shape(msg)
 
                 content = msg.get("content")
-                if isinstance(content, str):
+                # ``_ist_echter_str`` statt ``isinstance``: ``content`` laeuft
+                # NICHT durch ``_validate_text_field`` (es darf auch eine
+                # Liste sein), waehlt hier aber den Maskierungspfad. Eine
+                # ``strip()``-Luegner-Subklasse nahm damit den Textpfad, fand
+                # nichts zu maskieren und ging unveraendert raus (C1).
+                # Subklassen fallen jetzt in den ``elif content is not None``
+                # weiter unten und blocken dort fail-closed.
+                if _ist_echter_str(content):
                     original = content
                     entities = await self._analyze(original)
 
@@ -1204,11 +1674,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # Uebrige blockt fail-closed, auch ein Part-Typ, den die
                     # OpenAI-API erst morgen einfuehrt.
                     for part in content:
-                        part_type = part.get("type") if isinstance(part, dict) else None
+                        # DATENSCHLE-65: Typ UND Felder in EINEM Schritt, im
+                        # Validate-Pfad, fail-closed -- bevor irgendein Wert
+                        # dieses Parts verarbeitet oder weitergereicht wird.
+                        # Danach ist garantiert: Typ ist erlaubt, jedes Feld
+                        # steht im Register, jedes Feld hat den richtigen Typ.
+                        part_type = self._validate_part_shape(part)
                         if part_type == "image_url":
                             await self._handle_image_part(part)
                             continue
-                        if part_type == "text" and isinstance(part.get("text"), str):
+                        if part_type == "text":
+                            # Nach _validate_part_shape garantiert ein String
+                            # -- KEIN isinstance-Guard mehr an dieser Stelle,
+                            # der waere wieder ein stiller Durchlass (F1).
                             original = part["text"]
                             entities = await self._analyze(original)
 
@@ -1225,28 +1703,27 @@ class DatenschleuseGuardrail(_GuardrailBase):
                             part["text"] = masker.mask(original, direct)
                             turn_qi.extend(self._extract_qi_values(original, qi))
                             text_slots.append((part, "text"))
+                            # Zitate desselben Parts: Freitext maskieren,
+                            # Indizes unangetastet lassen (DATENSCHLE-65).
+                            # DERSELBE Masker wie der Textpfad -- ein
+                            # zweites Mapping wuerde die Re-Identifikation
+                            # auf dem Rueckweg ins Leere laufen lassen.
+                            await self._mask_citations(
+                                part, masker, requested_level, approved,
+                            )
                             continue
-                        # Nicht auf der Allowlist -> nicht pruefbar -> blocken.
-                        # KORREKTUR (Security-Review, DATENSCHLE-64 zweites
-                        # Finding): part_type ist NICHT unbedenklich -- es ist
-                        # ``part.get("type")``, also ein Wert, den der Client
-                        # voll kontrolliert: beliebiger Inhalt, beliebiger Typ
-                        # (auch dict/list), beliebige Laenge. Der Auditor hat
-                        # belegt, dass eine IBAN, eine Diagnose oder 5000
-                        # Flooding-Zeichen ueber genau dieses Feld in die
-                        # Meldung durchschlagen -- und DatenschleuseBlocked
-                        # wird von LiteLLM geloggt/an den Client zurueckgegeben,
-                        # laeuft also potenziell in Logging-Callbacks (Gesetz
-                        # 5). Deshalb wird NIE der Wert selbst ausgegeben,
-                        # sondern ausschliesslich sein Python-Typname (z.B.
-                        # "str", "dict", "NoneType") -- kurz, konstant lang,
-                        # ohne jeden Client-Inhalt.
-                        raise DatenschleuseBlocked(
-                            "Content-Part mit nicht erlaubtem Typ "
-                            f"({type(part_type).__name__}) wird von der "
-                            "Datenschleuse nicht geprueft und ist deshalb "
-                            "blockiert (fail-closed). Erlaubt sind nur "
-                            "'text' (mit String-Inhalt) und 'image_url'."
+                        # Unerreichbar, solange Register und Verarbeitung
+                        # zusammenpassen: _validate_part_shape hat jeden
+                        # anderen Typ bereits geblockt. Der Zweig bleibt als
+                        # fail-closed-Netz fuer den Fall, dass jemand einen
+                        # Typ ins Register eintraegt, ohne ihn hier zu
+                        # behandeln -- dann blockt er, statt ungeprueft
+                        # durchzulaufen. Genau diese Sorte Luecke ist die
+                        # Geschichte dieses Guardrails (DATENSCHLE-57/64/65/66).
+                        raise DatenschleuseBlocked(  # pragma: no cover
+                            "Content-Part-Typ ist im Register erfasst, hat "
+                            "aber keinen Verarbeitungspfad -- blockiert "
+                            "(fail-closed)."
                         )
                 elif content is not None:
                     # DATENSCHLE-64 (QA-Folgefund zu DATENSCHLE-57): dieselbe
@@ -1272,14 +1749,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     # ``elif content is not None`` statt ``else`` -- None
                     # faellt durch und bleibt unveraendert.
                     #
-                    # type(content).__name__ ist ein kurzer, konstant
+                    # _typname(content) ist ein kurzer, konstant
                     # harmloser Typname -- nie der Wert selbst -- in der
                     # Meldung (Gesetz 5; siehe auch die Korrektur der
                     # Part-Fehlermeldung weiter oben, DATENSCHLE-64 zweites
                     # Finding).
                     raise DatenschleuseBlocked(
                         f"Nachricht mit content vom Typ "
-                        f"{type(content).__name__!r} wird von der "
+                        f"{_typname(content)!r} wird von der "
                         "Datenschleuse nicht geprueft und ist deshalb "
                         "blockiert (fail-closed). Erlaubt sind nur String- "
                         "oder Listen-content."
@@ -1337,18 +1814,29 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Ausgegeben werden nur Anzahl, Python-Typname und die konstante Liste
         der erlaubten Felder.
         """
-        unknown = [key for key in msg if key not in ALLOWED_MESSAGE_FIELDS]
+        unknown = [
+            key for key in msg if not _ist_registriert(key, ALLOWED_MESSAGE_FIELDS)
+        ]
         if unknown:
             # QA-Audit: ein Betreiber sah bisher nur eine ANZAHL und hatte
             # keine Chance herauszufinden, was ihn blockiert -- ausser
             # Trial-and-Error gegen die Allowlist. Jetzt: bekannte
             # Provider-Felder beim Namen (konstantes Vokabular aus DIESER
             # Datei, nie aus dem Request), alles Uebrige als Fingerprint.
+            #
+            # Die Partition laeuft ueber DENSELBEN Praedikat-Aufruf statt
+            # ueber ``key not in benannt``: ein getarnter Schluessel wuerde
+            # sonst gegen einen echten Eintrag in ``benannt`` gleich
+            # vergleichen und aus BEIDEN Listen fallen -- er verschwaende
+            # spurlos aus der Diagnose, statt gefingerprintet zu werden.
             benannt = sorted(
                 key for key in unknown
-                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_MESSAGE_FIELDS
+                if _ist_registriert(key, KNOWN_UNSUPPORTED_MESSAGE_FIELDS)
             )
-            fremd = [key for key in unknown if key not in benannt]
+            fremd = [
+                key for key in unknown
+                if not _ist_registriert(key, KNOWN_UNSUPPORTED_MESSAGE_FIELDS)
+            ]
             teile = []
             if benannt:
                 teile.append(
@@ -1372,9 +1860,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
 
         role = msg.get("role")
-        if role is not None and (not isinstance(role, str) or role not in ALLOWED_ROLES):
+        if role is not None and not _ist_registriert(role, ALLOWED_ROLES):
             raise DatenschleuseBlocked(
-                f"Nachricht mit unbekannter Rolle (Typ {type(role).__name__!r}) "
+                f"Nachricht mit unbekannter Rolle (Typ {_typname(role)!r}) "
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
                 f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_ROLES))}."
             )
@@ -1397,7 +1885,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if tool_calls is not None:
             if not isinstance(tool_calls, list):
                 raise DatenschleuseBlocked(
-                    f"tool_calls vom Typ {type(tool_calls).__name__!r} ist nicht "
+                    f"tool_calls vom Typ {_typname(tool_calls)!r} ist nicht "
                     "pruefbar und deshalb blockiert (fail-closed). Erlaubt ist "
                     "nur eine Liste."
                 )
@@ -1408,14 +1896,195 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if function_call is not None:
             DatenschleuseGuardrail._validate_function_payload(function_call, "function_call")
 
+    # ---- Content-Parts: Typ UND Felder (DATENSCHLE-65) --------------------
+    @staticmethod
+    def _validate_part_shape(part: Any) -> str:
+        """Prueft die FORM eines Content-Parts gegen das Part-Feld-Register
+        und liefert den geprueften Part-Typ zurueck.
+
+        Bis DATENSCHLE-65 endete die Pruefung beim Part-TYP: ein Part mit
+        erlaubtem Typ durfte beliebige Zusatzfelder tragen, und die gingen
+        unveraendert ans Modell. Dieselbe Bauart wie auf Message-Ebene, eine
+        Ebene tiefer -- deshalb hier dieselbe Konsequenz: Allowlist, alles
+        Uebrige blockt fail-closed.
+
+        Wichtig (Kriterium 4, Lehre aus Security-Audit F1 auf Message-Ebene):
+        die Typpruefung der Felder gehoert HIERHER und muss blocken. Ein
+        ``if isinstance(part.get("text"), str)`` im Verarbeitungspfad ist
+        immer ein stiller Durchlass -- der Nicht-String faellt einfach durch.
+
+        Gesetz 5: keine Meldung enthaelt Client-Werte -- auch ein FELDNAME
+        ist Client-Inhalt (eine IBAN als Schluessel ist trivial). Ausgegeben
+        werden nur Anzahl, Python-Typname, Fingerprint und konstante Listen.
+        """
+        if not isinstance(part, dict):
+            raise DatenschleuseBlocked(
+                f"Content-Part vom Typ {_typname(part)!r} ist nicht "
+                "pruefbar und deshalb blockiert (fail-closed). Erlaubt sind "
+                "nur Part-Objekte."
+            )
+
+        part_type = part.get("type")
+        # ``_ist_registriert`` statt ``isinstance(...) and ... in ...``:
+        # die Allowlist entscheidet hier ueber "erlaubt -> weiterverarbeiten"
+        # UND ueber den Rueckgabewert, an dem der Aufrufer (``_mask_content``)
+        # per ``==`` seinen Pfad waehlt. Eine getarnte Subklasse liefe sonst
+        # als 'text' bzw. 'image_url' durch den kompletten Pfad, obwohl sie
+        # etwas anderes ist. Begruendung im Detail: siehe die Funktion.
+        if not _ist_registriert(part_type, ALLOWED_PART_TYPES):
+            if _ist_registriert(part_type, KNOWN_UNSUPPORTED_PART_TYPES):
+                # Nur ein exaktes ``str`` darf hier BENANNT werden: dann ist
+                # der ausgegebene Name nachweislich unsere Konstante und
+                # nicht der Request. Getarnte Subklassen fallen in den
+                # generischen Zweig darunter und blocken dort unbenannt.
+                grund = (
+                    f"Content-Part-Typ '{part_type}' gehoert zu Anthropics "
+                    "nativem Web-Search-Tool und hat in der Datenschleuse "
+                    "keinen geprueften Pfad"
+                )
+                hinweis = (
+                    " Bekannte, akzeptierte Einschraenkung, kein Fehler "
+                    "dieser Anfrage: Multi-Turn mit Anthropics Web-Search "
+                    "funktioniert durch diese Datenschleuse nicht. "
+                    f"Begruendung {_WEB_SEARCH_LIMITATION_DOC}."
+                )
+            else:
+                # part_type ist voll client-kontrolliert (beliebiger Inhalt,
+                # beliebiger Typ, beliebige Laenge) und darf deshalb NIE roh
+                # in die Meldung -- nur sein Python-Typname (DATENSCHLE-64,
+                # zweites Security-Finding).
+                grund = (
+                    "Content-Part mit nicht erlaubtem Typ "
+                    f"({_typname(part_type)}) wird von der "
+                    "Datenschleuse nicht geprueft"
+                )
+                hinweis = ""
+            raise DatenschleuseBlocked(
+                f"{grund} -- blockiert (fail-closed).{hinweis} "
+                f"Erlaubt sind nur: {_ALLOWED_PART_TYPES_HINT}."
+            )
+
+        allowed = ALLOWED_PART_FIELDS[part_type]
+        unknown = [key for key in part if not _ist_registriert(key, allowed)]
+        if unknown:
+            # Partition ueber dasselbe Praedikat statt ueber ``key not in
+            # benannt`` -- siehe _validate_message_shape.
+            benannt = sorted(
+                key for key in unknown
+                if _ist_registriert(key, KNOWN_UNSUPPORTED_PART_FIELDS)
+            )
+            fremd = [
+                key for key in unknown
+                if not _ist_registriert(key, KNOWN_UNSUPPORTED_PART_FIELDS)
+            ]
+            teile = []
+            if benannt:
+                teile.append("bekannt, aber nicht im Register: " + ", ".join(benannt))
+            if fremd:
+                teile.append(
+                    "unbekannt (Fingerprint): "
+                    + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                )
+            diagnose = "; ".join(teile)
+            _LOG.warning(
+                "Content-Part blockiert -- ungepruefte Felder [%s]. "
+                "Werte werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+            )
+            raise DatenschleuseBlocked(
+                f"Content-Part enthaelt {len(unknown)} Feld(er), die die "
+                f"Datenschleuse nicht prueft ({diagnose}) -- deshalb blockiert "
+                f"(fail-closed). Geprueft werden ausschliesslich: "
+                f"{_ALLOWED_PART_FIELDS_HINT[part_type]}."
+            )
+
+        DatenschleuseGuardrail._validate_cache_control(part.get("cache_control"))
+
+        if part_type == "text":
+            text = part.get("text")
+            # Kein ``_validate_text_field`` allein: das laesst None zu. Ein
+            # Text-Part OHNE ``text`` hat keine pruefbare Nutzlast und ist
+            # nicht spezifikationskonform -- fail-closed statt Leerlauf.
+            DatenschleuseGuardrail._validate_text_field(text, "content-part.text")
+            if text is None:
+                raise DatenschleuseBlocked(
+                    "Content-Part vom Typ 'text' ohne text-Feld hat keine "
+                    "pruefbare Nutzlast und ist deshalb blockiert "
+                    "(fail-closed)."
+                )
+            DatenschleuseGuardrail._validate_citations(part.get("citations"))
+        else:
+            DatenschleuseGuardrail._validate_image_url_container(part.get("image_url"))
+
+        return part_type
+
+    @staticmethod
+    def _validate_image_url_container(value: Any) -> None:
+        """Der ``image_url``-Container ist client-kontrolliert wie der Part
+        selbst -- und ``_handle_image_part`` ersetzt ausschliesslich ``url``.
+        Jedes weitere Feld ueberlebte die Bild-Policy bisher unveraendert
+        (bei ``image_policy='pass'`` ohnehin). Deshalb dieselbe Allowlist
+        eine Ebene tiefer.
+
+        Die Bild-POLICY bleibt davon unberuehrt: was mit einem gueltigen Bild
+        passiert (redact/block/pass), entscheidet weiterhin allein
+        ``_handle_image_part``.
+        """
+        if value is None:
+            # Ein Bild-Part ohne URL blockt weiter unten in _handle_image_part
+            # mit der praeziseren Meldung -- hier nicht doppelt behandeln.
+            return
+        if isinstance(value, str):
+            # Manche Clients schicken die URL direkt statt im Container.
+            return
+        if not isinstance(value, dict):
+            raise DatenschleuseBlocked(
+                f"image_url vom Typ {_typname(value)!r} ist kein "
+                "Bild-Verweis -- blockiert (fail-closed). Erlaubt ist ein "
+                "String oder ein Objekt wie {'url': '...'}."
+            )
+        unknown = sum(
+            1 for key in value
+            if not _ist_registriert(key, IMAGE_URL_ALLOWED_FIELDS)
+        )
+        if unknown:
+            raise DatenschleuseBlocked(
+                f"image_url enthaelt {unknown} ungepruefte(s) Feld(er) -- "
+                "blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(IMAGE_URL_ALLOWED_FIELDS))}."
+            )
+        DatenschleuseGuardrail._validate_text_field(value.get("url"), "image_url.url")
+        detail = value.get("detail")
+        if detail is not None and not _ist_registriert(detail, IMAGE_URL_DETAILS):
+            raise DatenschleuseBlocked(
+                f"image_url.detail (Typ {_typname(detail)!r}) ist kein "
+                "bekannter Wert -- als Freitext-Kanal blockiert (fail-closed). "
+                f"Erlaubt: {', '.join(sorted(IMAGE_URL_DETAILS))}."
+            )
+
     @staticmethod
     def _validate_text_field(value: Any, field: str) -> None:
         """Ein Textfeld ist ein String oder gar nicht da. Alles andere ist
         nicht maskierbar -> blocken statt still durchreichen."""
-        if value is None or isinstance(value, str):
+        # ``type(value) is str`` statt ``isinstance`` -- Review-Finding C1
+        # (extern, empirisch belegt), und der schwerwiegendste Fund dieser
+        # Runde: das Ziel ist nicht ein Logsatz, sondern die Cloud.
+        #
+        # Der Maskierungspfad vertraut auf ``str``-SEMANTIK, nicht nur auf den
+        # Typ: ``_analyze`` steigt bei ``not text.strip()`` aus,
+        # ``Masker.mask`` bei leerer Entity-Liste, ``_resolve_overlaps`` misst
+        # gegen ``len(text)``. Eine Subklasse, die bei ``strip()`` luegt,
+        # bringt den Analyzer dazu, den Text fuer leer zu halten -- er geht
+        # dann UNMASKIERT ans Zielmodell, mit leerer reid_map. Das ist der
+        # Zweck dieser Software, invertiert.
+        #
+        # Jede einzelne Methode gegen Luegen abzusichern ist aussichtslos:
+        # ``__len__``, ``__getitem__``, ``replace``, ``find`` -- jede kann
+        # luegen. Deshalb wird die Identitaetsfrage EINMAL hier gestellt, an
+        # der Stelle, die ohnehin der Chokepoint fuer Textfelder ist.
+        if value is None or _ist_echter_str(value):
             return
         raise DatenschleuseBlocked(
-            f"{field} vom Typ {type(value).__name__!r} ist kein Text und damit "
+            f"{field} vom Typ {_typname(value)!r} ist kein Text und damit "
             "nicht maskierbar -- blockiert (fail-closed). Erlaubt ist nur ein "
             "String (oder das Feld ganz weglassen)."
         )
@@ -1433,11 +2102,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
             return
         if not isinstance(value, dict):
             raise DatenschleuseBlocked(
-                f"cache_control vom Typ {type(value).__name__!r} ist kein "
+                f"cache_control vom Typ {_typname(value)!r} ist kein "
                 "Caching-Marker -- blockiert (fail-closed). Erlaubt ist nur "
                 "ein Objekt wie {'type': 'ephemeral'}."
             )
-        unknown = sum(1 for key in value if key not in CACHE_CONTROL_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in value
+            if not _ist_registriert(key, CACHE_CONTROL_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"cache_control enthaelt {unknown} ungepruefte(s) Feld(er) -- "
@@ -1445,19 +2117,165 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"{', '.join(sorted(CACHE_CONTROL_ALLOWED_FIELDS))}."
             )
         marker = value.get("type")
-        if not isinstance(marker, str) or marker not in CACHE_CONTROL_TYPES:
+        if not _ist_registriert(marker, CACHE_CONTROL_TYPES):
             raise DatenschleuseBlocked(
-                f"cache_control.type (Typ {type(marker).__name__!r}) ist kein "
+                f"cache_control.type (Typ {_typname(marker)!r}) ist kein "
                 "bekannter Caching-Marker -- blockiert (fail-closed). Erlaubt: "
                 f"{', '.join(sorted(CACHE_CONTROL_TYPES))}."
             )
         ttl = value.get("ttl")
-        if ttl is not None and (not isinstance(ttl, str) or ttl not in CACHE_CONTROL_TTLS):
+        if ttl is not None and not _ist_registriert(ttl, CACHE_CONTROL_TTLS):
             raise DatenschleuseBlocked(
-                f"cache_control.ttl (Typ {type(ttl).__name__!r}) ist kein "
+                f"cache_control.ttl (Typ {_typname(ttl)!r}) ist kein "
                 "bekannter Wert -- blockiert (fail-closed). Erlaubt: "
                 f"{', '.join(sorted(CACHE_CONTROL_TTLS))}."
             )
+
+    @staticmethod
+    def _validate_citation_index(value: Any, field: str) -> None:
+        """Ein Zitat-Index ist eine nicht-negative Ganzzahl in plausibler
+        Groessenordnung -- oder gar nicht da.
+
+        ``bool`` wird ZUERST abgefangen: in Python ist ``True`` ein ``int``,
+        ein blosses ``isinstance(value, int)`` liesse also ``True`` als Index
+        durch. Genau die Sorte stiller Durchlass, die dieses Guardrail schon
+        zweimal als Security-Befund gesehen hat."""
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DatenschleuseBlocked(
+                f"{field} vom Typ {_typname(value)!r} ist kein "
+                "Zitat-Index -- als ungepruefter Kanal blockiert "
+                "(fail-closed). Erlaubt ist nur eine Ganzzahl."
+            )
+        if value < 0 or value > MAX_CITATION_INDEX:
+            raise DatenschleuseBlocked(
+                f"{field} liegt ausserhalb des zulaessigen Bereichs "
+                f"(0 bis {MAX_CITATION_INDEX}) und ist damit keine "
+                "plausible Dokumentposition -- blockiert (fail-closed)."
+            )
+
+    @staticmethod
+    def _validate_citations(value: Any) -> None:
+        """``citations`` ist ein Zitat-Array, kein freier Container.
+
+        Zweigeteilt wie das Part-Register eine Ebene hoeher: die Freitext-
+        Felder (``cited_text``, ``document_title``) werden spaeter maskiert,
+        die Indizes muessen unveraendert durch -- und werden deshalb HIER
+        eng geprueft. Blocken statt still ueberspringen: nach dieser Methode
+        ist garantiert, dass ``_mask_citations`` nur noch auf Listen von
+        Dicts mit bekanntem Typ und Strings in den Textfeldern trifft. Ein
+        ``isinstance``-Guard im Verarbeitungspfad waere wieder ein stiller
+        Durchlass (Lehre aus F1).
+
+        Gesetz 5: keine Meldung enthaelt Client-Werte. Ausgegeben werden nur
+        Anzahl, Python-Typname, Fingerprint und konstante Listen. Ein Name
+        aus einer unserer Konstanten ist kein Client-Wert -- er wird nur
+        genannt, WEIL er gleich der Konstante ist.
+        """
+        if value is None:
+            return
+        if not isinstance(value, list):
+            raise DatenschleuseBlocked(
+                f"citations vom Typ {_typname(value)!r} ist kein "
+                "Zitat-Array -- blockiert (fail-closed). Erlaubt ist nur "
+                "eine Liste von Zitat-Objekten."
+            )
+        if len(value) > MAX_CITATIONS_PER_PART:
+            raise DatenschleuseBlocked(
+                f"citations enthaelt {len(value)} Eintraege und "
+                f"ueberschreitet die zulaessige Obergrenze "
+                f"({MAX_CITATIONS_PER_PART}) -- blockiert (fail-closed)."
+            )
+
+        for citation in value:
+            if not isinstance(citation, dict):
+                raise DatenschleuseBlocked(
+                    f"Zitat vom Typ {_typname(citation)!r} ist nicht "
+                    "pruefbar und deshalb blockiert (fail-closed). Erlaubt "
+                    "sind nur Zitat-Objekte."
+                )
+
+            citation_type = citation.get("type")
+            # ``_ist_registriert`` deckt beide Rollen dieser Pruefung ab: die
+            # Allowlist entscheidet ueber "erlaubt -> maskieren und rausgehen
+            # lassen", und der Typ waehlt darunter per Index in
+            # ALLOWED_CITATION_FIELDS / CITATION_FIELDS_MASKED den Pfad. Eine
+            # getarnte Subklasse lief bisher komplett unblockiert durch und
+            # wurde als der getarnte Typ weiterverarbeitet (die vom Pruefer
+            # als MEDIUM benannte fuenfte Variante).
+            if not _ist_registriert(citation_type, ALLOWED_CITATION_TYPES):
+                # citation_type ist voll client-kontrolliert und darf nie roh
+                # in die Meldung. Genannt wird er NUR, wenn er exakt einem
+                # Wert unserer Konstante entspricht -- dann ist der
+                # ausgegebene String unsere Konstante, nicht der Request.
+                if _ist_registriert(
+                    citation_type, KNOWN_UNSUPPORTED_CITATION_TYPES
+                ):
+                    grund = (
+                        f"Zitat-Typ '{citation_type}' traegt Freitext- bzw. "
+                        "Provider-Token-Felder, fuer die es keinen "
+                        "geprueften Pfad gibt"
+                    )
+                else:
+                    grund = (
+                        "Zitat-Typ "
+                        f"({_typname(citation_type)}) ist der "
+                        "Datenschleuse nicht bekannt"
+                    )
+                raise DatenschleuseBlocked(
+                    f"{grund} -- blockiert (fail-closed). Geprueft werden "
+                    f"ausschliesslich: {_ALLOWED_CITATION_TYPES_HINT}."
+                )
+
+            allowed = ALLOWED_CITATION_FIELDS[citation_type]
+            unknown = [
+                key for key in citation if not _ist_registriert(key, allowed)
+            ]
+            if unknown:
+                # Partition ueber dasselbe Praedikat statt ueber ``key not in
+                # benannt`` -- siehe _validate_message_shape.
+                benannt = sorted(
+                    key for key in unknown
+                    if _ist_registriert(key, KNOWN_UNSUPPORTED_CITATION_FIELDS)
+                )
+                fremd = [
+                    key for key in unknown
+                    if not _ist_registriert(
+                        key, KNOWN_UNSUPPORTED_CITATION_FIELDS
+                    )
+                ]
+                teile = []
+                if benannt:
+                    teile.append(
+                        "bekannt, aber nicht im Register: " + ", ".join(benannt)
+                    )
+                if fremd:
+                    teile.append(
+                        "unbekannt (Fingerprint): "
+                        + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                    )
+                diagnose = "; ".join(teile)
+                _LOG.warning(
+                    "Zitat blockiert -- ungepruefte Felder [%s]. Werte "
+                    "werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+                )
+                raise DatenschleuseBlocked(
+                    f"Zitat enthaelt {len(unknown)} Feld(er), die die "
+                    f"Datenschleuse nicht prueft ({diagnose}) -- deshalb "
+                    "blockiert (fail-closed). Geprueft werden "
+                    f"ausschliesslich: "
+                    f"{_ALLOWED_CITATION_FIELDS_HINT[citation_type]}."
+                )
+
+            for field in CITATION_FIELDS_MASKED[citation_type]:
+                DatenschleuseGuardrail._validate_text_field(
+                    citation.get(field), f"citations[].{field}"
+                )
+            for field in CITATION_INDEX_FIELDS[citation_type]:
+                DatenschleuseGuardrail._validate_citation_index(
+                    citation.get(field), f"citations[].{field}"
+                )
 
     @staticmethod
     def _validate_opaque_id(value: Any, field: str) -> None:
@@ -1472,7 +2290,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if not isinstance(value, str) or not OPAQUE_ID_PATTERN.fullmatch(value):
             raise DatenschleuseBlocked(
                 f"{field} ist kein zulaessiger Identifier (Typ "
-                f"{type(value).__name__!r}) -- als Freitext-Kanal blockiert "
+                f"{_typname(value)!r}) -- als Freitext-Kanal blockiert "
                 "(fail-closed). Erlaubt: bis zu 128 Zeichen aus "
                 "A-Z a-z 0-9 _ . : -"
             )
@@ -1481,10 +2299,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
     def _validate_tool_call(call: Any) -> None:
         if not isinstance(call, dict):
             raise DatenschleuseBlocked(
-                f"tool_call vom Typ {type(call).__name__!r} ist nicht pruefbar "
+                f"tool_call vom Typ {_typname(call)!r} ist nicht pruefbar "
                 "und deshalb blockiert (fail-closed)."
             )
-        unknown = sum(1 for key in call if key not in TOOL_CALL_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in call
+            if not _ist_registriert(key, TOOL_CALL_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"tool_call enthaelt {unknown} ungepruefte(s) Feld(er) -- "
@@ -1493,15 +2314,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
         DatenschleuseGuardrail._validate_opaque_id(call.get("id"), "tool_calls[].id")
 
-        call_type = call.get("type")
+        tool_call_typ = call.get("type")
         # ``type`` fehlt bei manchen Clients -- historisch impliziert das
         # "function". Ein ANDERER Typ ist dagegen ein uns unbekanntes Format
         # mit unbekannten Feldern -> blocken.
-        if call_type is not None and (
-            not isinstance(call_type, str) or call_type not in ALLOWED_TOOL_CALL_TYPES
+        # Bewusst NICHT ``call_type`` benannt (Review-Finding S6): der
+        # Hook-Parameter gleichen Namens ist die eine Stelle, an der
+        # ``_ist_registriert`` fail-open waere. Eine Namenskollision im grep
+        # ist dort der plausibelste Weg zu genau diesem Fehler.
+        if tool_call_typ is not None and not _ist_registriert(
+            tool_call_typ, ALLOWED_TOOL_CALL_TYPES
         ):
             raise DatenschleuseBlocked(
-                f"tool_call mit nicht erlaubtem Typ (Typ {type(call_type).__name__!r}) "
+                f"tool_call mit nicht erlaubtem Typ (Typ {_typname(tool_call_typ)!r}) "
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
                 f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_TOOL_CALL_TYPES))}."
             )
@@ -1509,7 +2334,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         index = call.get("index")
         if index is not None and not isinstance(index, int):
             raise DatenschleuseBlocked(
-                f"tool_calls[].index vom Typ {type(index).__name__!r} ist kein "
+                f"tool_calls[].index vom Typ {_typname(index)!r} ist kein "
                 "Index -- blockiert (fail-closed)."
             )
 
@@ -1521,10 +2346,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
     def _validate_function_payload(function: Any, field: str) -> None:
         if not isinstance(function, dict):
             raise DatenschleuseBlocked(
-                f"{field} vom Typ {type(function).__name__!r} ist nicht pruefbar "
+                f"{field} vom Typ {_typname(function)!r} ist nicht pruefbar "
                 "und deshalb blockiert (fail-closed)."
             )
-        unknown = sum(1 for key in function if key not in TOOL_CALL_FUNCTION_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in function
+            if not _ist_registriert(key, TOOL_CALL_FUNCTION_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"{field} enthaelt {unknown} ungepruefte(s) Feld(er) -- blockiert "
@@ -1575,6 +2403,34 @@ class DatenschleuseGuardrail(_GuardrailBase):
         entities = await self._analyze(text)
         self._enforce_sensitivity(text, entities, requested_level, approved)
         return masker.mask(text, entities)
+
+    async def _mask_citations(
+        self, part: Dict[str, Any], masker: Masker,
+        requested_level: Any, approved: bool,
+    ) -> None:
+        """Maskiert die Freitext-Felder der Zitate eines Text-Parts und
+        laesst die Indizes unveraendert.
+
+        Voraussetzung ist ``_validate_citations``: danach ist ``citations``
+        entweder None/leer oder eine Liste von Dicts mit bekanntem Typ,
+        deren Textfelder Strings (oder None) sind. Deshalb steht hier KEINE
+        ``isinstance``-Pruefung -- die gehoert in den Validierungspfad und
+        blockt dort, statt hier still zu ueberspringen.
+
+        ``document_title`` ist laut Schema ausdruecklich nullable; ein
+        fehlendes oder None-Feld traegt keinen Text und wird uebersprungen.
+        """
+        citations = part.get("citations")
+        if not citations:
+            return
+        for citation in citations:
+            for field in CITATION_FIELDS_MASKED[citation["type"]]:
+                value = citation.get(field)
+                if value is None:
+                    continue
+                citation[field] = await self._mask_text_value(
+                    value, masker, requested_level, approved,
+                )
 
     async def _mask_json_node(
         self,
@@ -1907,6 +2763,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
         direct: List[Dict[str, Any]] = []
         qi: List[Dict[str, Any]] = []
         for ent in entities:
+            # Bewusst OHNE ``_ist_registriert``: ``entity_type`` stammt aus
+            # der Analyzer-Antwort (unsere eigenen Recognizer-Namen),
+            # ``qi_types`` aus der Betreiber-Konfiguration. Kein Pfad
+            # traegt hier einen Client-Wert hinein, und das Ergebnis wird
+            # weder formatiert noch geloggt -- es waehlt nur zwischen zwei
+            # Maskierungsstrategien, die beide maskieren.
             if ent.get("entity_type") in qi_types:
                 qi.append(ent)
             else:
@@ -2033,6 +2895,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     chunk, text_processors
                 ):
                     text_templates[field] = chunk
+                # Zitate: VOR der content-Pruefung, denn ein Chunk mit einem
+                # ``citations_delta`` traegt typischerweise gar kein
+                # Text-Delta und wuerde unten unveraendert durchgereicht.
+                self._stream_reidentify_citations(chunk, reid_map)
                 content = self._extract_delta(chunk)
                 if content is None:
                     # Chunk ohne Text-Delta (role-only, finish_reason, usage) ->
@@ -2113,6 +2979,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
                         message["content"] = new_content
                     else:
                         message.content = new_content
+                elif isinstance(content, list):
+                    # Die zweite reale Form (QA-Audit F1): Anthropic
+                    # antwortet mit einer LISTE von Bloecken. Bisher gab es
+                    # hier nur den String-Zweig, eine Liste fiel still durch
+                    # -- der gesamte Antworttext blieb beim Platzhalter.
+                    self._reidentify_content_blocks(content, reid_map)
                 # Der Rueckweg muss dieselben Felder abdecken wie der Hinweg
                 # (DATENSCHLE-66): gibt das Modell tool_calls zurueck, stehen
                 # die Platzhalter in ``arguments`` -- ohne Ersetzung bekaeme
@@ -2184,6 +3056,96 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 self._reidentify_function_payload(self._field(call, "function"), reid_map)
 
         self._reidentify_function_payload(self._field(message, "function_call"), reid_map)
+
+        # Zitate liegen bei LiteLLM NEBEN dem Text, nicht darin
+        # (QA-Audit F1). Ohne diesen Aufruf kam der Haupttext im Klartext
+        # an und dasselbe Zitat trug den rohen Platzhalter.
+        self._reidentify_provider_specific_fields(message, reid_map)
+
+    # ---- Rueckweg fuer Zitate (QA-Audit F1) -------------------------------
+    def _reidentify_citation(self, citation: Any, reid_map: Dict[str, str]) -> None:
+        """Loest die Platzhalter in den Freitext-Feldern EINES Zitats auf.
+
+        In-place, wie der gesamte Rueckweg: der Aufrufer haelt eine Referenz
+        auf das Objekt, das der Client bekommt. Ein Neu-Binden wuerde die
+        Aenderung verlieren.
+        """
+        for field in CITATION_RESPONSE_TEXT_FIELDS:
+            value = self._field(citation, field)
+            if isinstance(value, str):
+                self._set_field(citation, field, reidentify_full(value, reid_map))
+
+    def _reidentify_citation_list(
+        self, citations: Any, reid_map: Dict[str, str], depth: int = 0,
+    ) -> None:
+        """Eine Zitat-Liste. Eine Ebene Verschachtelung wird mitgenommen,
+        weil LiteLLM die Zitate je nach Version pro Textblock gruppiert --
+        dann steht dort eine Liste von Listen. Die Tiefe ist hart begrenzt:
+        was hier ankommt, ist Provider-Ausgabe und keine gepruefte Struktur.
+        """
+        if not isinstance(citations, list) or depth > 1:
+            return
+        for citation in citations:
+            if isinstance(citation, list):
+                self._reidentify_citation_list(citation, reid_map, depth + 1)
+                continue
+            self._reidentify_citation(citation, reid_map)
+
+    def _reidentify_provider_specific_fields(
+        self, container: Any, reid_map: Dict[str, str],
+    ) -> None:
+        """Zitate aus ``provider_specific_fields`` -- der Ort, an dem LiteLLM
+        sie ablegt, wenn es eine Anthropic-Antwort ins OpenAI-Format bringt.
+
+        Zwei Schluessel, weil die beiden Pfade sie unterschiedlich benennen:
+        non-streaming ``citations`` (Liste), streaming ``citation``
+        (Einzelobjekt aus einem ``citations_delta``). Beide werden behandelt,
+        damit eine LiteLLM-Version, die die Benennung angleicht, den Rueckweg
+        nicht wieder stilllegt.
+        """
+        psf = self._field(container, "provider_specific_fields")
+        if psf is None:
+            return
+        single = self._field(psf, "citation")
+        if single is not None:
+            self._reidentify_citation(single, reid_map)
+        self._reidentify_citation_list(self._field(psf, "citations"), reid_map)
+
+    def _reidentify_content_blocks(
+        self, content: Any, reid_map: Dict[str, str],
+    ) -> None:
+        """``content`` als LISTE von Bloecken -- die Form, in der Anthropic
+        antwortet. Der Hook verarbeitete ``content`` bisher nur unter
+        ``isinstance(content, str)``; eine Liste fiel komplett durch, also
+        blieb der GANZE Antworttext beim Platzhalter stehen.
+
+        Jeder Block traegt seinen Text und ggf. seine eigenen Zitate.
+        """
+        if not isinstance(content, list):
+            return
+        for block in content:
+            text = self._field(block, "text")
+            if isinstance(text, str):
+                self._set_field(block, "text", reidentify_full(text, reid_map))
+            self._reidentify_citation_list(
+                self._field(block, "citations"), reid_map
+            )
+
+    def _stream_reidentify_citations(
+        self, chunk: Any, reid_map: Dict[str, str],
+    ) -> None:
+        """Zitate im Stream.
+
+        Anders als Text und ``arguments`` kommt ein Zitat als VOLLSTAENDIGES
+        Objekt pro Event -- Anthropics ``citations_delta`` traegt das ganze
+        Zitat, nicht ein Fragment davon. Deshalb hier ein direkter
+        Voll-Ersatz statt eines Sliding-Window-Puffers: der haette nichts zu
+        puffern und wuerde nur das letzte Zitat zurueckhalten.
+        """
+        delta = self._chunk_delta(chunk)
+        if delta is None:
+            return
+        self._reidentify_provider_specific_fields(delta, reid_map)
 
     @staticmethod
     def _chunk_delta(chunk: Any) -> Any:
@@ -2276,6 +3238,16 @@ class DatenschleuseGuardrail(_GuardrailBase):
             for field in STREAM_TEXT_DELTA_FIELDS:
                 if isinstance(self._field(delta, field), str):
                     self._set_field(delta, field, "")
+            # Zitate ebenso: trug die Vorlage ein ``citations_delta``, ist es
+            # beim Client bereits angekommen. Ohne dieses Leeren liefert der
+            # Abschluss-Chunk dasselbe Zitat ein zweites Mal aus -- derselbe
+            # Defekt, den dieser Helfer fuer Reasoning, refusal und
+            # tool_calls bereits behandelt.
+            psf = self._field(delta, "provider_specific_fields")
+            if psf is not None:
+                for field in ("citation", "citations"):
+                    if self._field(psf, field) is not None:
+                        self._set_field(psf, field, None)
         for _key, function in self._iter_stream_functions(chunk):
             if function is None:
                 continue
