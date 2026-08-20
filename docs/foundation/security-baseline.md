@@ -130,17 +130,37 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
   Prüfung durch ein neutrales Zeichen ersetzt. Diese Ersetzung kann eigene
   Treffer erzeugen, die es im echten Text nie gab: ein Muster, das über
   Whitespace hinweggreift, passt danach plötzlich. Solche Treffer werden
-  verworfen — aber nur, wenn sie es nachweislich sind. Dazu wird der Treffer
-  an den Ersetzungsgrenzen aufgeteilt und jedes Stück einzeln erneut geprüft;
-  bleibt eines für sich ein Fund, wird blockiert. Der Filter hängt damit an
-  der **Herkunft** eines Treffers, nicht an seinem Typ und nicht an einer
-  bloßen Überlappung. Beide einfacheren Varianten haben in Audits jeweils
-  echte Funde mit ausgeblendet (F10, S1) — wer hier vereinfacht, öffnet das
-  Netz wieder. Regressionstests: `test/test_custom_rules.py`, Abschnitte 17
-  und 20.
+  verworfen — aber nur, wenn sie es **nachweislich** sind. Der Nachweis
+  läuft in zwei Schritten: der Treffer wird an den Ersetzungsgrenzen
+  aufgeteilt, und geprüft werden sowohl die Stücke **einzeln** als auch der
+  **verklebte Kern** (die Stücke ohne das eingefügte Zeichen). Bleibt eine
+  der beiden Prüfungen ein Fund, wird blockiert.
+
+  Beide Schritte sind nötig, und zwar aus einem Grund, der leicht übersehen
+  wird: Die Einzelprüfung trägt nur, solange die Erkennung **kontextfrei**
+  ist. Namens-Tokens werden einzeln erkannt, Bruchstücke musterbasierter
+  Entitäten (Telefonnummern, IBANs, IP-Adressen, Ticket-IDs) prinzipbedingt
+  nicht — eine halbe Telefonnummer ist keine Telefonnummer. Ohne die zweite
+  Prüfung fällt genau diese Klasse durch das Netz (Audit S1-R).
+
+  Der Filter hängt damit an der **Herkunft** eines Treffers, nicht an seinem
+  Typ und nicht an einer bloßen Überlappung. Drei einfachere Varianten haben
+  in Audits jeweils echte Funde mit ausgeblendet (F10, S1, S1-R) — wer hier
+  vereinfacht, öffnet das Netz wieder. Regressionstests:
+  `test/test_custom_rules.py`, Abschnitte 17, 20 und 24.
+- **Bewusst in Kauf genommener Fehlalarm.** Eine eigene Regex-Regel, deren
+  Muster sowohl mit als auch ohne Trenner passt, blockt jetzt, wenn ein
+  Platzhalter mitten hineinfällt. Das ist gewollt: von außen ist dieser Fall
+  nicht von der Konstruktion zu unterscheiden, mit der man die Maskierung
+  umgeht. Ein sichtbarer Fehlalarm ist billiger als ein stilles Leck.
+  Deny-Listen sind davon prinzipiell nicht betroffen. Gemessen am
+  deutschen PII-Testkorpus (45 Fälle, echter Analyzer): **0 Fehlalarme**.
 - **Kosten.** Ein zusätzlicher Analyzer-Call pro `arguments`-String, plus
-  je einen pro Segment für die wenigen Treffer, die tatsächlich über eine
-  Ersetzung laufen. Im Normalbetrieb entsteht keiner davon.
+  je einen pro Prüfstück für die wenigen Treffer, die tatsächlich über eine
+  Ersetzung laufen. Am Testkorpus gemessen: 1,00 Calls pro Fall, es entsteht
+  im Normalbetrieb also keiner davon. Die Nachprüfungen sind über den
+  gesamten Durchlauf gedeckelt; ist der Deckel erschöpft, wird blockiert
+  statt weitergeprüft (fail-closed).
 - **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
   vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
 
