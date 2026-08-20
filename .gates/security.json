@@ -1,7 +1,7 @@
 {
   "gate": "security",
-  "verdict": "pass",
-  "commit": "6380cc38e66e60f2375085f68074574d0a86bf65",
-  "branch": "feature/DATENSCHLE-57-content-part-allowlist",
-  "timestamp": "2026-08-14T19:19:20Z"
+  "verdict": "fail",
+  "commit": "103fe84eec6015e0ae1587ff1115a7c50755c50b",
+  "branch": "sec83-verdict-feature/DATENSCHLE-83-cve-flaeche",
+  "timestamp": "2026-08-20T18:43:39Z"
 }
