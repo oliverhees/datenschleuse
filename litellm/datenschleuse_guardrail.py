@@ -774,24 +774,80 @@ _DEPLOYMENT_PATH = contextvars.ContextVar(
 # gedacht hat; der Neubau deckt alles ab, was im Payload steht -- auch das,
 # was ein kuenftiger Commit hinzufuegt, mutabel oder nicht.
 #
-# ROBUST GEGEN VERSIONSDRIFT: der Neubau benutzt unsere eigene Kopie von
-# litellms Ausschlussmenge. Weicht eine kuenftige litellm-Version davon ab,
-# ist der Fehler in BEIDE Richtungen harmlos -- wir nehmen einen Key zu viel
-# auf (er ist dann maskiert oder registriert, also geprueft) oder einen zu
-# wenig (der Konsument sieht weniger, nie mehr). Ein stilles Leck kann daraus
-# nicht entstehen.
+# VERSIONSDRIFT -- die Korrektur einer zurueckgezogenen Behauptung.
+#
+# Hier stand: der Fehler sei "in BEIDE Richtungen harmlos -- wir nehmen einen
+# Key zu viel auf (er ist dann maskiert oder registriert, also geprueft)".
+# Das ist FALSCH und wird zurueckgezogen (Security-F1b). "Registriert" heisst
+# nicht "unschaedlich gemacht": ``api_key`` ist VALIDIERT, nicht maskiert --
+# er muss den Provider byte-identisch erreichen. Ein Token, das die
+# Formpruefung besteht, ist immer noch ein Token im Log. Die Annahme hat
+# genau das Leck getragen, das sie fuer unmoeglich erklaerte.
+#
+# Richtig ist die ASYMMETRIE, und nur sie:
+#   * ein Key zu WENIG in unserer Menge (litellm schliesst ihn aus, wir
+#     nicht) traegt ihn beim Neubau ins Log -- das ist das Leck;
+#   * ein Key zu VIEL (wir schliessen ihn aus, litellm nicht) zeigt den
+#     Konsumenten weniger als frueher -- nie mehr.
+# Deshalb ist der Vertrag eine OBERMENGE, keine Gleichheit, und deshalb wird
+# er GEMESSEN statt angenommen: siehe LOGGING_SNAPSHOT_EXCLUDE.
 PAYLOAD_FIELDS_RESYNCED = frozenset({
     "proxy_server_request",
 })
 
-#: Exakt litellms eigene Ausschlussmenge beim Bau des Schnappschusses
-#: (1.97.0, proxy/litellm_pre_call_utils.py:1690). Bewusst als eigene
-#: Konstante statt Import: die Guardrail muss auch ohne installiertes litellm
+#: Zugangs-Geheimnisse, die NIE in den Logging-Schnappschuss gehoeren.
+#:
+#: Sie stehen hier aus einem SACHGRUND, nicht weil irgendeine
+#: litellm-Version sie ausschliesst: ein Zugangs-Token hat in einem
+#: Log nichts zu suchen (Gesetz 5,
+#: ``docs/foundation/security-baseline.md``: keine Tokens in Logs). Diese
+#: Begruendung ueberlebt jedes Upgrade -- eine abgeschriebene Fremdkonstante
+#: tut das nicht.
+#:
+#: WARUM DAS NOETIG IST, obwohl ``api_key`` im Payload-Register steht: er ist
+#: dort VALIDIERT, nicht maskiert. Der Formpruefer sagt "sieht aus wie ein
+#: Token" und laesst ihn unveraendert weiterlaufen -- er MUSS den Provider
+#: byte-identisch erreichen, sonst ist Pass-Through-Auth kaputt. Ein Token,
+#: das die Formpruefung besteht, ist immer noch ein Token im Log.
+#:
+#: GEMESSEN (1.94.0 und 1.96.2, ``proxy/litellm_pre_call_utils.py``):
+#: ``data["api_key"]`` wird aus dem ``x-api-key``-Header gesetzt (Z. 1422)
+#: und der Schnappschuss DANACH gebaut (Z. 1590) -- auf diesen Versionen
+#: steht das Token also bereits in litellms eigenem Schnappschuss. Wir sind
+#: hier bewusst STRENGER als litellm.
+SNAPSHOT_CREDENTIAL_KEYS = frozenset({
+    "api_key",
+    "headers",
+    "extra_headers",
+    "provider_specific_header",
+})
+
+#: Was beim Neubau des Logging-Schnappschusses NICHT uebernommen wird.
+#:
+#: Zwei Gruppen mit zwei verschiedenen Begruendungen -- bewusst getrennt,
+#: weil sie unterschiedlich altern:
+#:
+#:   * STRUKTURELL (``secret_fields``, ``proxy_server_request``): litellms
+#:     eigene Ausschluesse. ``proxy_server_request`` wuerde den
+#:     Schnappschuss auf sich selbst zeigen lassen (Endlos-Traversierung),
+#:     ``secret_fields`` ist der Geheimnis-Container.
+#:   * CREDENTIALS (``SNAPSHOT_CREDENTIAL_KEYS``): siehe dort.
+#:
+#: Eigene Konstante statt Import: ``_body_snapshot_exclude`` ist bei litellm
+#: eine LOKALE Variable in ``add_litellm_data_to_request`` -- importierbar
+#: ist sie nicht. Die Guardrail muss ausserdem ohne installiertes litellm
 #: importierbar und testbar bleiben.
+#:
+#: DER VERTRAG, und wie er GEPRUEFT wird: diese Menge muss eine OBERMENGE der
+#: litellm-eigenen sein. ``test/test_snapshot_exclude_contract.py`` liest
+#: litellms Zuweisung zur Laufzeit aus dem Quelltext (ast) und prueft genau
+#: das -- statt die Menge ein zweites Mal abzuschreiben. Zwei Kopien
+#: derselben Vermutung sind keine Bestaetigung; das war der Fehler der
+#: ersten Runde.
 LOGGING_SNAPSHOT_EXCLUDE = frozenset({
     "secret_fields",
     "proxy_server_request",
-})
+}) | SNAPSHOT_CREDENTIAL_KEYS
 
 
 #: GEMESSENE Ausgangskanaele jenseits des Bodys (litellm 1.97.0). Jeder

@@ -102,12 +102,26 @@ def _guard(**kwargs):
     return guard
 
 
-#: Exakt litellms eigene Ausschlussmenge an der Fundstelle
-#: (``litellm_pre_call_utils.py:1690``). Bewusst hier dupliziert statt
-#: importiert: der Test soll auch OHNE installiertes litellm laufen, und er
-#: soll gegen die GEMESSENE Form von 1.97.0 pruefen, nicht gegen das, was eine
-#: kuenftige Version daraus macht.
-_LITELLM_SNAPSHOT_EXCLUDE = ("secret_fields", "proxy_server_request")
+#: Die Ausschlussmenge, mit der litellm den Schnappschuss VOR unserem Hook
+#: baut -- fuer den Fixture-Aufbau.
+#:
+#: Hier stand fruehr eine hartcodierte Kopie mit dem Kommentar "exakt
+#: litellms eigene Ausschlussmenge". Das war derselbe Baufehler wie im Code
+#: (Security-F1b): der Test duplizierte die Annahme, statt sie zu pruefen --
+#: und konnte eine Abweichung deshalb prinzipiell nicht finden. Zwei Kopien
+#: derselben Vermutung sehen aus wie eine Bestaetigung.
+#:
+#: Jetzt wird GEMESSEN: die Zuweisung wird aus dem Quelltext des
+#: installierten litellm gelesen. Ohne installiertes litellm faellt der
+#: Fixture-Aufbau auf die kleinste bekannte Form zurueck -- das ist fuer
+#: DIESE Datei unkritisch, weil sie den Klartext-Gehalt des Schnappschusses
+#: misst und nicht den Vertrag. Der Vertrag selbst hat einen eigenen,
+#: messenden Test: ``test_snapshot_exclude_contract.py``.
+from test_snapshot_exclude_contract import (  # noqa: E402
+    _litellm_snapshot_exclude_or_default,
+)
+
+_LITELLM_SNAPSHOT_EXCLUDE = _litellm_snapshot_exclude_or_default()
 
 
 def as_proxy_would(body):
