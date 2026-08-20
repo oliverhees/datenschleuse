@@ -61,6 +61,48 @@ HOOKS = _hooks_dir()
 TRACK = os.path.join(HOOKS, "track.sh") if HOOKS else ""
 STOP_GATE = os.path.join(HOOKS, "stop-gate.sh") if HOOKS else ""
 
+HOOKS_VORHANDEN = bool(HOOKS and os.path.exists(STOP_GATE) and os.path.exists(TRACK))
+IN_CI = os.environ.get("CI", "").strip().lower() not in ("", "0", "false", "no")
+
+
+def hook_verfuegbarkeit(vorhanden, in_ci):
+    """laufen | ueberspringen | fehlschlagen
+
+    Die Hooks liegen ausserhalb von Git (.claude/ steht in .gitignore).
+    Lokal ist ein Ueberspringen ehrlich: wer die Hooks nicht installiert
+    hat, kann sie nicht pruefen. In CI ist es das Gegenteil von ehrlich --
+    dort faellt die Suite IMMER aus und meldete trotzdem gruen. Ein Test,
+    der gruen meldet, ohne etwas zu pruefen, ist schlimmer als kein Test:
+    er erzeugt Vertrauen ohne Deckung. Genau daran ist schon DATENSCHLE-62
+    haengengeblieben.
+
+    Deshalb: in CI ohne Hooks wird laut gescheitert, nicht uebersprungen.
+    """
+    if vorhanden:
+        return "laufen"
+    return "fehlschlagen" if in_ci else "ueberspringen"
+
+
+class HookVerfuegbarkeitTest(unittest.TestCase):
+    """Laeuft IMMER -- auch dort, wo die Hooks fehlen.
+
+    Dieser Fall ist der Waechter ueber dem Waechter: Er haelt fest, dass die
+    Suite sich in CI nicht selbst stumm schalten darf.
+    """
+
+    def test_mit_hooks_wird_gelaufen(self):
+        self.assertEqual(hook_verfuegbarkeit(True, False), "laufen")
+        self.assertEqual(hook_verfuegbarkeit(True, True), "laufen")
+
+    def test_ohne_hooks_lokal_wird_uebersprungen(self):
+        self.assertEqual(hook_verfuegbarkeit(False, False), "ueberspringen")
+
+    def test_ohne_hooks_in_ci_wird_laut_gescheitert(self):
+        self.assertEqual(
+            hook_verfuegbarkeit(False, True), "fehlschlagen",
+            "In CI darf die Suite sich nicht stumm ueberspringen und gruen "
+            "melden -- dann prueft sie nichts und niemand merkt es.")
+
 # Wortlaut eines echten roten unittest-Laufs aus dieser Codebase. Durch
 # "| tail -40" endet die Pipeline mit Exit 0 — der Kommandostring allein
 # beweist also nichts, das Fazit in der Ausgabe schon (DATENSCHLE-55).
@@ -136,30 +178,50 @@ class Schmiede:
             capture_output=True, text=True,
         )
 
-    def code_aenderung(self, wt):
-        """Eine Quellcode-Aenderung in genau diesem Worktree."""
+    def code_aenderung(self, wt, aus=None):
+        """Eine Quellcode-Aenderung in diesem Worktree.
+
+        `aus` erlaubt, den Hook aus einem Unterverzeichnis zu fahren -- so
+        arbeitet eine Session, die per cd tiefer gewechselt ist.
+        """
+        cwd = aus or wt
         self._hook(self.track, {
-            "tool_name": "Edit", "hook_event_name": "PostToolUse", "cwd": wt,
+            "tool_name": "Edit", "hook_event_name": "PostToolUse", "cwd": cwd,
             "tool_input": {"file_path": os.path.join(wt, "litellm", "guardrail.py")},
             "tool_response": {},
-        }, wt)
+        }, cwd)
         time.sleep(0.05)   # damit die Zeitpruefung im Gate eindeutig bleibt
 
-    def testlauf(self, wt, cmd, ausgabe):
-        """Ein Testlauf in genau diesem Worktree."""
+    def testlauf(self, wt, cmd, ausgabe, aus=None):
+        """Ein Testlauf in diesem Worktree."""
+        cwd = aus or wt
         self._hook(self.track, {
-            "tool_name": "Bash", "hook_event_name": "PostToolUse", "cwd": wt,
+            "tool_name": "Bash", "hook_event_name": "PostToolUse", "cwd": cwd,
             "tool_input": {"command": cmd},
             "tool_response": {"stdout": ausgabe, "stderr": "", "interrupted": False,
                               "isImage": False, "noOutputExpected": False},
-        }, wt)
+        }, cwd)
         time.sleep(0.05)
 
-    def roter_lauf(self, wt):
-        self.testlauf(wt, ROTER_LAUF_CMD, ROTER_LAUF_OUT)
+    def roter_lauf(self, wt, aus=None):
+        self.testlauf(wt, ROTER_LAUF_CMD, ROTER_LAUF_OUT, aus=aus)
 
-    def gruener_lauf(self, wt):
-        self.testlauf(wt, GRUENER_LAUF_CMD, GRUENER_LAUF_OUT)
+    def gruener_lauf(self, wt, aus=None):
+        self.testlauf(wt, GRUENER_LAUF_CMD, GRUENER_LAUF_OUT, aus=aus)
+
+    def marker_datei(self, wt, name=".last_test_run"):
+        """Fragt den Hook-Helfer selbst nach dem Pfad.
+
+        Den Schluessel hier nachzubauen waere ein Eigentor: Er koennte sich
+        aendern, der Nachbau bliebe gruen und pruefte ins Leere.
+        """
+        scope = os.path.join(os.path.dirname(self.track), "scope.sh")
+        pfad = subprocess.run(
+            ["bash", "-c", '. "$1"; marker_dir "$2" "$3"', "_", scope,
+             os.path.join(self.projekt, ".claude"), wt],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return os.path.join(pfad, name)
 
     def stop(self, wt, aktiv=False, mit_cwd=True):
         """Die Session in diesem Worktree will enden. 0 = darf, 2 = blockiert."""
@@ -170,12 +232,17 @@ class Schmiede:
         return proc.returncode, proc.stdout + proc.stderr
 
 
-@unittest.skipUnless(
-    HOOKS and os.path.exists(STOP_GATE) and os.path.exists(TRACK),
-    ".claude/hooks/ nicht vorhanden (per .gitignore nicht im Repo)",
-)
 class StopGateWorktreeTest(unittest.TestCase):
     def setUp(self):
+        lage = hook_verfuegbarkeit(HOOKS_VORHANDEN, IN_CI)
+        if lage == "fehlschlagen":
+            self.fail(
+                ".claude/hooks/ fehlt in CI — diese Suite prueft damit NICHTS. "
+                "Sie darf hier nicht gruen melden. Ursache: .claude/ steht in "
+                "der .gitignore, die Hooks sind nicht versioniert. Abhilfe: "
+                "Hooks an einen getrackten Ort legen.")
+        if lage == "ueberspringen":
+            self.skipTest(".claude/hooks/ nicht vorhanden (nicht im Repo)")
         self.tmp = tempfile.mkdtemp(prefix="stopgate-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.s = Schmiede(self.tmp)
@@ -360,6 +427,48 @@ class StopGateWorktreeTest(unittest.TestCase):
             rc, 2,
             "Der aufgebrauchte Zaehler laesst die Lane dauerhaft offen — "
             "roter Lauf, und das Gate winkt sofort durch:\n" + out)
+
+    def test_schluessel_ist_die_worktree_wurzel_nicht_das_cwd(self):
+        """Die zentrale Design-Entscheidung dieses Tickets.
+
+        Eine Session, die per cd in ein Unterverzeichnis gewechselt ist,
+        gehoert weiter zu ihrer Lane. Waere der Schluessel das rohe cwd,
+        zaehlte jedes Unterverzeichnis als eigene Lane -- ein roter Lauf
+        waere durch ein blosses `cd` entwertet, und zwar lautlos.
+
+        Ohne diesen Fall koennte jemand marker_dir auf das cwd vereinfachen
+        und alle uebrigen Tests blieben gruen.
+        """
+        unter = os.path.join(self.b, "litellm")
+        self.s.code_aenderung(self.b, aus=unter)
+        self.s.roter_lauf(self.b, aus=unter)
+
+        rc, out = self.s.stop(self.b)
+        self.assertEqual(
+            rc, 2,
+            "Ein roter Lauf aus einem Unterverzeichnis zaehlt nicht mehr zur "
+            "eigenen Lane — ein `cd` entwertet damit den Testnachweis:\n" + out)
+
+    def test_beweisstueck_nennt_den_commit_des_eigenen_worktrees(self):
+        """Der Marker soll belegen, WORAUF der Lauf stattfand.
+
+        Notiert wird stattdessen der HEAD der Hauptauscheckung. In einem
+        Worktree, der auf einem anderen Stand sitzt, nennt die Blockmeldung
+        damit einen Commit, den der Testlauf nie beruehrt hat.
+        """
+        git(self.b, "commit", "-q", "--allow-empty", "-m", "[DATENSCHLE-00] eigener Stand")
+        eigener = git(self.b, "rev-parse", "HEAD")
+        haupt = git(self.s.projekt, "rev-parse", "HEAD")
+        self.assertNotEqual(eigener, haupt, "Testaufbau: Staende muessen abweichen")
+
+        self.s.gruener_lauf(self.b)
+
+        with open(self.s.marker_datei(self.b), encoding="utf-8") as fh:
+            notiert = json.load(fh)["sha"]
+        self.assertEqual(
+            notiert, eigener,
+            "Das Beweisstueck nennt den HEAD der Hauptauscheckung statt den "
+            "des Worktrees, in dem der Lauf stattfand.")
 
     # --- Der stille Fail-Open ---------------------------------------------
 
