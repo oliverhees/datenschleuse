@@ -149,11 +149,12 @@ class Schmiede:
     def gruener_lauf(self, wt):
         self.testlauf(wt, GRUENER_LAUF_CMD, GRUENER_LAUF_OUT)
 
-    def stop(self, wt, aktiv=False):
+    def stop(self, wt, aktiv=False, mit_cwd=True):
         """Die Session in diesem Worktree will enden. 0 = darf, 2 = blockiert."""
-        proc = self._hook(STOP_GATE, {
-            "hook_event_name": "Stop", "cwd": wt, "stop_hook_active": aktiv,
-        }, wt)
+        payload = {"hook_event_name": "Stop", "stop_hook_active": aktiv}
+        if mit_cwd:
+            payload["cwd"] = wt
+        proc = self._hook(STOP_GATE, payload, wt)
         return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -254,6 +255,31 @@ class StopGateWorktreeTest(unittest.TestCase):
 
         rc, out = self.s.stop(self.b)
         self.assertEqual(rc, 0, "Gruener eigener Lauf muss durchgehen:\n" + out)
+
+    # --- Robustheit der Zuordnung -----------------------------------------
+
+    def test_ohne_cwd_im_payload_entscheidet_das_arbeitsverzeichnis(self):
+        """Die Zuordnung darf nicht an einem einzelnen Payload-Feld haengen.
+
+        Am echten PostToolUse-Payload ist `cwd` nachweislich vorhanden. Faellt
+        es dennoch weg (aeltere CLI, anderes Event), muss das Prozess-Arbeits-
+        verzeichnis dasselbe Ergebnis liefern — sonst kippt die Zuordnung
+        stillschweigend zurueck auf 'alle teilen sich einen Marker'.
+        """
+        self.s.code_aenderung(self.b)
+        self.s.gruener_lauf(self.b)
+        self.s.code_aenderung(self.a)
+        self.s.roter_lauf(self.a)
+
+        rc, out = self.s.stop(self.b, mit_cwd=False)
+        self.assertEqual(rc, 0, "Ohne cwd faellt die Zuordnung auf den "
+                                "gemeinsamen Marker zurueck:\n" + out)
+
+        # Gegenprobe: ohne cwd bleibt der EIGENE rote Lauf trotzdem ein Block.
+        self.s.roter_lauf(self.b)
+        rc, out = self.s.stop(self.b, mit_cwd=False)
+        self.assertEqual(rc, 2, "Ohne cwd wird der eigene rote Lauf "
+                                "uebersehen:\n" + out)
 
     # --- Der stille Fail-Open ---------------------------------------------
 
