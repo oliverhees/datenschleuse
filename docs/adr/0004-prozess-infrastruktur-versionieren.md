@@ -44,8 +44,26 @@ Das ist keine Ordnungsfrage. Drei belegte Befunde haben genau diese Wurzel.
 ### Befund 1 — ein Test, der Vertrauen erzeugt und nichts prüft
 
 Die Stop-Gate-Testsuite meldete in CI grün, ohne irgendetwas zu prüfen: Die
-Hooks, gegen die sie testet, existieren im CI-Checkout nicht. Gemessen in
-einem frischen Klon von `main` mit `CI=true`:
+Hooks, gegen die sie testet, existieren im CI-Checkout nicht.
+
+> **Woher die Zahlen stammen — bitte zuerst lesen.** Die Suite ist
+> `test/test_stop_gate_worktree.py` aus [DATENSCHLE-79]. Sie liegt auf
+> `feature/DATENSCHLE-79-stop-gate-worktree` und ist **noch nicht
+> gemerged**. Aus `main` allein sind die folgenden Zahlen deshalb *nicht*
+> reproduzierbar — das ist keine Schlamperei, sondern die Reihenfolge:
+> Diese Entscheidung schafft die Voraussetzung dafür, dass jene Suite
+> überhaupt etwas prüfen kann. Wer nachmessen will, holt die Datei
+> ausdrücklich dazu:
+>
+> ```
+> git show origin/feature/DATENSCHLE-79-stop-gate-worktree:test/test_stop_gate_worktree.py \
+>   > <klon>/test/test_stop_gate_worktree.py
+> cd <klon>
+> CI=true PYTHONPATH=litellm python3 -m unittest discover -s ./test \
+>   -p "test_stop_gate_worktree.py"
+> ```
+
+So gemessen in einem frischen Klon von `main`:
 
 ```
 Ran 18 tests in 0.001s
@@ -53,10 +71,11 @@ Ran 18 tests in 0.001s
 OK (skipped=14)
 ```
 
-Vier Fälle prüfen die Entscheidungsfunktion selbst, **vierzehn prüfen nichts**.
-Der Job ist grün. Ein Test ohne Deckung ist schlimmer als kein Test: Er
-erzeugt Vertrauen, für das keine Prüfung stattgefunden hat. Am selben Muster
-ist bereits DATENSCHLE-62 hängengeblieben.
+Vier Fälle (`HookVerfuegbarkeitTest`) prüfen die Entscheidungsfunktion
+selbst und laufen immer; **vierzehn (`StopGateWorktreeTest`) prüfen
+nichts**. Der Job ist grün. Ein Test ohne Deckung ist schlimmer als kein
+Test: Er erzeugt Vertrauen, für das keine Prüfung stattgefunden hat. Am
+selben Muster ist bereits DATENSCHLE-62 hängengeblieben.
 
 ### Befund 2 — Hooks ohne atomaren Stand
 
@@ -106,7 +125,8 @@ Ausgeschlossen bleiben damit:
 
 `.claude/scopes/` war der einzige Grenzfall (108 K, Name mehrdeutig). Die
 Prüfung des Inhalts entscheidet ihn eindeutig: Jedes Unterverzeichnis ist
-nach einer Sitzungs-ID benannt und enthält ausschließlich `.last_test_run`
+nach Worktree-Basename plus Prüfsumme des vollen Pfades benannt
+(`scope.sh:45-52`) und enthält ausschließlich `.last_test_run`
 und `.last_code_edit`. Diese Marker führen das vollständige Kommando des
 letzten Testlaufs mit — inklusive Pfaden und Heredoc-Inhalten aus fremden
 Sitzungen. Reiner Laufzeitzustand, und obendrein nichts, was in ein
@@ -153,7 +173,14 @@ schalten.
 
   Die Laufzeit ist dabei der ehrlichste Wert: 0,001 s ist die Zeit, die
   ein Überspringen kostet. Die vier Sekunden danach sind echte
-  Subprozesse gegen echte `git worktree`-Auscheckungen.
+  Subprozesse gegen echte `git worktree`-Auscheckungen. Beides mit dem
+  Kommando aus Befund 1 gemessen, die Suite jeweils gleich dazugeholt.
+
+  **Geschlossen heißt hier: die Voraussetzung steht.** Der CI-Job führt
+  diese Suite noch nicht aus — `test_stop_gate_worktree.py` kommt erst
+  mit [DATENSCHLE-79] ins Repo, und `ci.yml` ruft `test-hooks.sh` nicht
+  auf (siehe *Offen*). Was dieser Commit beseitigt, ist der Grund, aus
+  dem die Prüfung bisher unmöglich war — nicht mehr und nicht weniger.
 - **Die Bash-Testsuite kann in CI laufen.** `.claude/hooks/test-hooks.sh`
   (26 Fälle) braucht nur `bash`, `jq` und `git` — alles auf
   `ubuntu-latest` vorhanden. Verifiziert im frischen Klon, ohne gesetztes
@@ -178,8 +205,14 @@ Zwei Nebenwirkungen, die daraus folgen:
 - **Ein Henne-Ei-Fall.** Ein Hook, der die Gates blockiert, lässt sich nicht
   mehr trivial umgehen — sein Fix muss durch dieselben Gates. Beim Debuggen
   eines kaputten Gates ist das unangenehm. Der Ausweg ist keine Ausnahme im
-  Prozess, sondern die Testsuite: `test-hooks.sh` fährt die echten Skripte
-  in Wegwerf-Sandboxes und beweist die Wirkung, bevor der Hook scharf wird.
+  Prozess, sondern die Testsuite: `test-hooks.sh` fährt `track.sh` und
+  `stop-gate.sh` als echte Subprozesse in Wegwerf-Sandboxes und beweist
+  ihre Wirkung, bevor der Hook scharf wird.
+  **Geltungsbereich, damit dieser Satz nicht mehr verspricht als er hält:**
+  Genau diese zwei Skripte deckt die Suite ab. `guard.sh`, `verdict.sh`,
+  `worklog.sh` und `session-brief.sh` haben **keinen einzigen Test** —
+  ausgerechnet der Guard nicht, der Gesetz 4 und 5 durchsetzt. Für die ist
+  der Henne-Ei-Fall real und der Ausweg fehlt noch. Eigenes Item.
 - **Getrackte Datei ≠ aktive Datei.** Claude Code liest die Hooks aus der
   Hauptauscheckung. Ein Merge auf `main` ändert nicht automatisch, was in
   einer laufenden Sitzung wirkt — die Hauptauscheckung muss den Stand ziehen.
@@ -210,7 +243,85 @@ Die naheliegende Sorge dagegen wurde geprüft und hat sich nicht bestätigt:
 Die Suite enthält zeitabhängige Fälle (`sleep 0.01` zwischen
 Marker-Zeitstempeln, Auswertung über `-nt`), die auf einem langsamen oder
 überbuchten Runner kippen könnten. Zehn aufeinanderfolgende Läufe im
-frischen Klon: **10 von 10 grün, kein einziger roter Lauf.** Das ist ein
+frischen Klon:
+
+```
+for i in $(seq 1 10); do
+  env -u CLAUDE_PROJECT_DIR CI=true ./.claude/hooks/test-hooks.sh >/dev/null 2>&1
+  echo "Lauf $i: exit $?"
+done
+```
+
+Ergebnis: **10 von 10 grün, kein einziger roter Lauf.** Das ist ein
 lokaler Befund, keine Runner-Messung — die Verdrahtung bleibt trotzdem
 ein eigenes Item, damit ein neu eingeführter Pflicht-Check bewusst
 beschlossen wird und nicht beiläufig entsteht.
+
+### Was das externe Review aufgedeckt hat und hier NICHT gelöst wird
+
+Das Review zu diesem Commit (`glm-5.2` + `kimi-k3` über PAL, plus eigener
+Durchgang) hat Befunde am Hook-Code selbst gefunden. Dieser Commit
+**veröffentlicht** diesen Code, er ändert ihn nicht — die Befunde gehören
+deshalb in eigene Items und werden hier nur festgehalten, damit sie nicht
+verlorengehen (Gesetz 7). In Schwere-Reihenfolge:
+
+1. **Freigabeentscheidung vor der Veröffentlichung (🔴 Oliver).** Mit
+   `settings.json` im Repo führt jeder Klon beim Öffnen in Claude Code
+   Shell-Skripte aus dem Repo aus — bei SessionStart und um jeden
+   Tool-Call. Heute harmlos; das Muster ist der Punkt: Jeder künftige PR
+   auf `.claude/hooks/**` wäre Codeausführung auf jedem Maintainer-Rechner,
+   und `guard.sh` sieht dabei jeden Kommandostring. Vor dem Public-Gang
+   braucht es mindestens CODEOWNERS auf `.claude/**` und `.github/**` plus
+   einen Absatz in `SECURITY.md`. Alternativen: `settings.json.example`
+   mit Opt-in, oder eine Env-Schranke als erste Hook-Zeile.
+   `settings.json` mitzuliefern bleibt funktional richtig — sonst hätte
+   ein Klon Skripte ohne Auslöser.
+2. **`client-liaison.md` beschreibt das Beschönigen von Security-Befunden**
+   („nicht *5 Critical Findings*, sondern *Härtungsbedarf*"). In einem
+   öffentlichen Repo für ein DSGVO-/PII-Produkt ist das die denkbar
+   ungünstigste Selbstbeschreibung. Rollendefinitionen zu ändern ist eine
+   Prozessänderung nach Gesetz 13 — entscheidet Oliver, nicht der
+   versionierende Commit.
+3. **Ohne `jq` fallen `guard.sh`, `track.sh` und `stop-gate.sh` lautlos
+   OFFEN** (im Review mit leerem PATH nachgestellt: ein Force-Push auf
+   `main` wird durchgelassen). `jq` ist nirgends als Voraussetzung
+   dokumentiert. Fix: Präflight `command -v jq || exit 2` plus eine Zeile
+   in der Einrichtungsdoku. Dieselbe Fehlerklasse wie Befund 1, eine
+   Ebene tiefer.
+4. **`track.sh` lässt sich grünfärben.** `tail -1` über die
+   Summary-Zeilen heißt „letzte passende Zeile gewinnt": `pytest; echo OK`
+   nach einem echten `1 failed` ergibt `pass`. Auch
+   `unittest -p "zzz_*.py"` (`Ran 0 tests` + `OK`) ergibt `pass` — das
+   Fail-Signal `^Ran 0 tests` ist toter Code, weil unittest danach immer
+   `OK` druckt. Vorschlag: bei mehreren Treffern gewinnt das strengste
+   Ergebnis, nicht das letzte.
+5. **Bash-Änderungen umgehen das Stop-Gate vollständig.** `track.sh` setzt
+   `.last_code_edit` nur bei `Edit|Write|MultiEdit` und acht Endungen.
+   `sed -i`, Heredoc, `git apply` setzen keinen Marker — `.sh`, `.yml`,
+   `.sql`, Dockerfiles und damit die Hooks und `ci.yml` selbst sind vom
+   Testgate ausgenommen.
+6. **`MAX_BLOCKS=10` ist beliebig wiederholbar**, weil der Zähler beim
+   Auslösen gelöscht wird; die Warnung erreicht im `/goal`-Modus keinen
+   Menschen. `stop_hook_active` wird gelesen und nie verwendet.
+7. **`guard.sh` prüft den rohen Kommandostring, nicht die Absicht.** Er
+   blockte im Review zweimal an bloßen Erwähnungen verbotener Befehle im
+   Argumenttext — dieselbe Fehlerklasse, die `track.sh` für Testkommandos
+   bereits behoben hat. Ein dritter Fall trat beim Schreiben genau dieses
+   Abschnitts auf: Der Versuch, den Befund über ein Bash-Heredoc zu
+   dokumentieren, wurde geblockt, weil der beschriebene Schalter im
+   Fließtext vorkam. Umgekehrt ist der Guard umgehbar über
+   Quote-Splitting, die Kurzform desselben Schalters, `core.hooksPath`
+   oder Secret-Zugriff per `python3`/`cp`. Er ist eine Gedächtnisstütze,
+   keine Sicherheitsgrenze — und ab jetzt sind seine Regeln öffentlich
+   lesbar.
+8. **Die Gate-Skripte haben null CI-Deckung** (kein `test-hooks.sh`-Aufruf,
+   kein Shellcheck). Der sicherheitskritischste Code im Repo ist der
+   ungeprüfteste.
+9. **`external-reviewer.md` nennt interne Routing-Details** (Provider,
+   Modellnamen, Logpfad). Kein Secret, aber ohne Nutzen für Außenstehende.
+
+Ebenfalls notiert, kleiner: Der Branchname dieses Commits trägt keine
+Item-ID, weshalb `worklog.sh` für diese Lane `item: "n/a"` protokolliert —
+die Datenquelle des Controllers läuft hier leer. Und `verdict.sh` committet
+mit `[gate] …` statt `[ITEM-ID] …`, verletzt also die Konvention, die
+`guard.sh` allen anderen aufzwingt.

@@ -6,30 +6,31 @@ __pycache__/
 # Frueher stand hier pauschal `.claude/`. Damit lagen ALLE Prozess-Gates
 # dieses Projekts ausserhalb von Git: Stop-Gate, Guard, Verdict-Skript,
 # Rollendefinitionen, Slash-Befehle. Die Verfassung schrieb Prozesse vor,
-# deren Ausfuehrung nicht mitgeliefert wurde -- mit drei Folgen, die als
-# Befunde belegt sind (Begruendung: docs/adr/0004-prozess-infrastruktur-
-# versionieren.md):
-#   1. Die Stop-Gate-Tests meldeten in CI `OK (skipped=12)` -- gruen, ohne
-#      etwas zu pruefen, weil die Hooks dort schlicht fehlten.
-#   2. Hooks liessen sich mitten in einer Sitzung austauschen; Schreiber
-#      und Leser sahen dann verschiedene Staende.
-#   3. Der `external-reviewer`, laut Verfassung Pflicht vor jedem Commit,
-#      existierte nur auf einem Rechner.
+# deren Ausfuehrung nicht mitgeliefert wurde. Begruendung, Befunde und
+# Messwerte: docs/adr/0004-prozess-infrastruktur-versionieren.md
 #
-# Faustregel fuer neue Eintraege hier: Was den PROZESS definiert, kommt ins
-# Repo. Was PRO LAUF entsteht, bleibt draussen.
+# Bewusst als ALLOW-LIST formuliert, nicht als Deny-List. Die Fehler-
+# richtung ist der Punkt: Bei einer Deny-List landet die naechste, noch
+# unbekannte Laufzeitdatei automatisch IM Repo. Hier landet sie automatisch
+# draussen, und wer eine neue Prozessdatei aufnehmen will, muss das
+# ausdruecklich hinschreiben.
 #
-# Achtung beim Erweitern: `verdict.sh` bricht ab, sobald `git status`
-# irgendetwas meldet. Ein neuer, nicht ignorierter Laufzeitpfad legt damit
-# alle Gate-Verdicts still. Neue Laufzeitdatei im .claude/ -> Zeile hier.
-.claude/worktrees/
-.claude/scopes/
-.claude/hooklog.jsonl
-.claude/worklog.jsonl
-.claude/.last_code_edit
-.claude/.last_test_run
-.claude/.stop_block_count
-.claude/settings.local.json
+# Warum das keine Kosmetik ist: `verdict.sh` bricht ab, sobald
+# `git status --porcelain` etwas anderes als `?? .gates/` meldet. EINE
+# nicht ignorierte Laufzeitdatei legt damit alle Gate-Verdicts im Projekt
+# still -- lautlos, weil niemand den Zusammenhang vermutet.
+.claude/*
+!.claude/agents/
+!.claude/commands/
+!.claude/hooks/
+!.claude/settings.json
+# Fallback-Marker: Faellt scope.sh aus, schreiben track.sh und stop-gate.sh
+# direkt neben das Arbeitsverzeichnis statt nach .claude/scopes/. Ohne
+# CLAUDE_PROJECT_DIR kann das jedes Unterverzeichnis treffen, nicht nur die
+# Repo-Wurzel -- deshalb pfadunabhaengig.
+**/.last_code_edit
+**/.last_test_run
+**/.stop_block_count
 docker-compose.override.yml
 local-cockpit-test/
 test/e2e/artifacts/
