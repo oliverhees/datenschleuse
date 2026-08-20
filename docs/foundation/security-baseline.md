@@ -16,7 +16,77 @@
 - Transport: TLS überall, Certificate Pinning für kritische Endpunkte prüfen.
 - Input: serverseitige Validierung ist Pflicht, Client-Validierung ist Komfort.
 - Logging: keine PII, keine Tokens, keine Passwörter in Logs.
+  Gilt ausdrücklich auch für den **Logging-Schnappschuss**
+  `proxy_server_request.body`, den LiteLLM vor dem Guardrail baut und an
+  `standard_logging_payload`, `spend_tracking_utils` und alle registrierten
+  Callbacks weiterreicht — siehe Abschnitt Logging-Kanal.
 - Dependencies: Lockfile, CVE-Scan in CI (gitleaks + npm audit / semgrep).
+
+## Logging-Kanal (bindend, DATENSCHLE-69)
+
+Erreicht den Provider nicht heißt **nicht** ist harmlos. `metadata` etwa geht
+nie ans Modell, aber an jeden Logging-Callback. Der Logging-Weg ist damit ein
+eigener Ausgangskanal mit eigenen Regeln:
+
+- **Der Schnappschuss wird nach der Maskierung neu gebaut**, nicht feldweise
+  nachgezogen. LiteLLMs `_body_snapshot` ist eine *flache* Kopie: ein Feld, das
+  die Guardrail durch Rebinding maskiert (`data[feld] = maskiert`), bleibt dort
+  sonst im Klartext stehen.
+- **Auch ein geblockter Request räumt den Schnappschuss auf.** Der Block
+  verhindert den Provider-Call, nicht das Log — und geblockt wird gerade das
+  Schutzwürdigste. Der Body wird dabei *ersetzt*, nicht maskiert: was nicht
+  geprüft werden konnte, wird nicht nachträglich für prüfbar erklärt.
+- **Zugangsdaten stehen nie im Schnappschuss.** `api_key`, `headers`,
+  `extra_headers`, `provider_specific_header` sind ausgeschlossen — aus dem
+  Sachgrund, nicht weil eine LiteLLM-Version sie ausschließt. *Validiert* ist
+  nicht *maskiert*: `api_key` muss den Provider byte-identisch erreichen und
+  ist damit weiterhin ein Token.
+- **Die Ausschlussmenge ist eine Obermenge der LiteLLM-eigenen, und das wird
+  gemessen, nicht angenommen.** `test/test_snapshot_exclude_contract.py` liest
+  LiteLLMs `_body_snapshot_exclude` zur Laufzeit per `ast` aus dem Quelltext
+  (es ist eine lokale Variable, nicht importierbar). Ein Key zu wenig ist ein
+  Leck; ein Key zu viel zeigt den Konsumenten nur weniger. Eine abgeschriebene
+  Fremdkonstante ist keine Prüfung — genau daran ist die erste Fix-Runde
+  gescheitert.
+
+### Re-Id-Mapping: verschlüsselt + lokal + TTL
+
+Das Platzhalter-zu-Klartext-Mapping ist das dichteste PII-Objekt im ganzen
+Request — dichter als der Payload, weil es die Werte ohne umgebenden Text
+auflistet. Es reist deshalb **versiegelt** (Fernet), nie als Klartext-dict:
+
+| Zusage | Umsetzung |
+|---|---|
+| verschlüsselt | Fernet-Token statt dict (`seal_reid_map` / `open_reid_map`) |
+| lokal | Schlüssel aus `DATENSCHLEUSE_REID_KEY`, sonst **einmalig prozesslokal erzeugt** — er verlässt den Prozess nie |
+| TTL | Fernet trägt den Zeitstempel im Token, Prüfung beim Öffnen (`DATENSCHLEUSE_REID_TTL`, Vorgabe 1 h) |
+
+Weitere bindende Eigenschaften:
+
+- **Ein prozesslokal erzeugter Schlüssel ist hier die stärkere Wahl**, nicht
+  die schwächere: das Mapping ist request-gebunden. Ein Log, das nach einem
+  Neustart gelesen wird, ist damit endgültig nicht mehr auflösbar.
+- **Fehlerrichtung: im Zweifel leer.** Lässt sich ein Siegel nicht öffnen
+  (falscher Schlüssel, abgelaufen, beschädigt), gibt es *kein* Mapping — die
+  Antwort behält ihre Platzhalter. Ein Rückfall auf einen ungeschützten Kanal
+  wäre die gefährliche Richtung.
+- **Ein client-gesetztes Siegel wird verworfen** (`_strip_body_reid_map`), aus
+  allen drei Lese-Kanälen (`metadata`, `litellm_metadata`, Top-Level).
+  Verschlüsselung schützt gegen *Fälschen*, nicht gegen *Wiederverwenden*: das
+  Siegel steht im Log und ist damit nicht geheim. Ein mitgeschicktes fremdes
+  Siegel wäre ein **Orakel auf fremde PII** — Angreifer schickt fremdes Siegel
+  plus einen Text mit `<PERSON_0>` und bekommt Klartext zurück.
+- **Das Lesen ist deterministisch.** Der erste Kanal, der den Schlüssel trägt,
+  gewinnt — unabhängig davon, ob er sich öffnen lässt. Ein leeres Mapping ist
+  ein gültiges Ergebnis (PII-freier Request), kein weitersuchen; ein
+  Durchfallen auf den nächsten Kanal war genau der Replay-Weg.
+
+### Diagnose-Ausgaben
+
+Feldnamen sind Client-Inhalt (ein Name als JSON-Schlüssel ist trivial
+konstruierbar). Blockmeldungen nennen deshalb nie den Namen, sondern einen
+**gesalzenen** Kurz-Fingerprint. Ungesalzen wäre er wirkungslos: Feldnamen sind
+entropiearm und ein 8-Hex-Hash per Wörterbuch zurückrechenbar.
 
 ## Allowlist-Prinzip für Routen (bindend)
 
@@ -104,7 +174,7 @@ geändert, nie einzeln):
 | Trägerfeld + Freitext | `messages`, `prompt`, `suffix`, `stop`, `user` | maskiert, über **denselben** Masker und dasselbe `reid_map` |
 | Strukturierter Freitext | `tools`, `tool_choice`, `functions`, `function_call`, `response_format` | strukturerhaltend maskiert (JSON-Knoten-Masker, inkl. Tiefenbegrenzung und Verifikationsdurchlauf) |
 | Steuerparameter | `model`, `temperature`, `top_p`, `n`, `seed`, `stream`, `stream_options`, `max_tokens`, `max_completion_tokens`, `logprobs`, `logit_bias`, Penalties, `best_of`, `echo`, `service_tier`, `reasoning_effort`, `store`, `parallel_tool_calls` … | auf Form validiert, unverändert weitergereicht |
-| Infrastruktur | `metadata`, `proxy_server_request`, `secret_fields`, `litellm_*`, `cache`, `ttl`, `tags`, `headers`, `api_*` … | passieren — jeder Eintrag steht in `all_litellm_params` und erreicht den Provider nachweislich nicht |
+| Infrastruktur | `metadata`, `proxy_server_request`, `secret_fields`, `litellm_*`, `cache`, `ttl`, `tags` … | passieren — jeder Eintrag steht in `all_litellm_params` und erreicht den Provider nachweislich nicht. Das ist **nicht** dasselbe wie harmlos: der Logging-Weg ist ein eigener Kanal (siehe Abschnitt Logging-Kanal) |
 | Bekannt, nicht behandelt | `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `safety_identifier`, `extra_headers`, `extra_body`, Prompt-Management-Felder | **blockiert**, beim Namen genannt |
 | Alles Übrige | — | **blockiert**, nur als Fingerprint genannt |
 
