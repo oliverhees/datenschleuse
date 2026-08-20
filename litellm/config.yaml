@@ -100,8 +100,22 @@ guardrails:
       #                             Recognizer-Scores der Presidio-Config.
 
 litellm_settings:
-  # fail-closed: bei Guardrail-Fehler die Anfrage NICHT durchlassen
-  set_verbose: true
+  # Hier stand `set_verbose: true` mit dem Kommentar "fail-closed: bei
+  # Guardrail-Fehler die Anfrage NICHT durchlassen". Beides war falsch:
+  # set_verbose hat mit fail-closed nichts zu tun (das leistet die
+  # Guardrail selbst, siehe datenschleuse_guardrail.py), und seit
+  # litellm 1.97.0 ist der Schalter deprecated -- er warnt beim Start
+  # und tut sonst nichts (gemessen, utils.py:796).
+  #
+  # WICHTIG fuer den naechsten Leser: set_verbose war NICHT die Ursache
+  # des PII-Lecks aus F4. Das war ausschliesslich --detailed_debug in
+  # docker-compose.yml. Die Gegenprobe lief mit set_verbose: true und
+  # ohne den Flag -- null Fundstellen. Entfernt wird der Schalter, weil
+  # ein toter Schalter mit falschem Kommentar eine Falle ist, nicht
+  # weil er etwas durchgelassen haette.
+  #
+  # Wer Debug-Logs braucht: LITELLM_LOG=DEBUG als ENV -- und weiss dann,
+  # dass der rohe Request-Body mitlaeuft.
   # Projekt-Prinzip "kein PII in Logs": Message-Content wird NIE geloggt,
   # Spend/Tokens/Modell/Zeitpunkt bleiben getrackt -> das ist die Datenbasis
   # fuer das Audit-Dashboard, ohne dass Klartext irgendwo landet. Vor

@@ -57,7 +57,7 @@ flowchart LR
 - Session-konsistente Pseudonyme (gleiche Person, gleicher Token, damit das Modell sinnvoll arbeitet)
 - Mapping bleibt lokal, verschlüsselt, mit TTL
 - Streaming-sicheres Re-Identification (Platzhalter dürfen nicht über SSE-Chunks zerfallen, daran scheitern die meisten, das ist unser Qualitäts-Hebel)
-- Kein PII in Logs
+- Kein PII in Logs — als Bedingung, nicht als Zauberspruch: Die Datenschleuse hält alle Kanäle frei, die sie kontrolliert (Logging-Schnappschuss, Callback-Payload, Spend-Logs, Blockmeldungen). Sie kann aber nicht verhindern, dass LiteLLM den ROHEN Request-Body druckt, bevor der Guardrail-Hook überhaupt läuft: mit `--detailed_debug` bzw. `LITELLM_LOG=DEBUG` steht jede PII jedes Requests im Klartext im Container-Log (gemessen, Runde 4/F4 — drei Fundstellen pro Request). Unser Standard-Deploy setzt beides deshalb NICHT. Wer Debug-Logs einschaltet, schaltet diese Zusage für die Dauer bewusst ab.
 
 ## 7. Tech-Stack-Entscheidung
 

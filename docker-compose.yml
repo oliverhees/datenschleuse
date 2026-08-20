@@ -84,7 +84,22 @@ services:
       # aktuellen LiteLLM-Version unauthentifiziert erreichbar, siehe README.
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss in .env gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+    # KEIN --detailed_debug. GEMESSEN (Runde 4, F4): mit dem Flag druckt
+    # litellm den ROHEN Request-Body in den Container-Log -- vor dem
+    # Guardrail-Hook, also unmaskiert. Drei Fundstellen pro Request:
+    # common_request_processing.py:1997 ("Request received by LiteLLM"),
+    # litellm_pre_call_utils.py:1762 ("receiving data") und :2085.
+    # Gegenprobe ohne den Flag, sonst identischer Aufbau: 0 Fundstellen.
+    #
+    # turn_off_message_logging (config.yaml) schuetzt hier NICHT -- es
+    # steuert den Callback-/Spend-Log-Payload, nicht den Debug-Druck.
+    # Die Guardrail kann es ebenfalls nicht abfangen: alle drei Zeilen
+    # entstehen, BEVOR async_pre_call_hook ueberhaupt aufgerufen wird.
+    #
+    # Entfernt statt auskommentiert: ein auskommentierter Schalter wird
+    # wieder angeschaltet. Wer wirklich Debug-Logs braucht, setzt sie
+    # bewusst und temporaer -- und weiss dann, dass PII mitlaeuft.
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
       presidio-analyzer:
         condition: service_started
