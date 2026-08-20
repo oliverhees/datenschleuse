@@ -65,4 +65,7 @@ jobs:
       - name: Laufzettel pruefen (SHA-gepinnte Verdicts)
         env:
           BASE_REF: ${{ github.base_ref }}
+          # Die echte PR-Spitze. HEAD ist hier der von GitHub fabrizierte
+          # Probe-Merge refs/pull/N/merge, nicht der auditierte Stand.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: .github/scripts/check-laufzettel.sh

@@ -150,6 +150,8 @@ class LaufzettelCheckTest(unittest.TestCase):
                       {"litellm/guardrail.py": "MASK = 3\n"})
         rc, out = self.s.pruefe(pr)
         self.assertNotEqual(rc, 0, "Code nach dem Audit muss abgelehnt werden:\n" + out)
+        self.assertIn("litellm/guardrail.py", out,
+                      "Die geaenderte Datei wird nicht benannt:\n" + out)
 
     # --- Richtung 3: Tarnfall (.gates UND Code in einem Commit) -------------
 
@@ -166,6 +168,9 @@ class LaufzettelCheckTest(unittest.TestCase):
         self.assertNotEqual(
             rc, 0,
             "Tarnfall: ein Commit mit .gates UND Code muss als Code-Commit zaehlen:\n" + out)
+        # Und zwar aus dem richtigen Grund: der geschmuggelte Code muss benannt sein.
+        self.assertIn("litellm/guardrail.py", out,
+                      "Der geschmuggelte Code wird nicht benannt:\n" + out)
 
     # --- Der echte Defekt: fremder Merge auf main --------------------------
 
