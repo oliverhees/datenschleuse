@@ -1,0 +1,209 @@
+# Datenschleuse — deutsche Nicht-PII-Wortliste
+#
+# Zweck: unterdrueckt gemessene Fehlzuendungen des spaCy-NER (de_core_news_lg),
+# das deutsche Schema-Schluessel als PERSON / LOCATION / ORGANIZATION meldet.
+# Adressiert DATENSCHLE-71.
+#
+# ===========================================================================
+# WARUM DIESE DATEI SO KLEIN IST — Security-Audit gegen 32e648c
+# ===========================================================================
+# Die erste Fassung enthielt 23 Eintraege und stuetzte sich auf eine
+# Sicherheitseigenschaft, die gegen den ECHTEN Analyzer nicht existiert. Zwei
+# High-Findings, beide am laufenden Container reproduziert:
+#
+# F1 — `^...$` ist kein Vollspan-Anker. `AnalyzerRequest` defaultet
+#      `regex_flags` auf DOTALL|MULTILINE|IGNORECASE. Unter MULTILINE matchen
+#      ^ und $ an JEDEM Zeilenumbruch INNERHALB des Spans:
+#          "Zahlungsart\nLoewenstein"  ohne Liste: PERSON -> mit Liste: []
+#          "Rueckruf\nMueller"         ohne Liste: PERSON -> mit Liste: []
+#      Vier von acht Recall-Kontrollnamen gingen im Klartext durch. Label-Wert-
+#      Layouts ueber zwei Zeilen sind in Formularen, Tabellen und CSV-Exporten
+#      der Regelfall — also in genau den Datenbestaenden, die diese Liste als
+#      Zielgruppe nennt.
+#
+# F2 — Case-Steuerung pro Eintrag war wirkungslos. Der Analyzer joint alle
+#      Muster mit `|` zu EINEM Ausdruck; ein globales `(?i)` in einer
+#      Alternative faerbt danach alle ab. Zusaetzlich enthaelt der
+#      Flags-Default ohnehin IGNORECASE:
+#          "Menge, Andreas"  ->  nur PERSON 'Andreas', Nachname unterdrueckt
+#
+# Konsequenzen, hier umgesetzt:
+#   1. `\A...\z` statt `^...$` — absolute String-Anker, flag-unabhaengig.
+#   2. `regex_flags: 0` wird EXPLIZIT mitgesendet, statt den Server-Default
+#      zu erben. Case-Sensitivitaet nur gekapselt: `(?i:...)`.
+#   3. Aufnahmekriterium maschinell statt geschaetzt (siehe unten).
+#
+# ===========================================================================
+# AUFNAHMEKRITERIUM (maschinell erzwungen)
+# ===========================================================================
+# Das alte Kriterium lautete "keine plausible Eigennamen-Lesart". Das war eine
+# Einschaetzung — und sie hat `menge` und `fuege` durchgelassen, beides reale
+# deutsche Familiennamen (Menge, Füge). Eine Einschaetzung ist keine Kontrolle.
+#
+# Neu, pruefbar von test_de_stopwords.py — ZWEI Bedingungen, beide noetig:
+#   1. Der Term ist ein Kompositum mit einem Kopf-Morphem aus dieser Menge:
+#         nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster
+#      und ist ECHT laenger als dieser Kopf (der bare Kopf ist gesperrt).
+#   2. Der Term matcht keinen Kontroll-Namensspan und weist seinen Fehlalarm
+#      am laufenden Analyzer nach.
+#
+# ACHTUNG — hier stand schon einmal eine falsche Behauptung: "Keines davon
+# kommt als barer deutscher Familienname vor." Das stimmt nicht. `Preis` und
+# `Grund` SIND reale deutsche Familiennamen. Damit wiederholte der Kommentar
+# genau den Fehlertyp, gegen den das Kriterium eingefuehrt wurde.
+#
+# Die schuetzende Eigenschaft ist deshalb nicht der Kopf, sondern der
+# ZUSAMMENGESETZTE Term: die konkreten Eintraege unten sind einzeln gegen den
+# Analyzer und gegen die Kontrollnamen geprueft. Bedingung 1 verengt nur auf
+# Schema-Schluessel-Komposita — sie ersetzt Bedingung 2 nicht, und der bare
+# Kopf darf genau deshalb nicht auf die Liste.
+#
+# Zusaetzlich weiterhin: jeder Eintrag braucht einen `probe`-Text, der den
+# Fehlalarm am laufenden Analyzer nachweislich erzeugt (Gegenprobe im Test).
+#
+# ===========================================================================
+# WAS DAMIT NICHT GELOEST IST — DATENSCHLE-70
+# ===========================================================================
+# ASCII-umschriebene Verbformen (`Aendere`, `Pruefe`, `Uebersetze`, `Fuege`,
+# `Beruecksichtige`, `Erlaeutere`, `Spaeter`, `Fasse`) sind ueber `allow_list`
+# NICHT sicher loesbar und wurden deshalb komplett entfernt.
+#
+# Grund, gemessen: Der Mechanismus sieht ausschliesslich den Span-Text, keinen
+# Kontext. Fehlalarm und echter Name erzeugen denselben Span:
+#       "Aendere keinen einzigen Wert."  -> PERSON 'Aendere'   (Fehlalarm)
+#       "Herr Aendere ruft an."          -> PERSON 'Aendere'   (Name)
+# Fuer den Matcher sind beide identisch. Jede Unterdrueckung trifft beide.
+#
+# Auch geprueft und verworfen: Umlaut-Normalisierung vor der Analyse
+# ("Spaeter" -> "Später"). Sie beseitigt einen Teil der Fehlalarme, kostet aber
+# denselben Recall ("Herr Später" -> gar keine Erkennung mehr) und repariert
+# 'Fasse' und 'Uebersetze' ueberhaupt nicht.
+#
+# Erforderlicher Mechanismus: ein kontextsensitiver Recognizer im
+# Analyzer-Image, der Anrede-/Titel-Kontext auswertet, bevor er unterdrueckt.
+# Eigenes Work Item. Bis dahin bleibt DATENSCHLE-70 offen — und die Stoerquote
+# verfehlt ihr Ziel. Das ist die ehrliche Lage, siehe
+# docs/foundation/erkennungsziel.md.
+
+version: 2
+
+# Presidio-Parameter. BEIDE muessen vom Aufrufer mitgesendet werden.
+allow_list_match: regex
+
+# EXPLIZIT 0. Wird dieser Wert nicht gesendet, defaultet der Analyzer auf
+# DOTALL|MULTILINE|IGNORECASE und schaltet F1 und F2 wieder scharf.
+regex_flags: 0
+
+entries:
+  # =========================================================================
+  # DATENSCHLE-71 — deutsche Schema-Schluessel
+  #
+  # Der Guardrail maskiert auch JSON-Schluessel. Wird der Parametername
+  # ersetzt, erhaelt der Empfaenger args["<LOCATION_0>"] statt
+  # args["bestellnummer"]: der Tool-Call geht DURCH und ist beim Empfaenger
+  # unbrauchbar — ohne Fehler, ohne Log. Diese FP-Klasse zerstoert
+  # stillschweigend Funktionalitaet.
+  #
+  # (?i: ...) gekapselt: JSON-Schluessel kommen klein, in Prosa gross vor.
+  # Fuer die konkreten Terme unten ist gemessen belegt, dass sie keinen
+  # Kontroll-Namensspan treffen (Gegenkontrolle 3) — deshalb ist
+  # Case-Insensitivitaet hier ohne Namensrisiko. Das ist eine Aussage ueber
+  # DIESE Terme, nicht ueber ihre Kopf-Morpheme (Preis, Grund sind Nachnamen).
+  # =========================================================================
+  - term: bestellnummer
+    pattern: "(?i:\\Abestellnummer\\z)"
+    group: schema-schluessel
+    probe: "bestellnummer"
+    measured_fp: LOCATION
+
+  - term: kundennummer
+    pattern: "(?i:\\Akundennummer\\z)"
+    group: schema-schluessel
+    probe: "kundennummer"
+    measured_fp: LOCATION
+
+  - term: rechnungsnummer
+    pattern: "(?i:\\Arechnungsnummer\\z)"
+    group: schema-schluessel
+    probe: "rechnungsnummer"
+    measured_fp: PERSON
+
+  - term: vertragsnummer
+    pattern: "(?i:\\Avertragsnummer\\z)"
+    group: schema-schluessel
+    probe: "vertragsnummer"
+    measured_fp: LOCATION
+
+  - term: sendungsnummer
+    pattern: "(?i:\\Asendungsnummer\\z)"
+    group: schema-schluessel
+    probe: "sendungsnummer"
+    measured_fp: PERSON
+
+  - term: buchungsnummer
+    pattern: "(?i:\\Abuchungsnummer\\z)"
+    group: schema-schluessel
+    probe: "buchungsnummer"
+    measured_fp: LOCATION
+
+  - term: lieferdatum
+    pattern: "(?i:\\Alieferdatum\\z)"
+    group: schema-schluessel
+    probe: "lieferdatum"
+    measured_fp: PERSON
+
+  - term: zahlungsart
+    pattern: "(?i:\\Azahlungsart\\z)"
+    group: schema-schluessel
+    probe: "zahlungsart"
+    measured_fp: PERSON
+
+  - term: bearbeitungsstatus
+    pattern: "(?i:\\Abearbeitungsstatus\\z)"
+    group: schema-schluessel
+    probe: "bearbeitungsstatus"
+    measured_fp: PERSON
+
+  - term: rechnungsbetrag
+    pattern: "(?i:\\Arechnungsbetrag\\z)"
+    group: schema-schluessel
+    probe: "rechnungsbetrag"
+    measured_fp: PERSON
+
+  - term: einzelpreis
+    pattern: "(?i:\\Aeinzelpreis\\z)"
+    group: schema-schluessel
+    probe: "einzelpreis"
+    measured_fp: PERSON
+
+  - term: rueckrufgrund
+    pattern: "(?i:\\Arueckrufgrund\\z)"
+    group: schema-schluessel
+    probe: "rueckrufgrund"
+    measured_fp: LOCATION
+
+  - term: bearbeitungsgebuehr
+    pattern: "(?i:\\Abearbeitungsgebuehr\\z)"
+    group: ascii-fachbegriff
+    probe: "Die Bearbeitungsgebuehr betraegt zehn Euro."
+    measured_span: "Bearbeitungsgebuehr"
+    measured_fp: ORGANIZATION
+
+  - term: wartungsfenster
+    pattern: "(?i:\\Awartungsfenster\\z)"
+    group: fachbegriff
+    probe: "Neuerungen werden im Wartungsfenster ausgerollt."
+    measured_span: "Wartungsfenster"
+    measured_fp: ORGANIZATION
+
+# ===========================================================================
+# BEWUSST ENTFERNT (waren in v1 enthalten)
+# ===========================================================================
+#   menge     — realer Nachname (Menge). Gemessen: "Menge, Andreas" verlor den
+#               Nachnamen. Die Kleinschreibung war wirkungslos (F2).
+#   fuege     — realer Nachname (Füge). Gemessen: "Fuege, Anna" verlor 'Fuege'.
+#   rueckruf  — simplexnaher Term ohne Kopf-Morphem aus der erlaubten Menge;
+#               gemessen: "Herr Rueckruf" wurde unterdrueckt.
+#   aendere, pruefe, uebersetze, übersetze, beruecksichtige, erlaeutere
+#             — ASCII/Umlaut-Verbformen. Ueber allow_list nicht vom echten
+#               Namen unterscheidbar (siehe DATENSCHLE-70 oben).

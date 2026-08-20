@@ -55,10 +55,25 @@ COPY datenschleuse_guardrail.py /app/datenschleuse_guardrail.py
 COPY qi_generalization.py /app/qi_generalization.py
 COPY qi_state.py /app/qi_state.py
 COPY sensitivity_classifier.py /app/sensitivity_classifier.py
+# custom_rules.py = eigene Deny-Listen/Regex-Muster des Anwenders
+# (DATENSCHLE-7). Reine Logik; braucht PyYAML und `regex` (s.o.).
+COPY custom_rules.py /app/custom_rules.py
 
 # 3. Verzeichnis fuer den lokalen, verschluesselten QI-Session-State (SQLite).
 #    Wird per Volume in docker-compose.yml persistiert (DATENSCHLEUSE_STATE_DB).
 RUN mkdir -p /app/state
+
+# 3b. Verzeichnis fuer die eigenen Begriffe/Muster (DATENSCHLE-7). Wird per
+#     Volume gemountet (docker-compose.yml: ./rules -> /app/rules); das mkdir
+#     sorgt nur dafuer, dass der Pfad auch ohne Mount existiert und der
+#     Guardrail dann einfach "keine eigenen Regeln" sieht statt zu stolpern.
+#
+#     Die CLI (tools/datenschleuse-rules) wird BEWUSST nicht ins Image kopiert:
+#     der Build-Kontext ist ./litellm, und noetig ist sie hier auch nicht --
+#     das Regelverzeichnis ist ein Bind-Mount vom Host, die CLI arbeitet also
+#     auf dem Host direkt auf derselben Datei. Der Guardrail liest sie bei
+#     Aenderung automatisch neu ein.
+RUN mkdir -p /app/rules
 
 # 4. Sicherstellen, dass /app importierbar ist (Import 'datenschleuse_guardrail')
 ENV PYTHONPATH=/app

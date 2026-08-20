@@ -49,7 +49,13 @@ from __future__ import annotations
 
 import base64
 import copy
+import functools
+import hashlib
+import json
+import logging
 import os
+import re
+import sys
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 # httpx ist im offiziellen LiteLLM-Image bereits vorhanden (LiteLLM-Dependency)
@@ -68,6 +74,12 @@ import qi_generalization as qig
 # option -- deshalb IMMER aktiv, anders als der optionale QI-Layer. Reine Logik,
 # keine LiteLLM-/Presidio-Laufzeitabhaengigkeit (nur PyYAML zum Config-Laden).
 import sensitivity_classifier as sc
+
+# Eigene Deny-Listen und Regex-Muster des Anwenders (DATENSCHLE-7). Reine
+# Logik + PyYAML + das `regex`-Modul, keine LiteLLM-/Presidio-Abhaengigkeit.
+# Was der Anwender hier hinterlegt (Kundennamen, Projektnamen, interne
+# Kuerzel), findet die generische Erkennung prinzipbedingt nicht.
+import custom_rules as cur
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +107,123 @@ DEFAULT_PLACEHOLDER_MARGIN = 10
 
 # Umgang mit Bild-Parts in multimodalen Nachrichten. Siehe Konstruktor.
 IMAGE_POLICIES = ("redact", "block", "pass")
+
+
+# ===========================================================================
+# MESSAGE-FELD-REGISTER (DATENSCHLE-66)
+# ===========================================================================
+# Warum ein Register statt einzelner if-Zweige: der Guardrail hat dieselbe
+# Luecke jetzt dreimal gehabt -- Part-Ebene (DATENSCHLE-57), content-Container
+# (DATENSCHLE-64) und nun jedes Feld NEBEN content (DATENSCHLE-66, PII in
+# ``tool_calls[].function.arguments`` lief unveraendert ans Modell). Ursache
+# war jedes Mal dieselbe: gelesen wurde, was man kannte; alles Uebrige lief
+# still durch. Deshalb wird ab hier nicht mehr Feld fuer Feld entdeckt,
+# sondern EINMAL vollstaendig erfasst: jedes Feld einer Chat-Message steht in
+# genau einer der drei Listen unten. Was in keiner steht, ist unbekannt und
+# blockt fail-closed. Ein neues Feld der OpenAI-API zwingt damit zu einer
+# bewussten Entscheidung (Eintrag ins Register), statt lautlos ein Leck zu
+# oeffnen.
+#
+# 1) MASKIERT: freier Text, der ans Zielmodell geht -> durch Presidio +
+#    Masker (dasselbe reid_map wie content, kein zweites Mapping).
+MESSAGE_FIELDS_MASKED = (
+    "content",
+    "name",
+    "refusal",
+    "tool_calls",
+    "function_call",
+    # Reasoning-Modelle spielen ihren Gedankengang im naechsten Turn zurueck.
+    # Das ist Freitext und enthaelt regelmaessig genau die Werte, um die es im
+    # Gespraech geht -> maskieren wie jeden anderen Text.
+    "reasoning_content",
+)
+
+# 2) VALIDIERT: Protokoll-Felder, die KEIN Freitext sind. Sie werden nicht
+#    maskiert (ihr Wert muss byte-identisch erhalten bleiben, sonst bricht die
+#    Zuordnung von tool_call zu Tool-Ergebnis), aber sie werden gegen ein
+#    enges Format geprueft -- sonst waeren sie ein bequemer Schmuggelkanal.
+MESSAGE_FIELDS_VALIDATED = (
+    "role",
+    "tool_call_id",
+    # Caching-Marker (Anthropic-Stil, von LiteLLM/Hermes injiziert). Traegt
+    # keinen Anwendertext, nur einen Schalter -> validieren statt maskieren.
+    # Wichtig: Hermes setzt das Feld automatisch, sobald Provider-ID oder
+    # Hostname den Token "litellm" enthaelt. Ein Selbsthoster mit der
+    # Subdomain litellm.seine-domain.de wuerde ohne diesen Eintrag ab der
+    # ersten Folge-Nachricht hart geblockt (QA-Audit).
+    "cache_control",
+)
+
+ALLOWED_MESSAGE_FIELDS = frozenset(MESSAGE_FIELDS_MASKED + MESSAGE_FIELDS_VALIDATED)
+
+# Protokoll-Rollen. Eine unbekannte Rolle ist entweder ein Client-Fehler oder
+# ein Schmuggelversuch (Freitext im role-Feld) -> fail-closed.
+ALLOWED_ROLES = frozenset(
+    {"system", "user", "assistant", "tool", "function", "developer"}
+)
+
+# Opake Korrelations-IDs (tool_call_id, tool_calls[].id): vom Modell bzw. der
+# API vergeben, nie Freitext. Bewusst eng: alles, was hier nicht passt, ist
+# kein legitimer Identifier.
+# ACHTUNG: wird mit ``fullmatch`` benutzt, NICHT mit ``match``. ``$`` matcht
+# in Python auch VOR einem abschliessenden Newline -- mit ``^...$`` und
+# ``match`` waere "call_1\n" ein gueltiger Identifier gewesen und der
+# Zeilenumbruch ein kleiner, aber echter Schmuggelkanal (Security-Audit F6).
+OPAQUE_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+# Maximale Verschachtelungstiefe in ``arguments``. Echte Tool-Argumente sind
+# flach; alles darueber ist entweder kaputt oder ein Versuch, die Guardrail in
+# einen RecursionError laufen zu lassen (unkontrollierter Fehlerpfad statt
+# fail-closed, Security-Audit F7).
+MAX_JSON_DEPTH = 64
+
+# Fuellzeichen, das im Verifikationsdurchlauf an die Stelle bekannter
+# Platzhalter tritt (siehe _verify_no_pii_left).
+_PLACEHOLDER_PROBE_FILLER = " "
+
+# Felder eines einzelnen tool_call-Eintrags (gleiche Logik eine Ebene tiefer).
+TOOL_CALL_ALLOWED_FIELDS = frozenset({"id", "type", "index", "function"})
+TOOL_CALL_FUNCTION_ALLOWED_FIELDS = frozenset({"name", "arguments"})
+# ``type`` fehlt bei manchen Clients ganz (historisch impliziert "function").
+ALLOWED_TOOL_CALL_TYPES = frozenset({"function"})
+
+# Erlaubte Struktur von ``cache_control``. Bewusst eng: ein Marker hat genau
+# diese zwei Felder und diese Werte -- alles andere ist kein Caching-Hinweis,
+# sondern ein Kanal, den niemand geprueft hat.
+CACHE_CONTROL_ALLOWED_FIELDS = frozenset({"type", "ttl"})
+CACHE_CONTROL_TYPES = frozenset({"ephemeral"})
+CACHE_CONTROL_TTLS = frozenset({"5m", "1h"})
+
+# Felder, die es in der Praxis gibt, die wir aber (noch) NICHT behandeln.
+# Sie blocken wie jedes unbekannte Feld -- werden in der Meldung aber beim
+# Namen genannt, damit ein Betreiber weiss, woran er ist. Die Namen stammen
+# aus dieser konstanten Liste, nie aus dem Request (Gesetz 5).
+KNOWN_UNSUPPORTED_MESSAGE_FIELDS = frozenset({
+    "audio",
+    "annotations",
+    "thinking_blocks",
+    "reasoning",
+    "redacted_thinking_blocks",
+    "provider_specific_fields",
+    "prefix",
+    "partial",
+})
+
+# Freitext-Felder eines Streaming-Deltas NEBEN ``content``. Sie brauchen
+# dieselbe Sliding-Window-Behandlung wie der Textkanal: ein Platzhalter kann
+# auch hier mitten durch einen Chunk brechen. Als Liste statt einzeln
+# behandelt, damit ein weiteres Feld eine Zeile ist und nicht wieder ein
+# vergessener Pfad (``refusal`` war genau das, Security-Audit S1).
+STREAM_TEXT_DELTA_FIELDS = ("reasoning_content", "refusal")
+
+# Betreiber-Diagnose. Blockmeldungen gehen an den Client; hier landet
+# zusaetzlich serverseitig, WAS geblockt hat -- Feldnamen bzw. Fingerprints,
+# niemals Werte.
+_LOG = logging.getLogger("datenschleuse")
+
+# Erlaubte Felder in der Blockmeldung nennen wir NIE mit Client-Werten,
+# sondern nur mit dieser konstanten, unveraenderlichen Liste (Gesetz 5).
+_ALLOWED_FIELDS_HINT = ", ".join(sorted(ALLOWED_MESSAGE_FIELDS))
 
 
 def _image_part_url(part: Dict[str, Any]) -> str:
@@ -157,16 +286,196 @@ def _to_data_url(raw: bytes, mime: str) -> str:
 # mit UND ohne zusaetzliche eigene System-Message. Deshalb bewusst OHNE
 # konkretes Namensbeispiel formuliert -- das Prinzip laesst sich abstrakt
 # erklaeren, ohne dem Modell einen Namen zum Nachplappern anzubieten.
+#
+# E2E-Befund (2026-08-19, DATENSCHLE-67, Round-Trip-Beweis gegen den echten
+# Stack): dieselbe Fehlerklasse steckte eine Ebene tiefer noch drin. Die
+# Beispiele lauteten frueher <PERSON_1>, <ADDRESS_0>, ... -- also exakt die
+# Form <TYP_ZAHL>, die Masker._placeholder_for() auch fuer ECHTE Werte
+# vergibt. Im Beweislauf war <PERSON_1> gleichzeitig Beispiel im Hinweis UND
+# echter Platzhalter fuer "Thomas Schneider". Das Modell sieht denselben Token
+# dann in zwei voellig verschiedenen Bedeutungen; greift es das Beispiel auf,
+# macht die Re-Identifikation stillschweigend den echten Namen daraus und
+# setzt ihn an eine Stelle, an die er nie gehoerte. Kein PII-Leck (der
+# Klartext geht weiterhin nicht raus), aber eine falsche Antwort -- und zwar
+# eine stille (siehe docs/HEADROOM.md zur Fail-Semantik).
+#
+# Erster Fix-Versuch und was er lehrte (ebenfalls DATENSCHLE-67): die
+# Beispiele wurden auf die Schablone <PERSON_N> umgestellt, mit dem Zusatz
+# "wobei N fuer eine Ziffer steht". Kollisionsfrei -- aber gemessen gegen
+# llama3.1:8b brandgefaehrlich: das Modell setzte die Ziffer PFLICHTBEWUSST
+# ein und gab <PERSON_1> zurueck, wo <PERSON_0> stand. 3 von 3 Laeufen, bei
+# temperature 0. Damit war jeder Platzhalter der Antwort unbrauchbar -- die
+# Re-Identifikation findet <PERSON_1> nicht im Mapping und laesst ihn stehen
+# (stiller Fehler) oder trifft eine ANDERE Person, falls es einen echten
+# <PERSON_1> gibt. Aus einem seltenen Kollisionsrisiko war ein systematischer
+# Totalausfall geworden.
+#
+# Die allgemeine Lehre aus beiden Befunden: Was der Hinweis dem Modell
+# hinhaelt, baut das Modell nach -- egal ob Beispielname ("Hans Mueller"),
+# echter Beispiel-Platzhalter (<PERSON_1>) oder Schablone (<PERSON_N>).
+# Deshalb enthaelt der Hinweis GAR KEINEN Token in spitzen Klammern mehr; er
+# beschreibt das Prinzip in Worten und schuetzt die Nummer ausdruecklich.
+# Gemessen: 3 von 3 Laeufen indextreu. Abgesichert durch
+# TestNoticePlaceholderCollision in test/test_datenschleuse_guardrail.py.
 ANONYMIZATION_NOTICE = (
     "Hinweis: Dieser Text wurde vor der Übermittlung automatisch pseudonymisiert. "
-    "Platzhalter wie <PERSON_1>, <ADDRESS_0>, <EMAIL_ADDRESS_0>, <DE_AKTENZEICHEN_0> "
-    "usw. stehen bewusst anstelle der jeweils echten Werte (z. B. steht <PERSON_1> "
-    "für einen echten Personennamen, <ADDRESS_0> für eine vollständige Adresse). Das ist "
-    "kein Tippfehler und keine fehlende Information — behandle jeden Platzhalter "
-    "als den echten Wert, den er ersetzt, und gib ihn in deiner Antwort exakt so "
-    "zurück, wie er dir übergeben wurde (nicht umformulieren, nicht durch einen "
-    "Beispielwert ersetzen, nicht danach fragen)."
+    "Angaben in spitzen Klammern sind Platzhalter und stehen bewusst anstelle "
+    "der jeweils echten Werte. Das ist kein Tippfehler und keine fehlende "
+    "Information — behandle jeden Platzhalter als den echten Wert, den er "
+    "ersetzt, und gib ihn in deiner Antwort exakt so zurück, wie er dir "
+    "übergeben wurde, mit unveränderter Nummer (nicht umformulieren, nicht "
+    "umnummerieren, nicht durch einen Beispielwert ersetzen, nicht danach "
+    "fragen)."
 )
+
+
+@functools.lru_cache(maxsize=32)
+def _placeholder_pattern(keys: Tuple[str, ...]) -> "re.Pattern[str]":
+    """Alternation ueber alle Platzhalter, laengste zuerst.
+
+    Python probiert Alternativen von links nach rechts; die Sortierung des
+    Aufrufers uebernimmt damit dieselbe Rolle wie die frueher explizite
+    "laengster Treffer gewinnt"-Schleife.
+
+    Gecacht, weil derselbe ``reid_map`` innerhalb einer Nachricht mehrfach
+    geprueft wird (ein Aufruf pro ``arguments``-String). Im Cache liegen nur
+    die PLATZHALTER -- unsere eigenen, generierten Token, nie ein Klartext
+    (Gesetz 5).
+    """
+    return re.compile("|".join(re.escape(k) for k in keys))
+
+
+def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, int]]]:
+    """Baut den Probe-String und merkt sich, WO die Fueller stehen.
+
+    Der Verifikationsdurchlauf ersetzt bekannte Platzhalter durch ein
+    neutrales Zeichen, damit die Erkennung nicht den Platzhalter selbst als
+    Namen liest. Genau diese Ersetzung kann aber neue, kuenstliche Treffer
+    erzeugen -- etwa wenn ein Muster ueber das eingefuegte Leerzeichen hinweg
+    greift. Um solche Artefakte spaeter erkennen zu koennen, reicht der
+    fertige String nicht: man braucht die Positionen der Fueller.
+
+    Ersetzt wird deshalb NICHT mit mehrfachem ``replace`` -- nur ein einziger
+    Durchlauf kennt die Positionen im ERGEBNIS. Laengste Platzhalter zuerst,
+    damit ``<PERSON_1>`` nicht innerhalb von ``<PERSON_10>`` matcht; bei einer
+    Regex-Alternation gilt dafuer die Reihenfolge der Alternativen.
+
+    Security-Finding DoS-1: Der Durchlauf lief frueher zeichenweise in Python
+    und pruefte an jedem Vorkommen des Anfangszeichens ALLE Schluessel durch.
+    Das ist quadratisch, sobald das Anfangszeichen haeufig ist -- und beides
+    bestimmt der Absender: die Textform und (ueber die Menge erkannter
+    Entitaeten) die Groesse des ``reid_map``. Gemessen: 200 KB Text mit 1000
+    Schluesseln brauchten 6,5 s statt 0,07 s. Das ist synchrone CPU-Arbeit im
+    Event-Loop, blockiert also alle parallelen Requests mit -- dieselbe
+    Defektklasse, die Finding F2 in der Regel-Schicht behoben hat. Die
+    Positionssuche laeuft deshalb jetzt in der Regex-Maschine (C) statt in
+    Python.
+    """
+    if not reid_map:
+        return text, []
+    # Security-Finding S4: ein LEERER Schluessel ist kein Platzhalter, wuerde
+    # aber ueberall matchen. Einmal aussortieren.
+    keys = tuple(k for k in sorted(reid_map, key=len, reverse=True) if k)
+    if not keys:
+        return text, []
+
+    teile: List[str] = []
+    fueller: List[Tuple[int, int]] = []
+    laenge = 0
+    ende = 0
+    for treffer in _placeholder_pattern(keys).finditer(text):
+        zwischen = text[ende:treffer.start()]
+        if zwischen:
+            teile.append(zwischen)
+            laenge += len(zwischen)
+        teile.append(_PLACEHOLDER_PROBE_FILLER)
+        fueller.append((laenge, laenge + len(_PLACEHOLDER_PROBE_FILLER)))
+        laenge += len(_PLACEHOLDER_PROBE_FILLER)
+        ende = treffer.end()
+    teile.append(text[ende:])
+    return "".join(teile), fueller
+
+
+def _is_filler_artifact(probe: str, entity: Dict[str, Any],
+                        filler_spans: List[Tuple[int, int]]) -> bool:
+    r"""Ist dieser Treffer NACHWEISLICH erst durch die Neutralisierung
+    entstanden?
+
+    Nachweislich heisst: sein Kern besteht ausschliesslich aus Zeichen, die
+    WIR eingefuegt haben. Steht auch nur ein Zeichen Klartext darin, wird der
+    Treffer behalten und der Request blockt.
+
+    WARUM SO GROB -- UND WARUM DAS DIE RICHTIGE ANTWORT IST
+    ------------------------------------------------------
+    Wir haben DREIMAL versucht, den Fehlalarmraum feiner zuzuschneiden, und
+    uns dabei jedes Mal ein Leck eingebaut, das erst ein Auditor fand:
+
+    1. Filter nach ``entity_type``-Praefix (F10): blendete das Sicherheitsnetz
+       fuer alle eigenen Entitaeten aus -- ausgerechnet fuer die Werte, fuer
+       die es allein zustaendig ist.
+    2. Filter nach Span-Ueberlappung (S1): verwarf ``Anna <PERSON_0>
+       Mueller`` komplett, ohne die Teile zu pruefen.
+    3. Segmentpruefung plus verklebter Kern (S1-R, HIGH-1, HIGH-2): die
+       Duplikat-Entfernung machte aus vier Zifferngruppen zwei und liess
+       ganze Kreditkartennummern durch; der verklebte Kern loeschte den
+       Trenner und konnte mehrwortige Deny-Begriffe grundsaetzlich nicht
+       wiederfinden.
+
+    Der entscheidende Befund kam vom Pruefer: Diese ganze Heuristik wurde von
+    KEINEM Gegentest eingefordert. Sie kaufte ausschliesslich Fehlalarm-
+    Reduktion, die niemand verlangt hatte -- und war die Quelle aller drei
+    Lecks. Eine Optimierung auf Verdacht, die dreimal ein Loch gerissen hat,
+    ist ihren Preis nicht wert.
+
+    Was bleibt, ist der Fall, der BEWEISBAR sicher ist: Der Kern besteht nur
+    aus Fuellern und Whitespace, es gibt also gar keinen Klartext, den man
+    herauslassen koennte. Das deckt den haeufigen Artefaktfall ab
+    (benachbarte Platzhalter werden zu einer Leerzeichenkette, auf die ein
+    Whitespace-Muster greift) -- und kostet keinen einzigen Analyzer-Aufruf.
+
+    DER PREIS, BEWUSST GEZAHLT: Ein eigenes Regex-Muster, das ueber einen
+    Platzhalter hinweggreift (``Nord\s*wind`` auf ``Nord<PERSON_0>wind``),
+    blockt jetzt. Das ist ein SICHTBARER Fehlalarm statt eines stillen Lecks
+    -- und von aussen ist dieser Fall ohnehin nicht von der Konstruktion zu
+    unterscheiden, mit der man die Maskierung umgeht.
+
+    AN DEN NAECHSTEN, DER HIER VERFEINERN WILL: Lies die Liste oben. Jede
+    Verfeinerung braucht einen Gegentest, der ohne sie FEHLSCHLAEGT. Gibt es
+    den nicht, kauft die Verfeinerung nichts und kostet erfahrungsgemaess ein
+    Leck.
+    """
+    if not filler_spans:
+        # Ohne Fueller haben WIR nichts eingefuegt. Dann kann dieser Treffer
+        # auch nicht durch unsere Ersetzung entstanden sein -- er gehoert dem
+        # Analyzer und wird nicht angetastet.
+        return False
+    try:
+        start = int(entity["start"])
+        end = int(entity["end"])
+    except (KeyError, TypeError, ValueError):
+        # Unlesbarer Treffer: NICHT als Artefakt abtun -- im Zweifel blocken.
+        return False
+    start = max(0, start)
+    end = min(len(probe), end)
+    if start >= end:
+        # Security-Finding S3: verdrehte (start > end) und ausserhalb des
+        # Textes liegende Spans sind etwas anderes als ein Whitespace-
+        # Treffer -- hier wissen wir gar nichts. Nicht schlucken.
+        return False
+
+    kern_start, kern_end = start, end
+    while kern_start < kern_end and probe[kern_start].isspace():
+        kern_start += 1
+    while kern_end > kern_start and probe[kern_end - 1].isspace():
+        kern_end -= 1
+    if kern_start < kern_end:
+        # Klartext im Kern -> koennte echte PII sein. Behalten und blocken.
+        return False
+
+    # Der Kern ist leer. Artefakt ist er aber nur, wenn wir den Whitespace
+    # auch selbst erzeugt haben -- sonst stand er so im Text und der Fund
+    # gehoert dem Analyzer.
+    return any(fs < end and start < fe for fs, fe in filler_spans)
 
 
 class DatenschleuseBlocked(Exception):
@@ -192,6 +501,104 @@ def reidentify_full(text: str, mapping: Dict[str, str]) -> str:
         if placeholder in text:
             text = text.replace(placeholder, mapping[placeholder])
     return text
+
+
+def _field_fingerprint(name: Any) -> str:
+    """Stabiler, wertfreier Kurz-Fingerprint eines Feldnamens.
+
+    Warum nicht einfach den Namen ausgeben: ein FELDNAME ist Client-Inhalt.
+    ``{"Max Mustermann": ...}`` oder eine IBAN als Schluessel sind trivial
+    konstruierbar -- und die Blockmeldung wird geloggt und an den Client
+    zurueckgegeben. Der Fingerprint gibt dem Betreiber trotzdem eine
+    Handhabe: derselbe Feldname ergibt denselben Wert, damit laesst sich ein
+    blockendes Feld eingrenzen, ohne dass sein Inhalt das System verlaesst.
+    """
+    return hashlib.sha256(repr(name).encode("utf-8")).hexdigest()[:8]
+
+
+class _UnsafeJson(Exception):
+    """JSON, das zwar parst, aber nicht eindeutig ist -- und deshalb nicht
+    zuverlaessig geprueft werden kann. Bewusst KEIN ValueError-Subtyp, damit
+    es nicht versehentlich im Parser-Fallback landet."""
+
+
+def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """object_pairs_hook: lehnt doppelte JSON-Schluessel ab.
+
+    ``json.loads`` behaelt bei doppelten Keys still den LETZTEN Wert. Der
+    erste wird nie geparst, nie analysiert -- und wenn der Rest der Struktur
+    sauber ist, ging der unveraenderte Rohstring hinaus, PII inklusive
+    (Security-Audit F2). Doppelte Keys sind in echten Tool-Argumenten
+    bedeutungslos und als Umgehung trivial zu konstruieren: blocken.
+    """
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            # Gesetz 5: der Schluessel selbst ist Client-Inhalt -> nie ausgeben.
+            raise _UnsafeJson("doppelter Schluessel in arguments")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _reject_json_constant(name: str) -> Any:
+    """parse_constant: ``NaN``/``Infinity``/``-Infinity`` sind kein striktes
+    JSON. Python parst sie klaglos und emittiert sie wieder -- Empfaenger mit
+    striktem Parser bekommen dann kaputte Argumente (Security-Audit F8)."""
+    raise _UnsafeJson("nicht-standardkonforme JSON-Konstante in arguments")
+
+
+def json_escaped_mapping(mapping: Dict[str, str]) -> Dict[str, str]:
+    """Baut aus dem reid_map ein Mapping, dessen WERTE bereits so escaped
+    sind, wie sie INNERHALB eines JSON-Strings stehen muessen.
+
+    Warum: auf dem Rueckweg wird ein Platzhalter in
+    ``tool_calls[].function.arguments`` durch den Klartext ersetzt. Steht in
+    diesem Klartext ein Anfuehrungszeichen oder Backslash (``Max "Maxi"
+    Mustermann``), macht ein naives ``str.replace`` aus gueltigem JSON
+    kaputtes JSON -- der Tool-Aufruf ist beim Client unbrauchbar. Deshalb
+    wird der Wert vorher JSON-escaped (``json.dumps`` liefert ihn mit
+    Anfuehrungszeichen, die beiden aeusseren fallen weg).
+    """
+    return {k: json.dumps(v, ensure_ascii=False)[1:-1] for k, v in (mapping or {}).items()}
+
+
+def _reidentify_json_node(node: Any, mapping: Dict[str, str]) -> Any:
+    """Ersetzt Platzhalter in allen Strings eines geparsten JSON-Baums
+    (Werte UND Schluessel -- maskiert wurden beide, siehe Masking-Pfad)."""
+    if isinstance(node, str):
+        return reidentify_full(node, mapping)
+    if isinstance(node, list):
+        return [_reidentify_json_node(v, mapping) for v in node]
+    if isinstance(node, dict):
+        return {
+            _reidentify_json_node(k, mapping): _reidentify_json_node(v, mapping)
+            for k, v in node.items()
+        }
+    return node
+
+
+def reidentify_json_arguments(raw: Any, mapping: Dict[str, str]) -> Any:
+    """Re-Identification fuer einen ``arguments``-JSON-String.
+
+    Strukturerhaltend: geparst, in den Strings ersetzt, wieder serialisiert.
+    Damit uebernimmt ``json.dumps`` das Escaping und das Ergebnis ist garantiert
+    wieder gueltiges JSON. Nur wenn ``raw`` gar kein gueltiges JSON ist (Modelle
+    liefern gelegentlich kaputte ``arguments``), wird auf einen Textersatz mit
+    JSON-escapten Werten zurueckgefallen -- die beste verfuegbare Naeherung fuer
+    einen String, der JSON sein wollte.
+    """
+    if not mapping or not isinstance(raw, str) or not raw:
+        return raw
+    if not any(placeholder in raw for placeholder in mapping):
+        # Kein Platzhalter enthalten -> nichts zu ersetzen. Wichtig, damit
+        # PII-freie Tool-Aufrufe den Client BYTE-IDENTISCH erreichen und
+        # nicht durch eine ueberfluessige Re-Serialisierung laufen.
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return reidentify_full(raw, json_escaped_mapping(mapping))
+    return json.dumps(_reidentify_json_node(parsed, mapping), ensure_ascii=False)
 
 
 class Masker:
@@ -253,9 +660,26 @@ class Masker:
 
     @staticmethod
     def _resolve_overlaps(entities: List[Dict[str, Any]], text_len: int) -> List[Dict[str, Any]]:
-        """Presidio kann ueberlappende Treffer liefern (z.B. PERSON und
-        LOCATION auf demselben Span). Wir behalten pro Position den Treffer mit
-        dem hoechsten Score und lassen ueberlappende, schwaechere fallen.
+        """Loest ueberlappende Treffer auf, OHNE je Abdeckung zu verlieren.
+
+        Presidio kann ueberlappende Treffer liefern (z.B. PERSON und LOCATION
+        auf demselben Span); mit den eigenen Regeln (DATENSCHLE-7) kommen
+        weitere hinzu. Der Typ wird weiterhin vom Treffer mit dem hoechsten
+        Score bestimmt -- die WEITE aber ist die Vereinigung aller
+        ueberlappenden Spans.
+
+        Sicherheits-Rationale (Security-Audit-Finding F1, HIGH): frueher wurde
+        der schwaechere Treffer bei Ueberlappung KOMPLETT verworfen. Enthielt
+        er den staerkeren, verschwand damit der Rest seines Spans aus der
+        Maskierung. Konkret: eine eigene Regel auf "Max" (Score 0.9) schlug
+        den Presidio-PERSON-Treffer "Max Mustermann" (0.85) -- und
+        "Mustermann" ging im KLARTEXT zum Anbieter. Wer eine Schutzregel
+        anlegte, senkte damit seinen Schutz, ohne es zu merken.
+
+        Genau das ist jetzt strukturell ausgeschlossen: die maskierte
+        Zeichenmenge kann durch einen zusaetzlichen Treffer nur WACHSEN, nie
+        schrumpfen. Ein etwas zu weit maskierter Span kostet hoechstens
+        Antwortqualitaet -- ein zu enger kostet Daten.
         """
         valid = [
             e for e in entities
@@ -265,13 +689,38 @@ class Masker:
             and e.get("entity_type")
         ]
         # Hoher Score zuerst, dann laengerer Span, dann fruehere Position.
+        # Dadurch legt der staerkste Treffer einer Gruppe den Typ fest.
         valid.sort(key=lambda e: (-float(e.get("score", 0.0)), -(e["end"] - e["start"]), e["start"]))
+
         kept: List[Dict[str, Any]] = []
         for e in valid:
-            if any(not (e["end"] <= k["start"] or e["start"] >= k["end"]) for k in kept):
-                continue  # ueberlappt einen bereits behaltenen, staerkeren Treffer
-            kept.append(e)
-        return kept
+            treffer = None
+            for k in kept:
+                if not (e["end"] <= k["start"] or e["start"] >= k["end"]):
+                    treffer = k
+                    break
+            if treffer is None:
+                kept.append(dict(e))
+            else:
+                # Vereinigung statt Verwerfen -- nie verkuerzen.
+                treffer["start"] = min(treffer["start"], e["start"])
+                treffer["end"] = max(treffer["end"], e["end"])
+
+        # Durch das Aufweiten koennen zwei behaltene Spans einander jetzt
+        # ueberlappen (transitive Ketten A-B-C). Ein Sweep in Startreihenfolge
+        # verschmilzt sie endgueltig; der hoechste Score gibt den Typ vor.
+        kept.sort(key=lambda e: (e["start"], e["end"]))
+        merged: List[Dict[str, Any]] = []
+        for e in kept:
+            if merged and e["start"] < merged[-1]["end"]:
+                letzter = merged[-1]
+                letzter["end"] = max(letzter["end"], e["end"])
+                if float(e.get("score", 0.0)) > float(letzter.get("score", 0.0)):
+                    letzter["entity_type"] = e["entity_type"]
+                    letzter["score"] = e.get("score", 0.0)
+            else:
+                merged.append(dict(e))
+        return merged
 
 
 class ReidStreamProcessor:
@@ -358,6 +807,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_db: Optional[str] = None,
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
+        custom_rules_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -416,6 +866,41 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # starten. Siehe docs/SENSITIVITY-INTEGRATION.md.
         self.classifier = sc.SensitivityClassifier()
 
+        # --- Eigene Begriffe und Muster (DATENSCHLE-7) ----------------------
+        # Anders als der Klassifizierer daneben startet dieser Layer NIE
+        # fail-closed: fehlt die Regeldatei, nutzt der Anwender das Feature
+        # schlicht nicht, und eine kaputte Regel legt laut Anti-Kriterium
+        # ISC-26 ausdruecklich nur sich selbst still (nicht die Pipeline).
+        # Die Regeln werden im laufenden Betrieb per mtime-Pruefung neu
+        # eingelesen -- ein neues Muster wirkt ohne Rebuild und ohne Neustart.
+        try:
+            self.custom_rules = cur.RuleSet(
+                custom_rules_path
+                or kwargs.pop("custom_rules_path", None)
+                or cur.default_rules_path()
+            )
+            # Security-Finding F3: den Ladefehler AUSWERTEN statt ihn im
+            # RuleSet liegen zu lassen. Vorher las nur die CLI auf dem Host
+            # load_error aus -- im Container blieb ein Kaltstart mit kaputter
+            # Regeldatei damit voellig unsichtbar, obwohl die komplette eigene
+            # Maskierungsschicht ausgefallen war.
+            if self.custom_rules.load_error:
+                print(
+                    f"[datenschleuse] FEHLER: eigene Regeln nicht geladen -- "
+                    f"{self.custom_rules.load_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except Exception as exc:  # pragma: no cover - defensiv
+            print(
+                f"[datenschleuse] FEHLER: eigene Regeln konnten nicht geladen "
+                f"werden ({type(exc).__name__}) -- eigene Begriffe werden NICHT "
+                f"maskiert; die Presidio-Maskierung laeuft unveraendert weiter.",
+                file=sys.stderr,
+                flush=True,
+            )
+            self.custom_rules = None
+
         # --- Quasi-Identifier-Layer (opt-in) --------------------------------
         # Aktiv, sobald ein Risiko-Preset gesetzt ist (Config: qi_risk_preset).
         # Ist es None/"off", bleibt der QI-Layer komplett aus -> Verhalten exakt
@@ -453,6 +938,60 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
     # ---- Presidio Analyzer (echte externe Abhaengigkeit) ------------------
     async def _analyze(self, text: str) -> List[Dict[str, Any]]:
+        """Erkennung fuer EINEN Text: Presidio plus die eigenen Regeln.
+
+        Die eigenen Begriffe/Muster (custom_rules.py, DATENSCHLE-7) werden hier
+        -- und nur hier -- eingemischt. Das ist die einzige Stelle, durch die
+        jeder zu pruefende Text laeuft; die Treffer kommen im selben Format wie
+        die von Presidio und laufen deshalb ohne Sonderweg durch denselben
+        Masker und dasselbe reid_map.
+
+        ISC-26: ein Fehler in der Regel-Schicht darf die Presidio-Maskierung
+        NICHT mitreissen. Die Regel-Schicht isoliert bereits pro Regel; das
+        ``try`` hier ist die zweite Sicherung fuer den Fall, dass die Schicht
+        als Ganzes stolpert (z.B. unlesbare Regeldatei).
+        """
+        entities = await self._presidio_analyze(text)
+        if self.custom_rules is None:
+            return entities
+        try:
+            entities = entities + self.custom_rules.find(text)
+        except cur.RuleMatchingIncomplete as exc:
+            # Security-Finding F8 (HIGH): Die Regelpruefung konnte fuer diesen
+            # Text nicht vollstaendig laufen. Ein Teilergebnis waere hier das
+            # gefaehrlichste Ergebnis ueberhaupt -- der Text SIEHT maskiert
+            # aus, waehrend ein Teil der Vorkommen im Klartext hinausgeht,
+            # und niemand sucht nach einem Fehler, den er nicht sieht.
+            # Deshalb dieselbe Konsequenz wie bei nicht erreichbarem Presidio:
+            # blocken statt raten.
+            raise DatenschleuseBlocked(
+                f"Die eigenen Regeln konnten fuer diesen Text nicht "
+                f"vollstaendig geprueft werden ({exc}) -- Request blockiert "
+                f"(fail-closed). Eine unvollstaendige Maskierung waere von "
+                f"einer vollstaendigen nicht zu unterscheiden. Muster pruefen "
+                f"mit: datenschleuse-rules list"
+            ) from exc
+        except Exception as exc:
+            # ACHTUNG, ENGE GRENZE (Security-Finding S2): Hierher kommt NUR
+            # noch, was beim LADEN der Regeldatei scheitert. ``RuleSet.find``
+            # sagt zu, dass jeder Fehler AB dem Scan als
+            # ``RuleMatchingIncomplete`` herauskommt und damit oben blockt.
+            # Vorher lief jede Nicht-Timeout-Ausnahme aus dem Scan hier
+            # hinein -- Folgeregeln abgebrochen, Abdeckung unbekannt, Request
+            # trotzdem raus. Wer die Zusage in custom_rules.py aufweicht,
+            # oeffnet dieses Loch wieder.
+            # Andere Fehler der Regel-Schicht bleiben folgenlos fuer die
+            # Presidio-Maskierung (ISC-26): dort ist die Abdeckung bekannt,
+            # nur die eigene Zusatzschicht fehlt.
+            print(
+                f"[datenschleuse] WARNUNG: eigene Regeln uebersprungen "
+                f"({type(exc).__name__}); Presidio-Maskierung bleibt aktiv.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return entities
+
+    async def _presidio_analyze(self, text: str) -> List[Dict[str, Any]]:
         """Ruft Presidio Analyzer ``/analyze`` auf. Fail-closed: jeder Fehler
         (Netzwerk, HTTP >= 400, ungueltige Antwort) wird zu DatenschleuseBlocked
         eskaliert, damit KEIN unmaskierter Text durchgeht."""
@@ -600,10 +1139,35 @@ class DatenschleuseGuardrail(_GuardrailBase):
         turn_qi: List[Tuple[str, str]] = []
         text_slots: List[Tuple[Any, Any]] = []  # (container, key) auf maskierten Text
 
+        # Der messages-Container selbst (DATENSCHLE-66): ist ``messages``
+        # vorhanden, aber keine Liste, lief der Request bisher komplett
+        # ungeprueft durch -- die Schleife wurde einfach nicht betreten.
+        # Dieselbe Bauart wie die content-Container-Luecke (DATENSCHLE-64).
+        # Fehlt der Key ganz (None), ist das kein Chat-Request -> unveraendert.
+        if messages is not None and not isinstance(messages, list):
+            raise DatenschleuseBlocked(
+                f"messages vom Typ {type(messages).__name__!r} wird von der "
+                "Datenschleuse nicht geprueft und ist deshalb blockiert "
+                "(fail-closed). Erlaubt ist nur eine Liste von Nachrichten."
+            )
+
         if isinstance(messages, list):
             for msg in messages:
                 if not isinstance(msg, dict):
-                    continue
+                    # Bisher: stillschweigend uebersprungen -- also ungeprueft
+                    # ans Modell weitergereicht. Was nicht geprueft werden
+                    # kann, passiert nicht (Gesetz: fail-closed).
+                    raise DatenschleuseBlocked(
+                        f"Nachricht vom Typ {type(msg).__name__!r} wird von der "
+                        "Datenschleuse nicht geprueft und ist deshalb blockiert "
+                        "(fail-closed). Erlaubt sind nur Nachrichten-Objekte."
+                    )
+
+                # Form-Pruefung VOR jeder Verarbeitung: unbekannte Felder,
+                # fremde Rollen und Nicht-Identifier in ID-Feldern blocken,
+                # bevor ueberhaupt ein Analyzer-Call passiert.
+                self._validate_message_shape(msg)
+
                 content = msg.get("content")
                 if isinstance(content, str):
                     original = content
@@ -721,6 +1285,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
                         "oder Listen-content."
                     )
 
+                # --- Alle uebrigen Textfelder der Message (DATENSCHLE-66) ---
+                # content war nie das ganze Problem: fuer agentische Clients
+                # ist ``tool_calls[].function.arguments`` der Normalbetrieb,
+                # und genau dort stehen regelmaessig Kundendaten.
+                await self._mask_message_fields(msg, masker, requested_level, approved)
+
         # Mapping im EIGENEN Metadata-Key ablegen (nicht LiteLLMs Interna).
         metadata = data.get("metadata")
         if not isinstance(metadata, dict):
@@ -750,6 +1320,549 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 )
 
         return data
+
+    # ---- Message-Felder jenseits von content (DATENSCHLE-66) --------------
+    @staticmethod
+    def _validate_message_shape(msg: Dict[str, Any]) -> None:
+        """Prueft die FORM einer Message gegen das Feld-Register.
+
+        Konsequente Allowlist wie auf Part- und Container-Ebene: jedes Feld,
+        das die Guardrail nicht kennt, ist ein Kanal, dessen Inhalt niemand
+        geprueft hat -> fail-closed blocken. Damit erzwingt ein neues Feld der
+        OpenAI-API eine bewusste Entscheidung im Register, statt still ein Leck
+        zu oeffnen.
+
+        Gesetz 5: in keiner Meldung stehen Client-Werte -- auch ein FELDNAME
+        ist Client-Inhalt (eine IBAN als Feldname ist trivial konstruierbar).
+        Ausgegeben werden nur Anzahl, Python-Typname und die konstante Liste
+        der erlaubten Felder.
+        """
+        unknown = [key for key in msg if key not in ALLOWED_MESSAGE_FIELDS]
+        if unknown:
+            # QA-Audit: ein Betreiber sah bisher nur eine ANZAHL und hatte
+            # keine Chance herauszufinden, was ihn blockiert -- ausser
+            # Trial-and-Error gegen die Allowlist. Jetzt: bekannte
+            # Provider-Felder beim Namen (konstantes Vokabular aus DIESER
+            # Datei, nie aus dem Request), alles Uebrige als Fingerprint.
+            benannt = sorted(
+                key for key in unknown
+                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_MESSAGE_FIELDS
+            )
+            fremd = [key for key in unknown if key not in benannt]
+            teile = []
+            if benannt:
+                teile.append(
+                    "bekannt, aber nicht im Register: " + ", ".join(benannt)
+                )
+            if fremd:
+                teile.append(
+                    "unbekannt (Fingerprint): "
+                    + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                )
+            diagnose = "; ".join(teile)
+            _LOG.warning(
+                "Nachricht blockiert -- ungepruefte Felder [%s]. "
+                "Werte werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+            )
+            raise DatenschleuseBlocked(
+                f"Nachricht enthaelt {len(unknown)} Feld(er), die die "
+                f"Datenschleuse nicht prueft ({diagnose}) -- deshalb blockiert "
+                f"(fail-closed). Geprueft werden ausschliesslich: "
+                f"{_ALLOWED_FIELDS_HINT}."
+            )
+
+        role = msg.get("role")
+        if role is not None and (not isinstance(role, str) or role not in ALLOWED_ROLES):
+            raise DatenschleuseBlocked(
+                f"Nachricht mit unbekannter Rolle (Typ {type(role).__name__!r}) "
+                "wird von der Datenschleuse nicht geprueft und ist deshalb "
+                f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_ROLES))}."
+            )
+
+        # F1 (Security-Audit): das Register blockte bisher unbekannte FELDER,
+        # aber nicht den falschen TYP in einem bekannten Feld. Die Masker-Pfade
+        # waren durchweg ``if isinstance(..., str)`` -- ein dict in ``name``
+        # oder ``refusal`` fiel damit STILL durch und ging verbatim ans
+        # Zielmodell. Genau das Muster, das dieses Register beenden soll.
+        # Lehre: ein isinstance-Guard im Mask-Pfad ist immer ein stiller
+        # Durchlass. Die Typpruefung gehoert hierher und muss blocken.
+        for field in ("name", "refusal", "reasoning_content"):
+            DatenschleuseGuardrail._validate_text_field(msg.get(field), field)
+
+        DatenschleuseGuardrail._validate_cache_control(msg.get("cache_control"))
+
+        DatenschleuseGuardrail._validate_opaque_id(msg.get("tool_call_id"), "tool_call_id")
+
+        tool_calls = msg.get("tool_calls")
+        if tool_calls is not None:
+            if not isinstance(tool_calls, list):
+                raise DatenschleuseBlocked(
+                    f"tool_calls vom Typ {type(tool_calls).__name__!r} ist nicht "
+                    "pruefbar und deshalb blockiert (fail-closed). Erlaubt ist "
+                    "nur eine Liste."
+                )
+            for call in tool_calls:
+                DatenschleuseGuardrail._validate_tool_call(call)
+
+        function_call = msg.get("function_call")
+        if function_call is not None:
+            DatenschleuseGuardrail._validate_function_payload(function_call, "function_call")
+
+    @staticmethod
+    def _validate_text_field(value: Any, field: str) -> None:
+        """Ein Textfeld ist ein String oder gar nicht da. Alles andere ist
+        nicht maskierbar -> blocken statt still durchreichen."""
+        if value is None or isinstance(value, str):
+            return
+        raise DatenschleuseBlocked(
+            f"{field} vom Typ {type(value).__name__!r} ist kein Text und damit "
+            "nicht maskierbar -- blockiert (fail-closed). Erlaubt ist nur ein "
+            "String (oder das Feld ganz weglassen)."
+        )
+
+    @staticmethod
+    def _validate_cache_control(value: Any) -> None:
+        """``cache_control`` ist ein Schalter, kein Freitext-Kanal.
+
+        Deshalb validiert statt maskiert -- der Marker muss den Provider
+        unveraendert erreichen, sonst greift das Prompt-Caching nicht. Und
+        deshalb ENG validiert: waere hier ein ``isinstance``-Guard im
+        Verarbeitungspfad statt einer Pruefung, die blockt, waere das exakt
+        die Type-Confusion-Luecke (F1) an neuer Stelle."""
+        if value is None:
+            return
+        if not isinstance(value, dict):
+            raise DatenschleuseBlocked(
+                f"cache_control vom Typ {type(value).__name__!r} ist kein "
+                "Caching-Marker -- blockiert (fail-closed). Erlaubt ist nur "
+                "ein Objekt wie {'type': 'ephemeral'}."
+            )
+        unknown = sum(1 for key in value if key not in CACHE_CONTROL_ALLOWED_FIELDS)
+        if unknown:
+            raise DatenschleuseBlocked(
+                f"cache_control enthaelt {unknown} ungepruefte(s) Feld(er) -- "
+                "blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(CACHE_CONTROL_ALLOWED_FIELDS))}."
+            )
+        marker = value.get("type")
+        if not isinstance(marker, str) or marker not in CACHE_CONTROL_TYPES:
+            raise DatenschleuseBlocked(
+                f"cache_control.type (Typ {type(marker).__name__!r}) ist kein "
+                "bekannter Caching-Marker -- blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(CACHE_CONTROL_TYPES))}."
+            )
+        ttl = value.get("ttl")
+        if ttl is not None and (not isinstance(ttl, str) or ttl not in CACHE_CONTROL_TTLS):
+            raise DatenschleuseBlocked(
+                f"cache_control.ttl (Typ {type(ttl).__name__!r}) ist kein "
+                "bekannter Wert -- blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(CACHE_CONTROL_TTLS))}."
+            )
+
+    @staticmethod
+    def _validate_opaque_id(value: Any, field: str) -> None:
+        """IDs (``tool_call_id``, ``tool_calls[].id``) sind opake Korrelations-
+        Tokens, kein Freitext. Sie werden bewusst NICHT maskiert -- ihr Wert
+        muss byte-identisch bleiben, sonst findet das Modell das Ergebnis
+        eines Tool-Aufrufs nicht mehr zu seinem Aufruf. Genau deshalb muessen
+        sie eng validiert werden, sonst waeren sie der bequemste
+        Schmuggelkanal, den die Nachricht zu bieten hat."""
+        if value is None:
+            return
+        if not isinstance(value, str) or not OPAQUE_ID_PATTERN.fullmatch(value):
+            raise DatenschleuseBlocked(
+                f"{field} ist kein zulaessiger Identifier (Typ "
+                f"{type(value).__name__!r}) -- als Freitext-Kanal blockiert "
+                "(fail-closed). Erlaubt: bis zu 128 Zeichen aus "
+                "A-Z a-z 0-9 _ . : -"
+            )
+
+    @staticmethod
+    def _validate_tool_call(call: Any) -> None:
+        if not isinstance(call, dict):
+            raise DatenschleuseBlocked(
+                f"tool_call vom Typ {type(call).__name__!r} ist nicht pruefbar "
+                "und deshalb blockiert (fail-closed)."
+            )
+        unknown = sum(1 for key in call if key not in TOOL_CALL_ALLOWED_FIELDS)
+        if unknown:
+            raise DatenschleuseBlocked(
+                f"tool_call enthaelt {unknown} ungepruefte(s) Feld(er) -- "
+                "blockiert (fail-closed). Erlaubt: "
+                f"{', '.join(sorted(TOOL_CALL_ALLOWED_FIELDS))}."
+            )
+        DatenschleuseGuardrail._validate_opaque_id(call.get("id"), "tool_calls[].id")
+
+        call_type = call.get("type")
+        # ``type`` fehlt bei manchen Clients -- historisch impliziert das
+        # "function". Ein ANDERER Typ ist dagegen ein uns unbekanntes Format
+        # mit unbekannten Feldern -> blocken.
+        if call_type is not None and (
+            not isinstance(call_type, str) or call_type not in ALLOWED_TOOL_CALL_TYPES
+        ):
+            raise DatenschleuseBlocked(
+                f"tool_call mit nicht erlaubtem Typ (Typ {type(call_type).__name__!r}) "
+                "wird von der Datenschleuse nicht geprueft und ist deshalb "
+                f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_TOOL_CALL_TYPES))}."
+            )
+
+        index = call.get("index")
+        if index is not None and not isinstance(index, int):
+            raise DatenschleuseBlocked(
+                f"tool_calls[].index vom Typ {type(index).__name__!r} ist kein "
+                "Index -- blockiert (fail-closed)."
+            )
+
+        function = call.get("function")
+        if function is not None:
+            DatenschleuseGuardrail._validate_function_payload(function, "tool_calls[].function")
+
+    @staticmethod
+    def _validate_function_payload(function: Any, field: str) -> None:
+        if not isinstance(function, dict):
+            raise DatenschleuseBlocked(
+                f"{field} vom Typ {type(function).__name__!r} ist nicht pruefbar "
+                "und deshalb blockiert (fail-closed)."
+            )
+        unknown = sum(1 for key in function if key not in TOOL_CALL_FUNCTION_ALLOWED_FIELDS)
+        if unknown:
+            raise DatenschleuseBlocked(
+                f"{field} enthaelt {unknown} ungepruefte(s) Feld(er) -- blockiert "
+                f"(fail-closed). Erlaubt: "
+                f"{', '.join(sorted(TOOL_CALL_FUNCTION_ALLOWED_FIELDS))}."
+            )
+        # F1: ``arguments`` als dict/Liste statt als JSON-String lief bisher
+        # ungeprueft durch -- verifizierter PoC des Security-Audits.
+        for name in ("name", "arguments"):
+            DatenschleuseGuardrail._validate_text_field(
+                function.get(name), f"{field}.{name}"
+            )
+
+    def _enforce_sensitivity(
+        self,
+        text: str,
+        entities: List[Dict[str, Any]],
+        requested_level: Any,
+        approved: bool,
+    ) -> None:
+        """Schutzklassen-Gate fuer die Felder neben content -- identisch zum
+        content-Pfad: Stufe 3 blockt hart, Stufe 2 ohne Freigabe ebenfalls.
+        Das Gate darf nicht am content-Feld enden, sonst waere eine Diagnose
+        in ``arguments`` weniger geschuetzt als dieselbe Diagnose im Fliesstext."""
+        classification = self.classifier.classify(
+            text, entities=entities, requested_level=requested_level,
+        )
+        try:
+            sc.enforce_tier_3_block(classification)
+            sc.enforce_tier_2_gate(classification, approved)
+        except (sc.Tier3Blocked, sc.Tier2ApprovalRequired) as exc:
+            raise DatenschleuseBlocked(str(exc)) from exc
+
+    async def _mask_text_value(
+        self, text: Any, masker: Masker, requested_level: Any, approved: bool
+    ) -> Any:
+        """Maskiert einen einzelnen Textwert ueber DENSELBEN Masker wie der
+        content-Pfad -- kein zweites Mapping, damit die Re-Identifikation auf
+        dem Rueckweg unveraendert funktioniert.
+
+        Anders als im content-Pfad wird hier NICHT nach QI-Typen aufgeteilt:
+        QI-Werte werden direkt maskiert statt generalisiert. Das ist strenger
+        (ein Platzhalter gibt weniger preis als ein generalisierter Wert),
+        nie laxer -- und haelt den QI-Slot-Mechanismus aus Strukturen heraus,
+        in denen es keinen zusammenhaengenden Textslot gibt."""
+        if not isinstance(text, str) or not text.strip():
+            return text
+        entities = await self._analyze(text)
+        self._enforce_sensitivity(text, entities, requested_level, approved)
+        return masker.mask(text, entities)
+
+    async def _mask_json_node(
+        self,
+        node: Any,
+        masker: Masker,
+        collected: List[Dict[str, Any]],
+        depth: int = 0,
+    ) -> Any:
+        """Maskiert rekursiv alle Textwerte eines geparsten JSON-Baums und
+        laesst die STRUKTUR unangetastet (Akzeptanzkriterium: der Tool-Aufruf
+        muss beim Zielmodell benutzbar bleiben).
+
+        Auch SCHLUESSEL werden maskiert: ein JSON-Schluessel ist genauso ein
+        Kanal ans Modell wie ein Wert. Maskieren statt Blocken haelt die
+        Struktur gueltig.
+
+        Zahlen/Bools: eine Zahl kann PII sein (Telefonnummer, Kundennummer als
+        JSON-Zahl). Sie wird deshalb als Text geprueft -- aber nur DANN durch
+        einen Platzhalter ersetzt, wenn tatsaechlich etwas erkannt wurde. Der
+        damit einhergehende Typwechsel (Zahl -> String) ist bewusst in Kauf
+        genommen: ein gebrochenes Tool-Schema ist sichtbar, ein Leck nicht."""
+        if depth > MAX_JSON_DEPTH:
+            # Ohne Grenze lief hier ein RecursionError aus dem Hook heraus --
+            # ein unkontrollierter Fehlerpfad statt fail-closed (F7).
+            raise DatenschleuseBlocked(
+                f"arguments ueberschreitet die zulaessige Verschachtelungstiefe "
+                f"({MAX_JSON_DEPTH}) und wird nicht geprueft -- blockiert "
+                "(fail-closed)."
+            )
+        if isinstance(node, str):
+            if not node.strip():
+                return node
+            entities = await self._analyze(node)
+            collected.extend(entities)
+            return masker.mask(node, entities)
+        if isinstance(node, list):
+            return [
+                await self._mask_json_node(item, masker, collected, depth + 1)
+                for item in node
+            ]
+        if isinstance(node, dict):
+            masked: Dict[Any, Any] = {}
+            for key, value in node.items():
+                new_key = await self._mask_json_node(key, masker, collected, depth + 1)
+                masked[new_key] = await self._mask_json_node(
+                    value, masker, collected, depth + 1
+                )
+            return masked
+        if node is None or isinstance(node, bool):
+            # Tragen keinen Text -> nichts zu maskieren (bewusste Entscheidung).
+            return node
+        if isinstance(node, (int, float)):
+            as_text = str(node)
+            entities = await self._analyze(as_text)
+            if not entities:
+                return node
+            collected.extend(entities)
+            return masker.mask(as_text, entities)
+        return node
+
+    async def _verify_no_pii_left(self, text: Any, masker: Masker) -> None:
+        r"""Verifikationsdurchlauf auf dem ERGEBNIS (Security-Audit F1).
+
+        Alle Einzelpruefungen oben sind Pfad-gebunden: sie greifen nur, wenn
+        ein Wert den Weg nimmt, den jemand vorhergesehen hat. Diese Pruefung
+        ist die einzige, die unabhaengig davon greift -- der fertig maskierte
+        String geht noch einmal durch den Analyzer. Findet der dort noch
+        Entitaeten, ist irgendwo etwas durchgerutscht und der Request wird
+        blockiert, statt die PII rauszulassen.
+
+        Die bekannten Platzhalter werden vorher durch ein neutrales Zeichen
+        ersetzt: sonst wuerde die Erkennung womoeglich den Platzhalter selbst
+        (``<PERSON_0>``) als Namen lesen und jeden korrekt maskierten
+        Tool-Aufruf blocken.
+
+        Verworfen werden anschliessend genau die Treffer, deren Span einen
+        FUELLERBEREICH schneidet -- also die, die es ohne die Neutralisierung
+        gar nicht gaebe. Die Fuellerpositionen sind bekannt, weil wir sie
+        selbst setzen. Gefiltert wird damit nach HERKUNFT, nicht nach Typ.
+
+        Vorgeschichte, damit niemand zum einfacheren Filter zurueckbaut: Hier
+        stand zuerst ein Filter auf das Praefix ``CUSTOM_``. Der schloss
+        denselben Fehlalarm-Raum, blendete das Sicherheitsnetz aber
+        VOLLSTAENDIG fuer eigene Entitaeten aus -- ausgerechnet fuer
+        Kundennamen und interne Kuerzel, die sonst gar nichts erkennt
+        (Finding F10). Ein unmaskiert durchgerutschter Kundenname loeste
+        keinen Block mehr aus. Zusaetzlich haette ein Presidio-Recognizer, den
+        jemand ``CUSTOM_*`` nennt, still aus der Pruefung fallen koennen --
+        der Typ-Namensraum ist geteilt (Finding F13). Beides erledigt die
+        Span-Pruefung.
+
+        Warum ueberhaupt gefiltert wird -- zwei Gruende:
+
+        1. Sie haetten hier nichts mehr zu finden. Eigene Regeln sind
+           deterministische Literale bzw. Regexe, die im ersten Durchlauf
+           bereits ueber jeden Textknoten gelaufen sind. Was sie dort nicht
+           getroffen haben, koennen sie hier nicht neu treffen -- die
+           Ersetzung kann einen Match nur zerstoeren. Presidio dagegen ist
+           kontextbasiert: dort kann der zweite Durchlauf sehr wohl etwas
+           finden, was der erste uebersehen hat. Fuer Presidio hat diese
+           Nachpruefung also einen Zweck, fuer deterministische Regeln nicht.
+
+        2. Sie erzeugen hier FALSCHE Treffer. Gemessen (drei Faelle):
+           Ein Muster, das Whitespace ueberspannt (``Nord\s*wind``), greift
+           auf ``Nord<PERSON_0>wind`` erst NACH der Ersetzung, weil aus dem
+           Platzhalter ein Leerzeichen wird -- im Original passte es nicht.
+           Ebenso trifft ein Muster wie ``\s{3,}`` die Leerzeichenkette, die
+           aus mehreren angrenzenden Platzhaltern entsteht. Beides sind
+           Treffer, die ausschliesslich durch die Nachpruefung entstehen --
+           und jeder davon haette einen korrekt maskierten Request blockiert,
+           mit einer Meldung, die auf einen Maskierungsfehler zeigt. Wer ein
+           breites eigenes Muster anlegt, haette damit seine eigenen Anfragen
+           lahmgelegt.
+
+        Ein breites Grossbuchstaben-Muster (``[A-Z]{5,}``) ist dagegen
+        unauffaellig -- das faengt die Neutralisierung bereits ab. Der Filter
+        schliesst den Suchraum aber grundsaetzlich statt fillerabhaengig.
+
+        WARUM NICHT ``_presidio_analyze`` AUFRUFEN: Das waere die elegantere
+        Form, wuerde die eigenen Regeln aber ebenfalls komplett aus der
+        Pruefung nehmen -- also denselben blinden Fleck erzeugen wie der alte
+        Praefix-Filter. Ausserdem ist ``_analyze`` die Naht, an der die Tests
+        dieses Moduls die Erkennung ersetzen (test_toolcall_masking.py setzt
+        ``guard._analyze``); ein Wechsel des Aufrufs -- oder auch nur ein
+        zusaetzlicher Parameter -- laesst zehn dieser Mocks ins Leere laufen.
+
+        AN DEN NAECHSTEN, DER HIER AUFRAEUMT: Der Artefaktfilter darf NUR
+        verwerfen, was beweisbar unsere eigene Einfuegung ist. Jede feinere
+        Variante -- Filter nach Typ, nach blosser Span-Ueberlappung, nach
+        zerlegten und wieder verklebten Segmenten -- hat in dieser Reihenfolge
+        je ein Leck erzeugt (F10, S1, S1-R/HIGH-1/HIGH-2). Die Begruendung und
+        die Liste stehen ausfuehrlich an ``_is_filler_artifact``. Lies sie,
+        bevor du hier optimierst.
+
+        Genau EIN Analyzer-Aufruf pro Durchlauf. Der Filter entscheidet ohne
+        weitere Aufrufe, deshalb kann sich das Zeitbudget der Regel-Schicht
+        hier auch nicht vervielfachen (Finding DoS-2).
+        """
+        if not isinstance(text, str) or not text.strip():
+            return
+        probe, filler_spans = _build_probe(text, masker.reid_map)
+        leftovers = [e for e in await self._analyze(probe)
+                     if not _is_filler_artifact(probe, e, filler_spans)]
+        if leftovers:
+            types = sorted({str(e.get("entity_type")) for e in leftovers})
+            # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
+            # Client-Inhalt) -- nie den Fundtext selbst (Gesetz 5).
+            # Formulierung bewusst ehrlich (QA-Audit): ein Restbefund ist
+            # NICHT zwingend ein Fehler im Maskierungspfad. Er entsteht auch
+            # durch Grenzfaelle der Erkennung selbst -- derselbe Analyzer
+            # findet an derselben Stelle im zweiten Durchlauf etwas, das er
+            # im ersten uebersehen hat, weil sich der umgebende Kontext durch
+            # die Ersetzung veraendert hat. Belegt am Beispiel
+            # "Digitalisierung Rathaus Muenchen" + "Frau Schmidt". Eine
+            # Meldung, die dem Betreiber einen Code-Fehler unterstellt, waere
+            # in diesen Faellen schlicht falsch.
+            # DRITTE URSACHE (QA-Finding): die beiden obigen sind Fehler, die
+            # WIR beheben muessten -- daraus kann der Betreiber nichts tun.
+            # Die praktisch wahrscheinlichste Ursache ist die dritte: ein
+            # eigenes Regex-Muster mit variablem Whitespace, das ueber einen
+            # eingesetzten Platzhalter hinweggreift (S1-R, bewusst
+            # akzeptiert). Sie ist die einzige, die er selbst loesen kann --
+            # und security-baseline.md bzw. ADR 0001, wo sie steht, liest er
+            # nie. Die Blockmeldung liest er. Also steht sie hier, mit dem
+            # Werkzeug dazu. WICHTIG: Konkreter werden darf diese Meldung nur
+            # ueber Kategorien und Werkzeugnamen. Kein Fundwert, kein
+            # Regelwert, kein Textausschnitt (Gesetz 5, DATENSCHLE-64/-57) --
+            # festgenagelt in TestBlockmeldungNenntDasEigeneMuster.
+            raise DatenschleuseBlocked(
+                "Nach der Maskierung wurden weiterhin personenbezogene Daten "
+                f"erkannt ({', '.join(types)}) -- Request blockiert "
+                "(fail-closed). Moegliche Ursachen: eine Luecke im "
+                "Maskierungspfad, ein Grenzfall der Erkennung, bei dem erst "
+                "der zweite Durchlauf anschlaegt, oder ein eigenes "
+                "Regex-Muster mit variablem Whitespace, das ueber einen "
+                "eingesetzten Platzhalter hinweggreift -- pruefen mit: "
+                "datenschleuse-rules test. In allen Faellen gilt: im Zweifel "
+                "nicht rauslassen."
+            )
+
+    async def _mask_arguments(
+        self, raw: Any, masker: Masker, requested_level: Any, approved: bool
+    ) -> Any:
+        """Maskiert einen ``arguments``-JSON-String strukturerhaltend."""
+        if not isinstance(raw, str) or not raw.strip():
+            return raw
+        try:
+            parsed = json.loads(
+                raw,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_json_constant,
+            )
+        except _UnsafeJson as exc:
+            # Mehrdeutiges bzw. nicht standardkonformes JSON: nicht zuverlaessig
+            # pruefbar -> blocken. Die Meldung traegt bewusst keinen Fundwert.
+            raise DatenschleuseBlocked(
+                f"arguments ist nicht eindeutig pruefbar ({exc}) -- blockiert "
+                "(fail-closed)."
+            ) from exc
+        except RecursionError as exc:
+            raise DatenschleuseBlocked(
+                "arguments ist zu tief verschachtelt, um geprueft zu werden -- "
+                "blockiert (fail-closed)."
+            ) from exc
+        except (ValueError, TypeError):
+            # Modelle liefern gelegentlich kaputte ``arguments``. Nicht
+            # parsebar heisst NICHT ungeprueft -- dann wird der Rohstring als
+            # Freitext maskiert. (Maskieren ist nie ein Leck; ein Block waere
+            # hier die haertere, aber unnoetige Reaktion.)
+            result = await self._mask_text_value(
+                raw, masker, requested_level, approved
+            )
+            await self._verify_no_pii_left(result, masker)
+            return result
+
+        collected: List[Dict[str, Any]] = []
+        masked = await self._mask_json_node(parsed, masker, collected)
+
+        # Schutzklassen auf dem GESAMTEN Rohstring: das Signalwort ("Diagnose")
+        # und die Personen-Referenz stehen typischerweise in VERSCHIEDENEN
+        # JSON-Feldern -- pro Feld einzeln klassifiziert wuerde die Kombination
+        # nie erkannt. Uebergeben werden nur die Entity-TYPEN der gesammelten
+        # Treffer: der Klassifizierer nutzt von den Entities ausschliesslich
+        # den Typ (Personen-Referenz), und feld-lokale Offsets waeren auf den
+        # Rohstring bezogen schlicht falsch.
+        self._enforce_sensitivity(
+            raw,
+            [{"entity_type": e.get("entity_type")} for e in collected],
+            requested_level,
+            approved,
+        )
+        if masked == parsed:
+            # Nichts erkannt -> Original unveraendert weiterreichen (keine
+            # kosmetische Re-Serialisierung eines fremden JSON-Strings).
+            # ACHTUNG: auch dieser Pfad muss durch die Verifikation -- genau
+            # hier ging beim Duplicate-Key-Fund der Rohstring mit PII hinaus.
+            result = raw
+        else:
+            try:
+                result = json.dumps(masked, ensure_ascii=False, allow_nan=False)
+            except ValueError as exc:
+                raise DatenschleuseBlocked(
+                    "arguments liess sich nicht als striktes JSON serialisieren "
+                    "-- blockiert (fail-closed)."
+                ) from exc
+        await self._verify_no_pii_left(result, masker)
+        return result
+
+    async def _mask_function_payload(
+        self, function: Any, masker: Masker, requested_level: Any, approved: bool
+    ) -> None:
+        """Maskiert ``name`` und ``arguments`` eines Function-/Tool-Calls."""
+        if not isinstance(function, dict):
+            return
+        if isinstance(function.get("name"), str):
+            function["name"] = await self._mask_text_value(
+                function["name"], masker, requested_level, approved
+            )
+        if isinstance(function.get("arguments"), str):
+            function["arguments"] = await self._mask_arguments(
+                function["arguments"], masker, requested_level, approved
+            )
+
+    async def _mask_message_fields(
+        self, msg: Dict[str, Any], masker: Masker, requested_level: Any, approved: bool
+    ) -> None:
+        """Maskiert alle Textfelder einer Message AUSSER ``content`` (das
+        erledigt der bestehende Pfad im Hook). Reihenfolge der Felder ist
+        stabil, damit die Platzhalter-Nummerierung deterministisch bleibt."""
+        for field in ("name", "refusal", "reasoning_content"):
+            value = msg.get(field)
+            if isinstance(value, str):
+                msg[field] = await self._mask_text_value(
+                    value, masker, requested_level, approved
+                )
+
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if isinstance(call, dict):
+                    await self._mask_function_payload(
+                        call.get("function"), masker, requested_level, approved
+                    )
+
+        # Legacy-Format (vor tool_calls): dieselbe Nutzlast, andere Stelle.
+        await self._mask_function_payload(
+            msg.get("function_call"), masker, requested_level, approved
+        )
 
     # ---- Anonymisierungs-Hinweis -------------------------------------------
     @staticmethod
@@ -891,10 +2004,35 @@ class DatenschleuseGuardrail(_GuardrailBase):
         sodass echtes Token-Streaming erhalten bleibt."""
         reid_map = self._read_reid_map(request_data)
         processor = ReidStreamProcessor(reid_map, margin=self.placeholder_margin)
+        # tool_call-Fragmente kommen in EIGENEN Feldern (delta.tool_calls[i].
+        # function.arguments), nicht in delta.content -- und sie sind
+        # genauso ueber Chunk-Grenzen zerlegt. Deshalb pro Tool-Call ein
+        # eigener Sliding-Window-Prozessor. Fuer ``arguments`` mit
+        # JSON-escapten Werten, weil das Fragment INNERHALB eines
+        # JSON-Strings landet, den der Client wieder zusammensetzt.
+        escaped_map = json_escaped_mapping(reid_map)
+        tool_states: Dict[Any, Dict[str, Any]] = {}
+        # Reasoning-Modelle streamen ihre Gedankenkette in einem EIGENEN
+        # Delta-Feld, nicht in delta.content. Ohne eigenen Prozessor sah der
+        # Nutzer dort rohe <PERSON_0>-Tokens: kein Leck, aber AK3 verlangt,
+        # dass die Re-Identifikation "ebenso greift wie beim Textkanal" --
+        # und Streaming-Reasoning ist ein beworbenes Client-Kernfeature.
+        text_processors = {
+            field: ReidStreamProcessor(reid_map, margin=self.placeholder_margin)
+            for field in STREAM_TEXT_DELTA_FIELDS
+        }
+        text_templates: Dict[str, Any] = {}
 
         last_content_chunk = None
         try:
             async for chunk in response:
+                self._stream_reidentify_tool_calls(
+                    chunk, tool_states, escaped_map, reid_map
+                )
+                for field in self._stream_reidentify_text_deltas(
+                    chunk, text_processors
+                ):
+                    text_templates[field] = chunk
                 content = self._extract_delta(chunk)
                 if content is None:
                     # Chunk ohne Text-Delta (role-only, finish_reason, usage) ->
@@ -914,9 +2052,34 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 # Struktur eines echten Content-Chunks klonen (versionsagnostisch,
                 # ohne LiteLLM-Typen konstruieren zu muessen) und Rest anhaengen.
                 final_chunk = copy.deepcopy(last_content_chunk)
+                # Security-Audit: ohne dieses Leeren wandert ein Reasoning-,
+                # refusal- oder tool_call-Fragment, das DERSELBE Chunk trug,
+                # unveraendert in den Klon -- und ist zu dem Zeitpunkt bereits
+                # ausgeliefert. Folge: doppelter Text und, bei tool_calls,
+                # deterministisch kaputtes JSON im zusammengesetzten
+                # ``arguments``. Der Fix aus der Vorrunde traf nur zwei der
+                # drei Tail-Pfade; dieser hier fehlte.
+                self._blank_stream_fragments(final_chunk)
                 self._set_delta(final_chunk, tail)
                 self._clear_finish_reason(final_chunk)
                 yield final_chunk
+            # Dasselbe fuer die zurueckgehaltenen Enden der tool_call-Puffer:
+            # ohne diesen Flush fehlt dem Client das Ende von ``arguments``
+            # und das JSON des Tool-Aufrufs ist abgeschnitten.
+            for key, state in tool_states.items():
+                tails = {
+                    field: state[field].flush() for field in ("arguments", "name")
+                }
+                if state["template"] is None or not any(tails.values()):
+                    continue
+                yield self._build_tool_tail_chunk(state["template"], key, tails)
+            # Und der Rest des Reasoning-Puffers -- ohne diesen Flush fehlt
+            # dem Nutzer das Ende der Gedankenkette.
+            for field, processor in text_processors.items():
+                text_tail = processor.flush()
+                template = text_templates.get(field)
+                if text_tail and template is not None:
+                    yield self._build_text_tail_chunk(template, field, text_tail)
 
     # ---- Post-Call Non-Streaming: einfacher Voll-Ersatz -------------------
     async def async_post_call_success_hook(
@@ -950,6 +2113,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
                         message["content"] = new_content
                     else:
                         message.content = new_content
+                # Der Rueckweg muss dieselben Felder abdecken wie der Hinweg
+                # (DATENSCHLE-66): gibt das Modell tool_calls zurueck, stehen
+                # die Platzhalter in ``arguments`` -- ohne Ersetzung bekaeme
+                # der Client <PERSON_0> statt des echten Werts und der
+                # Tool-Aufruf liefe auf einem Platzhalter.
+                self._reidentify_message_fields(message, reid_map)
         except Exception:
             # Bewusst still: Platzhalter im Output sind sicher (kein PII-Leck).
             return response
@@ -974,6 +2143,176 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if isinstance(request_data.get(REID_MAP_KEY), dict):
             return request_data[REID_MAP_KEY]
         return {}
+
+    @staticmethod
+    def _field(obj: Any, name: str) -> Any:
+        """Liest ein Feld robust aus dict ODER Objekt (LiteLLM liefert je nach
+        Codepfad das eine oder das andere)."""
+        if isinstance(obj, dict):
+            return obj.get(name)
+        return getattr(obj, name, None)
+
+    @staticmethod
+    def _set_field(obj: Any, name: str, value: Any) -> None:
+        if isinstance(obj, dict):
+            obj[name] = value
+        else:
+            setattr(obj, name, value)
+
+    def _reidentify_function_payload(self, function: Any, reid_map: Dict[str, str]) -> None:
+        if function is None:
+            return
+        name = self._field(function, "name")
+        if isinstance(name, str):
+            self._set_field(function, "name", reidentify_full(name, reid_map))
+        arguments = self._field(function, "arguments")
+        if isinstance(arguments, str):
+            self._set_field(
+                function, "arguments", reidentify_json_arguments(arguments, reid_map)
+            )
+
+    def _reidentify_message_fields(self, message: Any, reid_map: Dict[str, str]) -> None:
+        """Re-Identification fuer alle Antwort-Felder neben ``content``."""
+        for field in ("refusal", "reasoning_content"):
+            value = self._field(message, field)
+            if isinstance(value, str):
+                self._set_field(message, field, reidentify_full(value, reid_map))
+
+        tool_calls = self._field(message, "tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                self._reidentify_function_payload(self._field(call, "function"), reid_map)
+
+        self._reidentify_function_payload(self._field(message, "function_call"), reid_map)
+
+    @staticmethod
+    def _chunk_delta(chunk: Any) -> Any:
+        choices = getattr(chunk, "choices", None)
+        if choices is None and isinstance(chunk, dict):
+            choices = chunk.get("choices")
+        if not choices:
+            return None
+        first = choices[0]
+        delta = getattr(first, "delta", None)
+        if delta is None and isinstance(first, dict):
+            delta = first.get("delta")
+        return delta
+
+    def _iter_stream_functions(self, chunk: Any) -> List[Tuple[Any, Any]]:
+        """Liefert (Schluessel, function-Payload) fuer jedes Tool-/Function-Call-
+        Fragment eines Chunks. Der Schluessel identifiziert den Tool-Call ueber
+        die Streams hinweg (``index``), damit die Fragmente eines Aufrufs im
+        richtigen Puffer landen."""
+        found: List[Tuple[Any, Any]] = []
+        delta = self._chunk_delta(chunk)
+        if delta is None:
+            return found
+        tool_calls = self._field(delta, "tool_calls")
+        if isinstance(tool_calls, list):
+            for position, call in enumerate(tool_calls):
+                index = self._field(call, "index")
+                key = ("tool_calls", index if isinstance(index, int) else position)
+                found.append((key, self._field(call, "function")))
+        function_call = self._field(delta, "function_call")
+        if function_call is not None:
+            found.append((("function_call", 0), function_call))
+        return found
+
+    def _stream_reidentify_tool_calls(
+        self,
+        chunk: Any,
+        states: Dict[Any, Dict[str, Any]],
+        escaped_map: Dict[str, str],
+        reid_map: Dict[str, str],
+    ) -> None:
+        """Ersetzt Platzhalter in den tool_call-Fragmenten EINES Chunks
+        (in-place) und puffert dabei wie im Text-Kanal nur einen kleinen Tail."""
+        for key, function in self._iter_stream_functions(chunk):
+            if function is None:
+                continue
+            state = states.get(key)
+            if state is None:
+                state = {
+                    "arguments": ReidStreamProcessor(
+                        escaped_map, margin=self.placeholder_margin
+                    ),
+                    "name": ReidStreamProcessor(
+                        reid_map, margin=self.placeholder_margin
+                    ),
+                    "template": None,
+                }
+                states[key] = state
+            for field in ("arguments", "name"):
+                value = self._field(function, field)
+                if isinstance(value, str):
+                    self._set_field(function, field, state[field].feed(value))
+            state["template"] = chunk
+
+    def _stream_reidentify_text_deltas(
+        self, chunk: Any, processors: Dict[str, ReidStreamProcessor]
+    ) -> List[str]:
+        """Ersetzt Platzhalter in den Freitext-Deltas neben ``content``
+        (in-place) und liefert die Felder zurueck, die dieser Chunk trug --
+        die taugen dann als Vorlage fuer den jeweiligen Abschluss-Chunk."""
+        carried: List[str] = []
+        delta = self._chunk_delta(chunk)
+        if delta is None:
+            return carried
+        for field, processor in processors.items():
+            value = self._field(delta, field)
+            if not isinstance(value, str):
+                continue
+            self._set_field(delta, field, processor.feed(value))
+            carried.append(field)
+        return carried
+
+    def _blank_stream_fragments(self, chunk: Any) -> None:
+        """Leert in einem GEKLONTEN Chunk alle Fragmente, die der Client
+        bereits bekommen hat. Ohne das wuerde ein Abschluss-Chunk den Inhalt
+        seiner Vorlage ein zweites Mal ausliefern."""
+        self._set_delta(chunk, "")
+        delta = self._chunk_delta(chunk)
+        if delta is not None:
+            for field in STREAM_TEXT_DELTA_FIELDS:
+                if isinstance(self._field(delta, field), str):
+                    self._set_field(delta, field, "")
+        for _key, function in self._iter_stream_functions(chunk):
+            if function is None:
+                continue
+            for field in ("arguments", "name"):
+                if isinstance(self._field(function, field), str):
+                    self._set_field(function, field, "")
+
+    def _build_tool_tail_chunk(
+        self, template: Any, key: Any, tails: Dict[str, str]
+    ) -> Any:
+        """Baut den Abschluss-Chunk fuer die Rest-Puffer eines Tool-Calls.
+
+        Wie beim Content-Tail wird ein echter Chunk GEKLONT statt ein
+        LiteLLM-Typ konstruiert (versionsagnostisch). Alle bereits emittierten
+        Fragmente im Klon werden geleert, damit nichts doppelt beim Client
+        ankommt -- uebrig bleibt genau der Rest."""
+        final_chunk = copy.deepcopy(template)
+        self._blank_stream_fragments(final_chunk)
+        for other_key, function in self._iter_stream_functions(final_chunk):
+            if function is None or other_key != key:
+                continue
+            for field in ("arguments", "name"):
+                if isinstance(self._field(function, field), str):
+                    self._set_field(function, field, tails.get(field, ""))
+        self._clear_finish_reason(final_chunk)
+        return final_chunk
+
+    def _build_text_tail_chunk(self, template: Any, field: str, tail: str) -> Any:
+        """Abschluss-Chunk fuer den Restpuffer eines Freitext-Deltas --
+        gleiche Mechanik wie beim Content- und Tool-Call-Tail."""
+        final_chunk = copy.deepcopy(template)
+        self._blank_stream_fragments(final_chunk)
+        delta = self._chunk_delta(final_chunk)
+        if delta is not None:
+            self._set_field(delta, field, tail)
+        self._clear_finish_reason(final_chunk)
+        return final_chunk
 
     @staticmethod
     def _extract_delta(chunk: Any) -> Optional[str]:

@@ -186,38 +186,7 @@ jobs:
       - name: Laufzettel pruefen (SHA-gepinnte Verdicts)
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-          BASE="origin/$BASE_REF"
-          git fetch origin "$BASE_REF" --depth=200
-
-          CODE_CHANGED=$(git diff --name-only "$BASE"...HEAD -- . ':(exclude).gates' ':(exclude)docs' ':(exclude)*.md' | wc -l)
-          if [ "$CODE_CHANGED" -eq 0 ]; then
-            echo "Nur Doku/Gates geaendert — keine Verdicts noetig. ✅"
-            exit 0
-          fi
-
-          UI_CHANGED=$(git diff --name-only "$BASE"...HEAD | grep -E '\.(tsx|jsx)$|styles?/' | wc -l || true)
-          REQUIRED="security qa"
-          [ "$UI_CHANGED" -gt 0 ] && REQUIRED="$REQUIRED ux"
-
-          FAIL=0
-          for GATE in $REQUIRED; do
-            FILE=".gates/$GATE.json"
-            if [ ! -f "$FILE" ]; then
-              echo "❌ Verdict fehlt: $GATE"; FAIL=1; continue
-            fi
-            VERDICT=$(python3 -c "import json;print(json.load(open('$FILE'))['verdict'])")
-            PINNED=$(python3 -c "import json;print(json.load(open('$FILE'))['commit'])")
-            if [ "$VERDICT" != "pass" ]; then
-              echo "❌ $GATE: Verdict ist '$VERDICT'"; FAIL=1; continue
-            fi
-            STALE=$(git rev-list "$PINNED"..HEAD -- . ':(exclude).gates' | wc -l)
-            if [ "$STALE" -gt 0 ]; then
-              echo "❌ $GATE: $STALE Code-Commit(s) NACH dem Audit (gepinnt: ${PINNED:0:8}) — erneutes Audit noetig."
-              FAIL=1
-            else
-              echo "✅ $GATE: pass @ ${PINNED:0:8} (frisch)"
-            fi
-          done
-          exit $FAIL
+          # Die echte PR-Spitze. HEAD ist hier der von GitHub fabrizierte
+          # Probe-Merge refs/pull/N/merge, nicht der auditierte Stand.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/check-laufzettel.sh

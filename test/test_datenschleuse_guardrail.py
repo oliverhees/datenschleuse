@@ -15,6 +15,7 @@ Fuer CI kann aequivalent mit pytest + pytest-asyncio gelaufen werden.
 """
 
 import os
+import re
 import sys
 import types
 import unittest
@@ -401,6 +402,206 @@ class TestSuccessHook(unittest.IsolatedAsyncioTestCase):
             data=data, user_api_key_dict=None, response=response
         )
         self.assertEqual(out.choices[0].message.content, "Hallo Max Mustermann!")
+
+
+# ===========================================================================
+# 7. Kollision zwischen Beispiel-Platzhaltern im Hinweis und ECHTEN
+#    Platzhaltern (Befund aus dem E2E-Round-Trip-Beweis, DATENSCHLE-67)
+# ===========================================================================
+class TestNoticePlaceholderCollision(unittest.IsolatedAsyncioTestCase):
+    """Der Anonymisierungs-Hinweis nennt Beispiel-Platzhalter. Haben diese
+    dieselbe Form wie die ECHTEN (``<TYP_ZAHL>``), koennen sie mit ihnen
+    kollidieren.
+
+    Beobachtet im E2E-Lauf (test/e2e_roundtrip.py, AK4): der Hinweis nannte
+    ``<PERSON_1>`` als Beispiel, waehrend ``<PERSON_1>`` im selben Request der
+    echte Platzhalter fuer "Thomas Schneider" war. Das Modell sieht dann
+    denselben Token zweimal in voellig verschiedener Bedeutung -- einmal als
+    Erklaerungsbeispiel, einmal als Daten. Greift es das Beispiel auf, macht
+    die Re-Identifikation daraus stillschweigend den echten Namen und setzt
+    ihn an eine Stelle, an die er nie gehoerte.
+
+    Kein PII-Leck (der Klartext geht nach wie vor nicht raus), aber eine
+    falsche Antwort -- exakt dieselbe Fehlerklasse wie der dokumentierte
+    Live-Befund vom 2026-07-29 ("Hallo Hans Mueller!"), nur eine Ebene
+    subtiler: dort war es ein Beispiel-NAME, hier ein Beispiel-PLATZHALTER.
+    """
+
+    # Genau die Form, die Masker._placeholder_for() erzeugt: <TYP_ZAHL>.
+    REAL_PLACEHOLDER_SHAPE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
+    # Jeder platzhalter-AEHNLICHE Token in spitzen Klammern -- also auch
+    # Schablonen wie <PERSON_N> oder <TYP_NUMMER>. Siehe zweiten Test.
+    ANY_BRACKET_TOKEN = re.compile(r"<[A-Z][A-Z0-9_]*>")
+
+    def test_notice_contains_no_token_masker_could_produce(self):
+        collidable = self.REAL_PLACEHOLDER_SHAPE.findall(dg.ANONYMIZATION_NOTICE)
+        self.assertEqual(
+            collidable, [],
+            "Der Hinweis nennt Beispiel-Platzhalter in genau der Form, die der "
+            "Masker auch fuer echte Werte vergibt -- sie koennen deshalb mit "
+            f"echten Platzhaltern kollidieren: {collidable}",
+        )
+
+    def test_notice_contains_no_placeholder_template_either(self):
+        """Regression zum teuersten Fehlversuch dieses Items (DATENSCHLE-67).
+
+        Ein erster Fix ersetzte die kollidierenden Beispiele durch die
+        Schablone <PERSON_N> und erklaerte dazu "wobei N fuer eine Ziffer
+        steht". Gemessen gegen llama3.1:8b: das Modell setzte daraufhin
+        PFLICHTBEWUSST eine Ziffer ein und gab <PERSON_1> zurueck, wo
+        <PERSON_0> stand -- in 3 von 3 Laeufen, bei temperature 0. Damit war
+        JEDER Platzhalter der Antwort unbrauchbar: die Re-Identifikation
+        findet <PERSON_1> nicht im Mapping und laesst ihn stehen (stiller
+        Fehler, siehe docs/HEADROOM.md) -- oder ersetzt ihn durch eine ANDERE
+        Person, falls es zufaellig einen echten <PERSON_1> gibt.
+
+        Die Lehre ist allgemeiner als der eine Token: Ein Hinweis, der dem
+        Modell irgendetwas Platzhalter-Foermiges zum Nachbauen hinhaelt, wird
+        nachgebaut. Deshalb darf der Hinweis GAR KEINEN Token in spitzen
+        Klammern enthalten -- weder echte (<PERSON_1>) noch schablonenhafte
+        (<PERSON_N>, <TYP_NUMMER>). Er beschreibt das Prinzip in Worten.
+        """
+        tokens = self.ANY_BRACKET_TOKEN.findall(dg.ANONYMIZATION_NOTICE)
+        self.assertEqual(
+            tokens, [],
+            "Der Hinweis haelt dem Modell platzhalter-foermige Tokens zum "
+            f"Nachbauen hin: {tokens}. Gemessen wurde, dass llama3.1:8b eine "
+            "Schablone wie <PERSON_N> mit einer echten Ziffer instanziiert und "
+            "damit den Index der echten Platzhalter ueberschreibt.",
+        )
+
+    def test_notice_contains_no_angle_bracket_at_all(self):
+        """Die Invariante, die wir wirklich behaupten -- und die einzige, die
+        haelt (Security-Audit-Finding zu DATENSCHLE-67).
+
+        Die beiden Tests darueber pruefen Regexe auf durchgaengig
+        GROSSGESCHRIEBENE Tokens. Damit laufen <Person_1>, <Name_1>,
+        <Platzhalter>, <PERSON 1> und <PERSON-1> allesamt durch -- ein
+        kuenftiger Bearbeiter, der den Hinweis "verstaendlicher" macht und
+        <Person_1> einfuegt, stellt die urspruengliche Falle wieder her, und
+        beide Tests bleiben gruen.
+
+        Der Hinweis braucht ueberhaupt keine spitze Klammer: er beschreibt das
+        Prinzip in Worten. Also ist das Verbot der oeffnenden Klammer die
+        praezise, nicht umgehbare Form der Regel. Die beiden Regex-Tests
+        bleiben als Dokumentation der historischen Faelle stehen.
+        """
+        self.assertNotIn(
+            "<", dg.ANONYMIZATION_NOTICE,
+            "Der Hinweis enthaelt eine spitze Klammer. Alles, was der Hinweis "
+            "dem Modell platzhalter-foermig hinhaelt, baut das Modell nach -- "
+            "zweimal in diesem Projekt belegt (Beispiel-Platzhalter, dann "
+            "Schablone). Er beschreibt das Prinzip in Worten und braucht "
+            "deshalb keine Klammer.",
+        )
+
+    def test_notice_still_says_something_useful(self):
+        """Gegenprobe zur Verbots-Assertion (Security-Audit-Finding, zweite
+        Haelfte): ein auf Leerstring reduzierter Hinweis wuerde jede
+        Verbotspruefung bestehen, waehrend die Re-Identifikation still
+        degradiert -- das Modell wuesste dann nicht mehr, dass Platzhalter
+        Absicht sind, und begaenne sie umzuformulieren oder nachzufragen.
+
+        Deshalb hier die Mindestaussage: der Hinweis muss die drei Dinge
+        leisten, wegen denen es ihn gibt. Bewusst auf Schluesselbegriffe
+        gepinnt statt auf den Wortlaut -- Umformulieren bleibt erlaubt,
+        Aushoehlen nicht.
+        """
+        notice = dg.ANONYMIZATION_NOTICE
+        self.assertGreater(
+            len(notice), 150,
+            "Hinweis ist auf eine Laenge geschrumpft, die das Prinzip nicht "
+            f"mehr erklaeren kann ({len(notice)} Zeichen).",
+        )
+        for begriff, zweck in (
+            ("Platzhalter", "benennt, worum es geht"),
+            ("kein Tippfehler", "sagt, dass es Absicht ist"),
+            ("exakt", "verlangt woertliche Rueckgabe"),
+            ("unveränderter Nummer", "schuetzt den Index (Befund DATENSCHLE-67)"),
+        ):
+            self.assertIn(
+                begriff, notice,
+                f"Dem Hinweis fehlt '{begriff}' -- der Teil, der {zweck}.",
+            )
+
+    async def test_notice_examples_never_collide_with_real_reid_map(self):
+        """Verhaltensnachweis: kein platzhalterfoermiger Token aus dem Hinweis
+        darf ein Schluessel des echten reid_map sein."""
+        guard = dg.DatenschleuseGuardrail()
+
+        names = ("Maria Meier", "Thomas Schneider")
+
+        async def fake_analyze(text):
+            out = []
+            for name in names:
+                start = 0
+                while True:
+                    idx = text.find(name, start)
+                    if idx < 0:
+                        break
+                    out.append({"entity_type": "PERSON", "start": idx,
+                                "end": idx + len(name), "score": 0.99})
+                    start = idx + len(name)
+            return out
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {
+            "messages": [
+                {"role": "user",
+                 "content": "Maria Meier hat angerufen. Thomas Schneider war dabei. "
+                            "Maria Meier hat erneut angerufen."},
+            ]
+        }
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        reid_map = out["metadata"][dg.REID_MAP_KEY]
+        notice_text = out["messages"][0]["content"]
+
+        # Vorbedingung des Befunds: es gibt ueberhaupt zwei echte Personen-
+        # Platzhalter, darunter <PERSON_1>.
+        self.assertEqual(sorted(reid_map), ["<PERSON_0>", "<PERSON_1>"])
+
+        tokens_in_notice = set(self.REAL_PLACEHOLDER_SHAPE.findall(notice_text))
+        collisions = sorted(tokens_in_notice & set(reid_map))
+        self.assertEqual(
+            collisions, [],
+            "Beispiel-Platzhalter aus dem Hinweis sind gleichzeitig echte "
+            f"Platzhalter dieses Requests: {collisions}. Greift das Modell das "
+            "Beispiel auf, re-identifiziert die Datenschleuse es zu "
+            f"{[reid_map[c] for c in collisions]}.",
+        )
+
+    async def test_stable_mapping_same_value_same_placeholder(self):
+        """AK4 als schneller Unit-Test (der E2E-Lauf beweist dasselbe gegen den
+        echten Stack, braucht dafuer aber Docker)."""
+        guard = dg.DatenschleuseGuardrail()
+
+        async def fake_analyze(text):
+            out = []
+            for name in ("Maria Meier", "Thomas Schneider"):
+                start = 0
+                while True:
+                    idx = text.find(name, start)
+                    if idx < 0:
+                        break
+                    out.append({"entity_type": "PERSON", "start": idx,
+                                "end": idx + len(name), "score": 0.99})
+                    start = idx + len(name)
+            return out
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
+        data = {"messages": [{"role": "user",
+                              "content": "Maria Meier und Thomas Schneider und Maria Meier."}]}
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None, cache=None, data=data, call_type="completion"
+        )
+        masked = out["messages"][-1]["content"]
+        self.assertEqual(masked, "<PERSON_0> und <PERSON_1> und <PERSON_0>.")
+        self.assertEqual(out["metadata"][dg.REID_MAP_KEY],
+                         {"<PERSON_0>": "Maria Meier", "<PERSON_1>": "Thomas Schneider"})
 
 
 if __name__ == "__main__":

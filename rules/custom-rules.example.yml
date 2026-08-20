@@ -1,0 +1,77 @@
+# Datenschleuse — eigene Begriffe und Muster (Vorlage)
+#
+# ALLE Werte hier sind FREI ERFUNDEN. Kopieren und anpassen:
+#     install -m 600 rules/custom-rules.example.yml rules/custom-rules.yml
+#
+# Die echte Datei rules/custom-rules.yml ist per .gitignore vom Repository
+# ausgeschlossen -- sie enthaelt eure echten Kunden- und Projektnamen und ist
+# wie ein Secret zu behandeln.
+#
+# Gepflegt wird sie ueber die CLI (schreibt nur, was seinen Testfall besteht):
+#     ./tools/datenschleuse-rules add kunde-nordwind \
+#         --entity Kundenname --term "Nordwind Logistik" \
+#         --example "Angebot fuer Nordwind Logistik rausgeschickt"
+#     ./tools/datenschleuse-rules list
+#     ./tools/datenschleuse-rules test "Text zum Ausprobieren"
+#
+# Aenderungen wirken SOFORT -- kein Rebuild, kein Container-Neustart.
+#
+# PFLICHTFELDER pro Regel:
+#   name      eindeutiger Kurzname (Kleinbuchstaben, Ziffern, - und _)
+#   entity    Kategorie -> wird zum Platzhalter <CUSTOM_KATEGORIE_N>
+#   type      'term' (woertlicher Begriff) oder 'regex' (Muster)
+#   value     der Begriff bzw. das Regex
+#   examples  mindestens EIN Text, in dem die Regel greifen MUSS
+#
+# Ohne gruenes 'examples' wird die Regel NICHT aktiv (sie erscheint dann in
+# `datenschleuse-rules list` unter "NICHT AKTIV"). Das ist Absicht: ein
+# ungetestetes Muster wuerde in falscher Sicherheit wiegen.
+
+rules:
+  # --- Kundenname als woertlicher Begriff -------------------------------
+  - name: kunde-nordwind
+    entity: Kundenname
+    type: term
+    value: "Nordwind Logistik"
+    examples:
+      - "Angebot fuer Nordwind Logistik rausgeschickt"
+
+  # --- Projektname; case_sensitive, damit das Alltagswort unberuehrt bleibt
+  - name: projekt-adlerflug
+    entity: Projektname
+    type: term
+    value: "Adlerflug"
+    case_sensitive: true
+    examples:
+      - "Der Meilenstein von Adlerflug verschiebt sich."
+
+  # --- Internes Kuerzel als Muster --------------------------------------
+  # counter_examples sind optional, aber sehr empfehlenswert: sie halten ein
+  # zu gieriges Muster auf, BEVOR es live geht.
+  - name: projektnummer
+    entity: Projektnummer
+    type: regex
+    value: "\\bPRJ-[0-9]{4}\\b"
+    examples:
+      - "Bitte pruefe Ticket PRJ-1234."
+    counter_examples:
+      - "Die Rechnung RE-1234 ist offen."
+
+  # --- Mandantenkuerzel ---------------------------------------------------
+  - name: mandantenkuerzel
+    entity: Mandant
+    type: regex
+    value: "\\bKD-[A-Z]{3}\\b"
+    examples:
+      - "Mandant KD-ABC hat angerufen."
+    counter_examples:
+      - "Die AG hat geantwortet."
+
+  # --- Voruebergehend abschalten statt loeschen ---------------------------
+  - name: produkt-altbestand
+    entity: Produktname
+    type: term
+    value: "Windrose Classic"
+    enabled: false
+    examples:
+      - "Windrose Classic wird nicht mehr gefuehrt."
