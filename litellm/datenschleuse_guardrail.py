@@ -1540,6 +1540,55 @@ MESSAGE_FIELDS_VALIDATED = (
     "cache_control",
 )
 
+#: Felder mit EIGENEM Maskierungspfad -- sie sind kein schlichter Freitext:
+#: ``content`` ist String ODER Part-Liste, ``tool_calls``/``function_call``
+#: sind Strukturen mit JSON-Nutzlast. Sie werden an ihren eigenen Stellen
+#: behandelt, nicht in der Freitext-Schleife.
+MESSAGE_FIELDS_OWN_PATH = ("content", "tool_calls", "function_call")
+
+#: Die schlichten Freitextfelder -- ABGELEITET, nicht aufgezaehlt (F9).
+#:
+#: Hier standen drei handgepflegte Tupel ``("name", "refusal",
+#: "reasoning_content")``: in _mask_message_fields, in
+#: _validate_message_shape und (seit F3) im Aufruf-Zaehler. Das Register
+#: MESSAGE_FIELDS_MASKED sah aus wie die Quelle der Wahrheit, trieb aber
+#: keine einzige Schleife.
+#:
+#: Die Folge war die gefaehrliche Richtung: ALLOWED_MESSAGE_FIELDS leitet
+#: sich vom Register ab, ein neu eingetragenes Feld PASSIERT also die
+#: Formpruefung -- ohne je maskiert zu werden. Ein Feld einzutragen machte
+#: die Guardrail an dieser Stelle unsicherer statt sicherer. Genau die
+#: Falle, die ein Register verhindern soll.
+#:
+#: Dritte Wiederholung derselben Bauart in diesem Projekt (vgl. F1: zweite
+#: Referenz, F3: zweite Zaehlung). Deshalb abgeleitet statt aufgezaehlt.
+MESSAGE_FIELDS_PLAIN_TEXT = tuple(
+    feld for feld in MESSAGE_FIELDS_MASKED if feld not in MESSAGE_FIELDS_OWN_PATH
+)
+
+# Import-Zeit-Zusicherung: jedes Registerfeld gehoert GENAU EINEM Pfad.
+# Steht keines in beiden und keines in keinem, kann kein Feld mehr still
+# durchfallen. Als Zusicherung und nicht nur als Test -- dieser Fehler soll
+# gar nicht erst startbar sein.
+_ohne_pfad = sorted(
+    set(MESSAGE_FIELDS_MASKED)
+    - set(MESSAGE_FIELDS_PLAIN_TEXT)
+    - set(MESSAGE_FIELDS_OWN_PATH)
+)
+if _ohne_pfad:  # pragma: no cover - Import-Zeit-Zusicherung
+    raise RuntimeError(
+        f"Message-Registerfelder ohne Maskierungspfad: {_ohne_pfad}"
+    )
+_doppelt = sorted(set(MESSAGE_FIELDS_PLAIN_TEXT) & set(MESSAGE_FIELDS_OWN_PATH))
+if _doppelt:  # pragma: no cover - Import-Zeit-Zusicherung
+    raise RuntimeError(f"Message-Registerfelder in zwei Pfaden: {_doppelt}")
+_fremd = sorted(set(MESSAGE_FIELDS_OWN_PATH) - set(MESSAGE_FIELDS_MASKED))
+if _fremd:  # pragma: no cover - Import-Zeit-Zusicherung
+    raise RuntimeError(
+        f"Eigener Maskierungspfad fuer Felder, die nicht im Register stehen: {_fremd}"
+    )
+del _ohne_pfad, _doppelt, _fremd
+
 ALLOWED_MESSAGE_FIELDS = frozenset(MESSAGE_FIELDS_MASKED + MESSAGE_FIELDS_VALIDATED)
 
 # Protokoll-Rollen. Eine unbekannte Rolle ist entweder ein Client-Fehler oder
@@ -2487,7 +2536,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
                     n += cls._count_text(part.get("text"))
-        for feld in ("name", "refusal", "reasoning_content"):
+        for feld in MESSAGE_FIELDS_PLAIN_TEXT:
             n += cls._count_text(msg.get(feld))
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list):
@@ -3964,7 +4013,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Zielmodell. Genau das Muster, das dieses Register beenden soll.
         # Lehre: ein isinstance-Guard im Mask-Pfad ist immer ein stiller
         # Durchlass. Die Typpruefung gehoert hierher und muss blocken.
-        for field in ("name", "refusal", "reasoning_content"):
+        for field in MESSAGE_FIELDS_PLAIN_TEXT:
             DatenschleuseGuardrail._validate_text_field(msg.get(field), field)
 
         DatenschleuseGuardrail._validate_cache_control(msg.get("cache_control"))
@@ -4344,7 +4393,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         """Maskiert alle Textfelder einer Message AUSSER ``content`` (das
         erledigt der bestehende Pfad im Hook). Reihenfolge der Felder ist
         stabil, damit die Platzhalter-Nummerierung deterministisch bleibt."""
-        for field in ("name", "refusal", "reasoning_content"):
+        for field in MESSAGE_FIELDS_PLAIN_TEXT:
             value = msg.get(field)
             if isinstance(value, str):
                 msg[field] = await self._mask_text_value(
