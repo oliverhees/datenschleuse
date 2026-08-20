@@ -1874,3 +1874,141 @@ class TestStatKeyOnlyAdvancesAfterSuccess(_RuleFileTestCase):
         self.assertEqual(len(versuche), 2,
                          "nach der Ausnahme wurde nie wieder geladen")
         self.assertTrue(rs.active_rules, "Regelsatz blieb dauerhaft leer")
+
+
+# ===========================================================================
+# 28. HIGH-1 / HIGH-2 (Re-Audit 2) — die Segment- und Verkleb-Heuristik
+#     erzeugt selbst Lecks
+#
+# Dritter Anlauf, den Fehlalarmraum feiner zuzuschneiden, drittes Leck:
+#
+#   HIGH-2  Die Duplikat-Entfernung (dict.fromkeys) macht aus vier
+#           Zifferngruppen zwei. "4111 1111 1111 1111" wird zu "41111111" --
+#           acht Ziffern statt sechzehn, kein Fund, kein Block. Wiederholte
+#           Zifferngruppen sind bei Karten, IBANs und Telefonnummern der
+#           NORMALFALL, nicht der Sonderfall.
+#
+#   HIGH-1  Der verklebte Kern LOESCHT den Trenner. Ein Deny-Listen-Begriff,
+#           der selbst ein Leerzeichen enthaelt, kann darin per Konstruktion
+#           nicht vorkommen: "Zephyr Kontor" findet sich weder in "Zephyr"
+#           noch in "Kontor" noch in "ZephyrKontor". Und genau fuer generisch
+#           unbekannte Namen gibt es die Deny-Liste ueberhaupt -- Presidio
+#           schweigt dort. Die Beispieldatei des Repos und die CLI-Hilfe
+#           fuehren beide mit "Nordwind Logistik". Mehrwortig.
+#
+# Konsequenz (Entscheidung des Leads): Die Heuristik fliegt raus. Verworfen
+# wird nur noch, was BEWEISBAR unsere eigene Einfuegung ist -- ein Kern ohne
+# jeden Klartext. Alles darueber hinaus war Optimierung auf Verdacht und hat
+# drei Lecks gekostet, jedes davon gefunden erst von einem Auditor.
+# ===========================================================================
+class TestNoPlaintextEscapesThroughArtifactFilter(
+        _RuleFileTestCase, unittest.IsolatedAsyncioTestCase):
+
+    async def test_kreditkarte_mit_platzhaltern_blockt(self):
+        """HIGH-2: vier Zifferngruppen, drei davon identisch. Die
+        Duplikat-Entfernung halbierte die Nummer."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        # Recognizer, der NUR die volle 16-stellige Form kennt -- so wie ein
+        # echter Kreditkarten-Recognizer (Luhn braucht alle Ziffern).
+        voll = re.compile(r"\b(?:\d{4}[ -]?){3}\d{4}\b")
+
+        async def presidio(text, payload=None):
+            return [{"entity_type": "CREDIT_CARD", "start": m.start(),
+                     "end": m.end(), "score": 0.9}
+                    for m in voll.finditer(text)]
+
+        guard._presidio_analyze = presidio
+        masker = dg.Masker()
+        for i, name in enumerate(("Max", "Erika", "Anna")):
+            masker.reid_map[f"<PERSON_{i}>"] = name
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "Karte 4111<PERSON_0>1111<PERSON_1>1111<PERSON_2>1111",
+                masker)
+
+    async def test_mehrwortiger_deny_begriff_blockt(self):
+        """HIGH-1: der verklebte Kern loescht den Trenner. Ein Begriff mit
+        Leerzeichen kann darin nicht vorkommen -- und Presidio schweigt hier,
+        weil der Name generisch unbekannt ist."""
+        self.write_rules([rule("kunde", entity="Kundenname",
+                               value="Zephyr Kontor",
+                               examples=["Angebot fuer Zephyr Kontor"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def stumm(text, payload=None):
+            return []
+
+        guard._presidio_analyze = stumm
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "Angebot fuer Zephyr<PERSON_0>Kontor", masker)
+
+    async def test_repo_beispiel_nordwind_logistik_blockt(self):
+        """Dieselbe Klasse mit dem Begriff, mit dem die Beispieldatei und die
+        CLI-Hilfe des Repos werben. Wer die Doku nachbaut, ist betroffen."""
+        self.write_rules([rule("kunde", entity="Kundenname",
+                               value="Nordwind Logistik",
+                               examples=["Kunde Nordwind Logistik meldet"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def stumm(text, payload=None):
+            return []
+
+        guard._presidio_analyze = stumm
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "Kunde Nordwind<PERSON_0>Logistik meldet sich", masker)
+
+    async def test_artefaktfilter_kostet_keinen_analyzer_aufruf(self):
+        """Gegenprobe zur Vereinfachung: der verbliebene Artefaktfall wird
+        OHNE jede Nachpruefung entschieden. Genau ein Analyzer-Aufruf pro
+        Verifikationsdurchlauf -- damit ist auch DoS-2 gegenstandslos."""
+        self.write_rules([rule("ws", entity="Formatierung", kind="regex",
+                               value=r"\s{3,}", examples=["a   b"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        aufrufe = []
+
+        async def stumm(text, payload=None):
+            aufrufe.append(text)
+            return []
+
+        guard._presidio_analyze = stumm
+        masker = dg.Masker()
+        for i, name in enumerate(("Max", "Erika", "Anna")):
+            masker.reid_map[f"<PERSON_{i}>"] = name
+
+        await guard._verify_no_pii_left("<PERSON_0><PERSON_1><PERSON_2>",
+                                        masker)
+        self.assertEqual(len(aufrufe), 1,
+                         "der Artefaktfilter darf keine Nachpruefung kosten")
+
+    async def test_auch_der_blockpfad_kostet_nur_einen_aufruf(self):
+        self.write_rules([rule("kunde", entity="Kundenname",
+                               value="Zephyr Kontor",
+                               examples=["Angebot fuer Zephyr Kontor"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        aufrufe = []
+
+        async def stumm(text, payload=None):
+            aufrufe.append(text)
+            return []
+
+        guard._presidio_analyze = stumm
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "Angebot fuer Zephyr<PERSON_0>Kontor", masker)
+        self.assertEqual(len(aufrufe), 1)
