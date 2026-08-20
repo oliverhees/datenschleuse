@@ -40,16 +40,38 @@ Regressionsfaelle ab (Platzhalter am Textanfang/-ende, Klartext ohne Trenner
 direkt neben Fuellmaterial, leere und einzeichige Kerne, Umlaute und
 Mehrbyte-Zeichen an den Grenzen).
 
+DAS TYP-UNIVERSUM WIRD ABGELEITET, NICHT GEPFLEGT
+-------------------------------------------------
 Ebenfalls variiert wird der ``entity_type`` -- inklusive ``CUSTOM_*``. Der
 Filter entscheidet nach HERKUNFT (Fuellerposition), nie nach Typ; wuerde nur
 ``PERSON`` erzeugt, liefe ein Rueckbau auf den Praefix-Filter (Leck F10)
 unbemerkt durch. Im Katalog wird jeder Fall gegen ALLE Typen gefahren und muss
 dasselbe Ergebnis liefern.
 
+Genau das war lange nur die halbe Miete (QA-Finding F1, DATENSCHLE-78): Hier
+stand eine handgepflegte Liste aus neun Typen. Von den DREIZEHN eigenen
+deutschen Recognizern in ``presidio/recognizers-config.yml`` war genau EINER
+darin, Standardtypen wie PHONE_NUMBER, URL und IP_ADDRESS fehlten ganz. Ein
+Filter mit
+
+    if entity.get("entity_type") == "DE_GEBURTSDATUM": return True
+
+lief dadurch durch Katalog UND Fuzzlauf gruen durch, obwohl er ein Klartext-
+Geburtsdatum neben einem Platzhalter still verwirft -- exakt die Fehlerklasse,
+gegen die der Absatz oben schuetzen will. Das Problem war erkannt, die Abhilfe
+war zu schmal.
+
+Deshalb wird ``_ENTITY_TYPEN`` heute aus den echten Quellen ABGELEITET
+(Recognizer-Konfiguration, ``qi_generalization.QI_ENTITY_TYPES``,
+``custom_rules.ENTITY_PREFIX``) und enthaelt kein einziges Typ-Literal mehr.
+Ein neuer Recognizer landet automatisch im Fuzzlauf. Fehlt die Konfiguration
+oder ist sie unlesbar, FAELLT DER TEST AUS -- er schrumpft nicht still auf
+eine Handvoll Typen und meldet Sicherheit, die er nicht geprueft hat.
+
 FALLZAHL, SEED, GROSSER LAUF
 ----------------------------
 Standardlauf: 4.000 Faelle (``_STANDARD_FAELLE``), Seed 20260820
-(``_STANDARD_SEED``), Laufzeit rund 0,4 s auf einem Entwicklerrechner. Die
+(``_STANDARD_SEED``), Laufzeit rund 0,5 s auf einem Entwicklerrechner. Die
 Suite hat ueber 300 Tests und wird oft ausgefuehrt -- der Standardlauf muss
 deshalb billig bleiben.
 
@@ -71,12 +93,41 @@ nach Gesetz 5 eine eigene Begruendung und Pruefung. Fuer diesen Zweck traegt
 ``random`` mit festem Seed die Aussage genauso: der Generator ist ohnehin
 handgeschrieben auf die bekannten Grenzfaelle hin, nicht generisch.
 
+GEMESSENE ABDECKUNG DES STANDARDLAUFS
+-------------------------------------
+Nachgemessen am 2026-08-20 gegen den Code in dieser Datei (4.000 Faelle,
+Seed 20260820):
+
+    gepruefte Spans ................................. 35.836
+    davon verworfen (reines Artefakt) ...............  3.204
+    davon Klartext im Kern UND Fuellerschnitt ....... 24.449  (68,2 %)
+
+Die letzte Zeile ist die wichtige: das ist genau die Kombination, an der
+S1/HIGH-1/HIGH-2 die Kreditkarte verloren haben. Ein Lauf, der sie selten
+trifft, ist gruen, ohne etwas zu beweisen -- deshalb hat der Test eine
+Untergrenze darauf, und zwar relativ zu den geprueften Spans (40 %), nicht
+gegen eine feste Zahl.
+
+Die Zahlen stehen zusaetzlich in ``_ABDECKUNG_STANDARDLAUF`` und werden vom
+Fuzztest GEPRUEFT. Sie koennen also nicht mehr unbemerkt veralten -- das war
+QA-Finding F2, wo dokumentierte und gemessene Werte auseinanderliefen. Seit
+die Typwahl an einem eigenen Zufallsstrom haengt (``_fuzz_faelle``), aendern
+neue Recognizer diese Zahlen nicht mehr; nur eine Aenderung am GENERATOR tut
+das, und dann meldet der Test die neuen Werte.
+
 GEGENPROBE
 ----------
-Dass dieser Test die bekannten Lecks auch wirklich FAENGT, ist nachgewiesen:
-mit der kaputten Filtervariante (verwirft, sobald ein Treffer Fuellmaterial
-nur BERUEHRT, statt zu verlangen, dass er ausschliesslich daraus besteht --
-das ist Leck S1) wird er rot, ebenso mit dem ``CUSTOM_``-Praefixfilter (F10).
+Dass dieser Test die bekannten Lecks auch wirklich FAENGT, ist nachgewiesen.
+Rot werden alle vier bekannten Leckformen:
+
+  1. S1        -- verwirft, sobald ein Treffer Fuellmaterial nur BERUEHRT,
+                  statt zu verlangen, dass er ausschliesslich daraus besteht.
+  2. F10       -- Filter auf das Typ-Praefix ``CUSTOM_``.
+  3. HIGH-1/2  -- Segmentpruefung mit Duplikat-Entfernung und verklebtem Kern.
+  4. Typ-Leck  -- verwirft still bei genau einem ``entity_type``. Diese Form
+                  lief frueher GRUEN durch (QA-Finding F1) und wird heute von
+                  ``TypUniversumTest`` fuer JEDEN Typ des Universums gefangen.
+
 Ein Test, der die bekannten Lecks nicht faengt, ist wertlos, egal wie viele
 Faelle er durchlaeuft.
 """
@@ -102,6 +153,22 @@ import qi_generalization as qig  # noqa: E402
 
 _STANDARD_FAELLE = 4000
 _STANDARD_SEED = 20260820
+
+# Gemessene Abdeckung des Standardlaufs (4.000 Faelle, Seed 20260820).
+# Diese Zahlen stehen auch im Modul-Docstring -- und werden vom Fuzztest
+# GEPRUEFT, statt von Hand abgeschrieben zu werden (QA-Finding F2: die
+# dokumentierten Zahlen stimmten nicht mit den gemessenen ueberein).
+#
+# Sie sind stabil gegenueber neuen Recognizern: seit die Typwahl an einem
+# eigenen Zufallsstrom haengt (siehe ``_fuzz_faelle``), aendert ein groesseres
+# Typ-Universum die Struktur der erzeugten Faelle nicht mehr. Nachgepflegt
+# werden muessen sie nur, wenn sich der GENERATOR aendert -- und dann meldet
+# der Test es mit den neuen Werten.
+_ABDECKUNG_STANDARDLAUF = {
+    "geprueft": 35836,
+    "verworfen": 3204,
+    "mit_klartext_und_fuellerschnitt": 24449,
+}
 
 
 def _fallzahl() -> int:
@@ -310,14 +377,22 @@ _PLATZHALTER = (
 )
 
 
-# Entity-Typen. Bewusst MIT ``CUSTOM_``-Praefix: der erste Leck-Versuch (F10)
-# filterte nach genau diesem Praefix und nahm damit das Sicherheitsnetz fuer
-# eigene Entitaeten komplett heraus. Wuerde der Fuzzer nur ``PERSON``
-# erzeugen, liefe ein Rueckbau auf den Praefix-Filter unbemerkt durch.
-_ENTITY_TYPEN = (
-    "PERSON", "CREDIT_CARD", "IBAN_CODE", "LOCATION", "EMAIL_ADDRESS",
-    "CUSTOM_KUNDE", "CUSTOM_PROJEKT", "CUSTOM_DENY", "DE_STEUER_ID",
-)
+# Das Typ-Universum des Fuzzers -- vollstaendig abgeleitet (siehe oben).
+# Bewusst MIT ``CUSTOM_``-Praefix: der erste Leck-Versuch (F10) filterte nach
+# genau diesem Praefix und nahm damit das Sicherheitsnetz fuer eigene
+# Entitaeten komplett heraus. Wuerde der Fuzzer nur ``PERSON`` erzeugen, liefe
+# ein Rueckbau auf den Praefix-Filter unbemerkt durch.
+#
+# Es steht hier bewusst KEIN Typ-Literal mehr: jede Quelle ist live. Ein neuer
+# Recognizer in presidio/recognizers-config.yml landet automatisch im Fuzzlauf,
+# ohne dass jemand daran denken muss. Genau daran ist die Vorgaengerfassung
+# gescheitert.
+_ENTITY_TYPEN = tuple(sorted(
+    set(_typen_aus_konfiguration())
+    | set(_PRESIDIO_STANDARD_ZUSATZ)
+    | set(qig.QI_ENTITY_TYPES)
+    | set(_CUSTOM_BEISPIELE)
+))
 
 
 def _zufallsfall(rng):
@@ -409,6 +484,29 @@ def _spans(rng, probe, filler_spans):
     # Der ganze Text.
     spans.append((0, len(probe)))
     return spans
+
+
+def _fuzz_faelle(faelle, seed):
+    """Der komplette Fuzz-Strom als Generator: EINE Quelle fuer alle Nutzer.
+
+    Liefert ``(text, reid_map, probe, filler, start, end, typ)``.
+
+    ZWEI GETRENNTE ZUFALLSSTROEME -- Absicht: Der Typ wird aus einem eigenen
+    ``Random`` gezogen. Sonst verschoebe jeder neue Recognizer in der
+    Konfiguration (das Universum wird ja daraus abgeleitet) die Laenge von
+    ``_ENTITY_TYPEN``, damit den Verbrauch von ``rng.choice`` und damit den
+    GESAMTEN nachfolgenden Zufallsstrom. Die Abdeckungszahlen weiter unten
+    wuerden bei jeder Recognizer-Aenderung wandern und muessten staendig
+    nachgepflegt werden. So haengt die Struktur der Faelle nur am Generator,
+    die Typwahl haengt nur am Typ-Universum -- beide unabhaengig reproduzierbar.
+    """
+    rng = random.Random(seed)
+    rng_typ = random.Random(seed + 977)
+    for _ in range(faelle):
+        text, reid_map, probe, filler = _zufallsfall(rng)
+        for start, end in _spans(rng, probe, filler):
+            yield (text, reid_map, probe, filler, start, end,
+                   rng_typ.choice(_ENTITY_TYPEN))
 
 
 def _erwartet_verworfen(probe, start, end, filler_spans):
@@ -562,50 +660,48 @@ class FillerArtefaktFuzzTest(unittest.TestCase):
     """Der eigentliche Fuzzlauf ueber die volle Charakterisierung."""
 
     def test_kein_klartext_wird_je_verworfen(self):
-        rng = random.Random(_seed())
         faelle = _fallzahl()
+        seed = _seed()
         geprueft = 0
         verworfen = 0
         mit_klartext_und_fuellerschnitt = 0
 
-        for _ in range(faelle):
-            text, reid_map, probe, filler = _zufallsfall(rng)
-            for start, end in _spans(rng, probe, filler):
-                typ = rng.choice(_ENTITY_TYPEN)
-                entity = {"start": start, "end": end, "entity_type": typ}
-                ist = dg._is_filler_artifact(probe, entity, filler)
-                soll = _erwartet_verworfen(probe, start, end, filler)
-                geprueft += 1
-                if ist:
-                    verworfen += 1
+        for text, reid_map, probe, filler, start, end, typ in _fuzz_faelle(
+                faelle, seed):
+            entity = {"start": start, "end": end, "entity_type": typ}
+            ist = dg._is_filler_artifact(probe, entity, filler)
+            soll = _erwartet_verworfen(probe, start, end, filler)
+            geprueft += 1
+            if ist:
+                verworfen += 1
 
-                s = max(0, start)
-                e = min(len(probe), end)
-                kern = probe[s:e] if s < e else ""
+            s = max(0, start)
+            e = min(len(probe), end)
+            kern = probe[s:e] if s < e else ""
 
-                # DIE sicherheitskritische Richtung: Klartext im Kern
-                # bedeutet, der Treffer MUSS bestehen bleiben.
-                if kern.strip():
-                    if any(fs < e and s < fe for fs, fe in filler):
-                        mit_klartext_und_fuellerschnitt += 1
-                    self.assertFalse(
-                        ist,
-                        "LECK: Treffer mit Klartext im Kern wurde verworfen.\n"
-                        f"  text={text!r}\n  reid_map={reid_map!r}\n"
-                        f"  probe={probe!r}\n  span=({start},{end}) "
-                        f"kern={kern!r} typ={typ}\n  filler={filler}\n"
-                        f"  seed={_seed()}",
-                    )
-
-                # Und die vollstaendige Charakterisierung (beide Richtungen).
-                self.assertEqual(
-                    ist, soll,
-                    "Filter weicht von der Referenz-Eigenschaft ab.\n"
-                    f"  text={text!r}\n  probe={probe!r}\n"
-                    f"  span=({start},{end}) kern={kern!r} typ={typ}\n"
-                    f"  filler={filler}\n  erwartet={soll} ist={ist}\n"
-                    f"  seed={_seed()}",
+            # DIE sicherheitskritische Richtung: Klartext im Kern
+            # bedeutet, der Treffer MUSS bestehen bleiben.
+            if kern.strip():
+                if any(fs < e and s < fe for fs, fe in filler):
+                    mit_klartext_und_fuellerschnitt += 1
+                self.assertFalse(
+                    ist,
+                    "LECK: Treffer mit Klartext im Kern wurde verworfen.\n"
+                    f"  text={text!r}\n  reid_map={reid_map!r}\n"
+                    f"  probe={probe!r}\n  span=({start},{end}) "
+                    f"kern={kern!r} typ={typ}\n  filler={filler}\n"
+                    f"  seed={seed}",
                 )
+
+            # Und die vollstaendige Charakterisierung (beide Richtungen).
+            self.assertEqual(
+                ist, soll,
+                "Filter weicht von der Referenz-Eigenschaft ab.\n"
+                f"  text={text!r}\n  probe={probe!r}\n"
+                f"  span=({start},{end}) kern={kern!r} typ={typ}\n"
+                f"  filler={filler}\n  erwartet={soll} ist={ist}\n"
+                f"  seed={seed}",
+            )
 
         # Der Lauf muss die interessanten Faelle auch WIRKLICH getroffen
         # haben -- sonst ist er gruen, ohne etwas zu beweisen.
@@ -616,12 +712,47 @@ class FillerArtefaktFuzzTest(unittest.TestCase):
             "kein einziger Treffer wurde verworfen -- der Generator erzeugt "
             "die Artefaktfaelle nicht mehr, der Test beweist nichts",
         )
+
+        # QA-Finding (DATENSCHLE-78, F3): Die Schwelle lag bei ``faelle // 10``
+        # -- bei 4.000 Faellen also 400, gegen einen Ist-Wert um 24.000. Diese
+        # 60-fache Marge faengt einen Totalausfall des Generators, aber keinen
+        # Einbruch von 68% auf 15%. Die Schwelle ist deshalb RELATIV zu den
+        # tatsaechlich geprueften Spans und liegt bei 40%: eng genug, um einen
+        # echten Rueckgang zu sehen, weit genug, dass eine harmlose Aenderung
+        # am Generator nicht grundlos rot wird (Ist-Wert ~69%, Marge ~1,7x).
         self.assertGreater(
-            mit_klartext_und_fuellerschnitt, faelle // 10,
-            "zu wenige Faelle mit Klartext im Kern UND Fuellerschnitt -- "
-            "genau diese Kombination ist der Leckfall (S1/HIGH-1/HIGH-2); "
-            "ohne sie prueft der Fuzzer die kritische Grenze nicht",
+            mit_klartext_und_fuellerschnitt, int(geprueft * 0.4),
+            "zu wenige Faelle mit Klartext im Kern UND Fuellerschnitt "
+            f"({mit_klartext_und_fuellerschnitt} von {geprueft} geprueften "
+            "Spans) -- genau diese Kombination ist der Leckfall "
+            "(S1/HIGH-1/HIGH-2); ohne sie prueft der Fuzzer die kritische "
+            "Grenze nicht",
         )
+
+        # QA-Finding (DATENSCHLE-78, F2): Dokumentierte und nachgemessene
+        # Abdeckung liefen auseinander -- 35.836 / 24.449 dokumentiert gegen
+        # 35.844 / 24.610 im Audit gemessen. Ursache war nicht ein Tippfehler,
+        # sondern der geteilte Zufallsstrom: die Typwahl zog aus DEMSELBEN
+        # ``Random`` wie der Generator, also verschob jede Aenderung am
+        # Typ-Universum saemtliche nachfolgenden Faelle. Zwei Messungen
+        # desselben Codes konnten so verschiedene Zahlen liefern.
+        #
+        # Seit ``_fuzz_faelle`` die Typwahl an einen eigenen Strom haengt, ist
+        # die Struktur der Faelle vom Typ-Universum entkoppelt und die Zahlen
+        # sind eindeutig. Statt sie erneut von Hand abzuschreiben, werden sie
+        # hier GEPRUEFT -- sie koennen nicht mehr unbemerkt veralten.
+        if faelle == _STANDARD_FAELLE and seed == _STANDARD_SEED:
+            self.assertEqual(
+                {"geprueft": geprueft,
+                 "verworfen": verworfen,
+                 "mit_klartext_und_fuellerschnitt":
+                     mit_klartext_und_fuellerschnitt},
+                _ABDECKUNG_STANDARDLAUF,
+                "Die Abdeckung des Standardlaufs hat sich geaendert. Das ist "
+                "kein Fehler an sich -- aber die Zahlen im Modul-Docstring "
+                "und in _ABDECKUNG_STANDARDLAUF muessen dann mit den neu "
+                "gemessenen Werten aktualisiert werden.",
+            )
 
     def test_kaputte_spans_werden_nie_verworfen(self):
         """Verdrehte, negative und ueberlange Spans: im Zweifel blocken.
