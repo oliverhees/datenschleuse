@@ -703,6 +703,48 @@ class TestStreamingCitationsAreReidentified(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(citation)
         self.assertEqual(citation["cited_text"], f"{_PII_NAME} ist zustaendig.")
 
+    async def test_citation_is_not_delivered_twice_by_the_tail_chunk(self):
+        """Derselbe Defekt, den ``_blank_stream_fragments`` fuer Reasoning,
+        refusal und tool_calls bereits behandelt -- nur fuer Zitate.
+
+        Der Abschluss-Chunk KLONT den letzten Content-Chunk, um den
+        Rest-Puffer des Textkanals auszuliefern. Trug dieser Chunk ein
+        Zitat, wandert es unveraendert in den Klon -- und ist zu dem
+        Zeitpunkt bereits beim Client. Folge: dasselbe Zitat zweimal in der
+        Antwort.
+        """
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        # Der Platzhalter bricht ueber die Chunk-Grenze: nur so entsteht
+        # ueberhaupt ein Rest-Puffer und damit ein Abschluss-Chunk.
+        # Das Zitat MUSS auf dem letzten Content-Chunk sitzen: genau den
+        # klont der Abschluss-Chunk als Vorlage.
+        half = len(ph) // 2
+        erst = {"choices": [{
+            "delta": {"content": f"Laut Akte ist {ph[:half]}"},
+            "finish_reason": None,
+        }]}
+        zweit = _citation_delta_chunk(
+            {"type": "char_location", "cited_text": f"{ph} ist zustaendig."}
+        )
+        zweit["choices"][0]["delta"]["content"] = ph[half:]
+
+        zitate = []
+        async for out in guard.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=None,
+            response=_agen([erst, zweit]),
+            request_data=request_data,
+        ):
+            psf = out["choices"][0]["delta"].get("provider_specific_fields") or {}
+            if psf.get("citation") is not None:
+                zitate.append(psf["citation"])
+
+        self.assertEqual(
+            len(zitate), 1,
+            "Das Zitat wurde mehrfach ausgeliefert -- der Abschluss-Chunk "
+            "hat es aus seiner Vorlage geerbt.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
