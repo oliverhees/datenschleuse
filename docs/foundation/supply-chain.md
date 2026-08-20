@@ -51,6 +51,8 @@ welche.
 | `docker-compose.yml` | Postgres | `postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685` |
 | `docker-compose.yml` | Anonymizer | `mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483` |
 | `docker-compose.yml` | Image-Redactor | `mcr.microsoft.com/presidio-image-redactor:0.0.58@sha256:e49fd47bfc38d834f0856063b9f00cfb3c19866e8d61b061849baf6275139612` |
+| `deploy/coolify/docker-compose.yaml` | Postgres | `postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685` |
+| `deploy/coolify/docker-compose.yaml` | Anonymizer | `mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483` |
 
 Beachten: Der Image-Redactor hat eine **eigene Versionsreihe (0.0.x)**, nicht die
 2.2.x der übrigen Presidio-Dienste. Wer blind „alle Presidio-Images auf dieselbe
@@ -108,7 +110,8 @@ genau dieser Stand ausgeliefert wurde.
 - `runs-on: ubuntu-latest` in der CI. Das ist kein Image, das wir ausliefern,
   sondern die Wegwerf-VM von GitHub. Ein Pin auf `ubuntu-24.04` würde nur den
   Zeitpunkt verschieben, an dem GitHub das Label abkündigt.
-- `deploy/coolify/docker-compose.yaml` — **offen**, siehe Abschnitt 4.
+*(`deploy/coolify/docker-compose.yaml` war bis zum Security-Audit von
+DATENSCHLE-59 ungepinnt — siehe „Der blinde Fleck" in Abschnitt 3.)*
 
 ---
 
@@ -355,17 +358,64 @@ wir gar nicht mehr ausliefern, und meldet beruhigend grün.
 (a) eine Image-Referenz keinen Digest hat oder (b) die beiden Mengen
 auseinanderlaufen. Reine Stdlib, keine neue Abhängigkeit.
 
+### Der blinde Fleck — und warum der Prüfumfang jetzt ermittelt wird
+
+Der Drift-Schutz trug bis zum Security-Audit von DATENSCHLE-59 eine **fest
+verdrahtete Dreierliste** von Dateien. `deploy/coolify/docker-compose.yaml`
+stand nicht darin. Diese Datei enthielt `postgres:16-alpine` und
+`mcr.microsoft.com/presidio-anonymizer:latest` — zwei rollende Tags. Der Check
+meldete trotzdem:
+
+```
+$ python3 test/check_image_pins.py
+OK: 5 gepinnte Images, alle mit Digest, alle in der Scan-Matrix abgedeckt.
+EXIT=0
+```
+
+Eine **globale Entwarnung für eine Datei, die er nie geöffnet hatte** — genau
+das Versagen, vor dem sein eigener Docstring warnt („a scanner reporting green
+about the wrong thing, which is worse than no scanner at all"). Und es traf
+ausgerechnet den Coolify-Deploy: den Weg, auf dem die gehostete Instanz läuft,
+also den Pfad, auf dem verkauft wird.
+
+Das eigentliche Problem war nicht die vergessene Zeile, sondern die Bauart:
+**Eine feste Liste kann keine Datei abdecken, die es noch nicht gibt.** Die zwei
+Digests nachzutragen hätte den heutigen Fund behoben und das Loch für die
+nächste Compose-Datei offen gelassen.
+
+Deshalb ermittelt der Check seinen Prüfumfang jetzt selbst: jede **getrackte**
+`Dockerfile*`- und `docker-compose*.y*ml`-Datei im Repo, ermittelt über
+`git ls-files`. Zwei Details, die dabei zählen:
+
+- **`git ls-files` statt Dateisystem-Scan.** Das Repo trägt unter
+  `.claude/worktrees/` Dutzende vollständiger Checkouts. Ein `rglob` würde sie
+  alle mitnehmen. Getrackte Dateien sind genau die Dateien, die wir ausliefern.
+- **`REQUIRED_IN_SCOPE` als Untergrenze.** Findet die Erkennung eine der bekannt
+  relevanten Dateien *nicht* mehr, bricht der Check ab. Ohne diese Sperre wäre
+  ein kaputtes Suchmuster wieder still grün — derselbe Fehler eine Ebene höher.
+
+Abgesichert ist das durch `test/test_image_pins.py` (läuft in der normalen
+Suite): Der Test `test_coolify_compose_is_in_scope` war rot, bevor die Erkennung
+existierte, und hält den verkauften Deploy-Pfad dauerhaft im Prüfumfang. Der
+Check selbst hatte vorher **keinen einzigen Test** und wurde von der Suite gar
+nicht eingesammelt (fehlendes `test_`-Präfix — Audit-Fund LOW-1).
+
 ---
 
 ## 4. Offene Punkte
 
-- **`deploy/coolify/docker-compose.yaml`** enthält zwei ungepinnte Referenzen
-  (`postgres:16-alpine`, `mcr.microsoft.com/presidio-anonymizer:latest`). Die
-  Datei liegt außerhalb des Reviers von DATENSCHLE-59 und wird parallel von einer
-  anderen Lane bearbeitet — deshalb hier bewusst nicht angefasst, sondern
-  gemeldet. Die Digests aus Abschnitt 1 sind direkt übernehmbar. Der
-  LiteLLM- und der Analyzer-Dienst dieser Datei bauen aus `../../litellm` bzw.
-  `../../presidio` und erben die Pins dieses PRs bereits.
+- ~~**`deploy/coolify/docker-compose.yaml`** enthält zwei ungepinnte
+  Referenzen.~~ **Erledigt** im Security-Audit-Nachlauf von DATENSCHLE-59.
+  Beide Referenzen tragen jetzt Tag + Digest und stehen in der Tabelle in
+  Abschnitt 1; der Prüfumfang des Drift-Schutzes wird ermittelt statt
+  aufgezählt (Abschnitt 3, „Der blinde Fleck").
+
+  Zur Begründung, die hier vorher stand („wird parallel von einer anderen Lane
+  bearbeitet"): Sie ließ sich nicht belegen. Die Datei liegt seit `2d4e8f6`
+  unverändert auf `main`, und kein offener PR fasst sie an. Eine Verlagerung auf
+  eine Lane, die es nicht gibt, ist keine Verlagerung — sie ist ein offenes Loch
+  mit einer Fußnote. Der LiteLLM- und der Analyzer-Dienst dieser Datei bauen aus
+  `../../litellm` bzw. `../../presidio` und erben die Pins ohnehin.
 - **Kein Lockfile für die Python-Abhängigkeiten.** `litellm/requirements-guardrail.txt`
   und `test/requirements.txt` verwenden Bereiche (`httpx>=0.27,<1.0`), keine
   exakten Pins. Gesetz 5 verlangt ein Lockfile. Ohne eins ist eine Installation

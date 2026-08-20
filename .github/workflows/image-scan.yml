@@ -36,6 +36,9 @@ on:
       - "litellm/Dockerfile"
       - "presidio/Dockerfile.analyzer"
       - "docker-compose.yml"
+      # Der Coolify-Deploy ist der Weg, auf dem die gehostete Instanz laeuft.
+      # Er fehlte hier ebenso wie im Pin-Check (DATENSCHLE-59, HIGH-2).
+      - "deploy/coolify/docker-compose.yaml"
       - ".trivyignore.yaml"
       - ".github/workflows/image-scan.yml"
 
