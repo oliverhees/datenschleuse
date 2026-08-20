@@ -38,6 +38,7 @@ Stdlib-Paket "test", siehe DATENSCHLE-62):
 """
 
 import asyncio
+import importlib.util
 import json
 import os
 import sys
@@ -56,11 +57,7 @@ if _LITELLM_DIR not in sys.path:
     sys.path.insert(0, _LITELLM_DIR)
 
 import datenschleuse_guardrail as dg  # noqa: E402
-
-try:  # noqa: SIM105 -- solange DATENSCHLE-82 nicht umgesetzt ist, fehlt das Modul
-    import de_stopwords as ds  # noqa: E402
-except ImportError:  # pragma: no cover -- nur im roten Zustand
-    ds = None
+import de_stopwords as ds  # noqa: E402
 
 _STOPWORD_PATH = os.path.normpath(
     os.path.join(_HERE, "..", "presidio", "de-stopwords.yml")
@@ -569,6 +566,59 @@ class GuardrailSendetAllowList(unittest.TestCase):
         )
 
 
+class BenchmarkUndGuardrailLadenDieselbeListe(unittest.TestCase):
+    """Was gemessen wird, muss auch gesendet werden -- und umgekehrt.
+
+    Der Benchmark (``test/corpus-benchmark.py::load_stopwords``) und der
+    Guardrail (``litellm/de_stopwords.py::load``) validieren dieselbe Datei mit
+    zwei Implementierungen. Das ist kein Versehen, sondern die Grenze zwischen
+    Werkzeug und Laufzeit-Image: der Benchmark liegt in ``test/`` und wird
+    nicht ausgeliefert.
+
+    Genau deshalb braucht es diese Klammer. Driften die beiden auseinander,
+    misst der Benchmark eine andere Liste als der Dienst sendet -- und die
+    Zahlen in erkennungsziel.md beschreiben wieder den erreichbaren statt den
+    ausgelieferten Zustand. Das war der ganze Befund von DATENSCHLE-82.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "corpus_benchmark", os.path.join(_HERE, "corpus-benchmark.py")
+        )
+        modul = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = modul
+        spec.loader.exec_module(modul)
+        cls.cb = modul
+
+    def test_muster_und_flags_sind_identisch(self):
+        import pathlib
+
+        bench_patterns, bench_flags = self.cb.load_stopwords(pathlib.Path(_STOPWORD_PATH))
+        geladen = ds.load(stopwords_path=_STOPWORD_PATH, recognizers_path=_RECOGNIZER_PATH)
+        self.assertEqual(list(geladen.patterns), bench_patterns)
+        self.assertEqual(geladen.regex_flags, bench_flags)
+
+    def test_beide_lehnen_fehlende_regex_flags_ab(self):
+        """Stichprobe auf die Fehlerbehandlung, nicht nur auf das Ergebnis."""
+        import pathlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "de-stopwords.yml")
+            with open(pfad, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(
+                    {
+                        "allow_list_match": "regex",
+                        "entries": [{"pattern": "(?i:\\Ax\\z)"}],
+                    },
+                    fh,
+                )
+            with self.assertRaises(self.cb.BenchmarkError):
+                self.cb.load_stopwords(pathlib.Path(pfad))
+            with self.assertRaises(ds.StopwordConfigError):
+                ds.load(stopwords_path=pfad, recognizers_path=_RECOGNIZER_PATH)
+
+
 class BetreiberVorrangZurLaufzeit(unittest.TestCase):
     """Der Betreiber gewinnt -- auch zur Laufzeit (§7, ADR-0002 Konsequenz 2).
 
@@ -663,7 +713,8 @@ class BetreiberVorrangZurLaufzeit(unittest.TestCase):
         starten."""
         with tempfile.TemporaryDirectory() as tmp:
             pfad = self._schreibe_liste(tmp, ["(?i:\\Abestellnummer\\z)"])
-            doc = yaml.safe_load(open(pfad, encoding="utf-8"))
+            with open(pfad, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
             del doc["regex_flags"]
             with open(pfad, "w", encoding="utf-8") as fh:
                 yaml.safe_dump(doc, fh)
