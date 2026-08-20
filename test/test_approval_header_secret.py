@@ -77,8 +77,8 @@ _TIER2_TEXT = (
 #: Ein Betreiber-Geheimnis mit Umlaut. GENAU der Wert, an dem der Vergleich
 #: heute wirft -- eine deutsche Passphrase ist fuer ein DACH-Projekt der
 #: Normalfall, nicht der Sonderfall.
-_UMLAUT_SECRET = "Schluessel-fuer-Buero-München-2026"
-_ASCII_SECRET = "s3cr3t-vom-betreiber"
+_UMLAUT_SECRET = "Schluessel-fuer-das-Buero-in-München-2026"
+_ASCII_SECRET = "s3cr3t-vom-betreiber-lang-genug-fuer-die-grenze"
 
 
 async def _fake_analyze(text):
@@ -250,6 +250,59 @@ class TestGeheimnisWirdBeimStartValidiert(unittest.TestCase):
     def test_gueltiges_geheimnis_mit_umlaut_startet(self):
         guard = _guard(approval_header_secret=_UMLAUT_SECRET)
         self.assertEqual(guard.approval_header_secret, _UMLAUT_SECRET)
+
+
+class TestGeheimnisBrauchtMindestlaenge(unittest.TestCase):
+    """Der Schalter, den dieses Geheimnis bedient, schaltet den
+    Stufe-2-SCHUTZ AB. Ein Geheimnis, das man raten kann, ist auf diesem
+    Schalter kein Geheimnis -- und schlimmer als gar keines, weil der
+    Betreiber sich darauf verlaesst.
+
+    Die Zahl ist eine SETZUNG (von Oliver entschieden, Runde 4), aber keine
+    willkuerliche: siehe APPROVAL_SECRET_MIN_LEN.
+
+    Kein Bestandsschutz noetig -- der Header-Weg ist NEU in diesem Branch
+    (er entstand als Antwort auf F2 aus Runde 1). Es kann keine Installation
+    geben, die ein kurzes Geheimnis nutzt.
+    """
+
+    def test_zu_kurzes_geheimnis_bricht_den_start_ab(self):
+        with self.assertRaises(dg.DatenschleuseConfigError) as ctx:
+            _guard(approval_header_secret="a" * (dg.APPROVAL_SECRET_MIN_LEN - 1))
+        meldung = str(ctx.exception)
+        self.assertIn(dg.APPROVAL_SECRET_ENV, meldung)
+        self.assertIn(str(dg.APPROVAL_SECRET_MIN_LEN), meldung)
+
+    def test_meldung_nennt_den_erzeugungsbefehl(self):
+        """Eine Fehlermeldung, die nur verbietet, laesst den Betreiber
+        raten -- und er raet dann etwas, das gerade so durchkommt."""
+        with self.assertRaises(dg.DatenschleuseConfigError) as ctx:
+            _guard(approval_header_secret="zu-kurz")
+        self.assertIn("secrets.token_urlsafe", str(ctx.exception))
+
+    def test_meldung_nennt_das_geheimnis_nicht(self):
+        """Gesetz 5: auch ein untaugliches Geheimnis ist ein Geheimnis. Es
+        darf nicht ueber die Startmeldung ins Log wandern."""
+        geheim = "viel-zu-kurz-x"
+        with self.assertRaises(dg.DatenschleuseConfigError) as ctx:
+            _guard(approval_header_secret=geheim)
+        self.assertNotIn(geheim, str(ctx.exception))
+
+    def test_erzeugtes_geheimnis_kommt_durch(self):
+        """Gegenprobe an der Untergrenze: der EMPFOHLENE Befehl muss
+        bequem passen, sonst ist die Grenze falsch gewaehlt."""
+        import secrets
+        erzeugt = secrets.token_urlsafe(32)
+        self.assertGreater(len(erzeugt), dg.APPROVAL_SECRET_MIN_LEN)
+        guard = _guard(approval_header_secret=erzeugt)
+        self.assertEqual(guard.approval_header_secret, erzeugt)
+
+    def test_grenze_selbst_kommt_durch(self):
+        """Genau die Mindestlaenge ist gueltig -- die Grenze blockt, was
+        DARUNTER liegt, nicht was auf ihr liegt."""
+        auf_der_grenze = "b" * dg.APPROVAL_SECRET_MIN_LEN
+        guard = _guard(approval_header_secret=auf_der_grenze)
+        self.assertEqual(guard.approval_header_secret, auf_der_grenze)
 
 
 if __name__ == "__main__":

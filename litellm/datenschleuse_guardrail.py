@@ -1611,6 +1611,38 @@ class DatenschleuseBlocked(Exception):
 #: Betreiber, der beim Start abbricht, braucht den Namen des Schalters.
 APPROVAL_SECRET_ENV = "DATENSCHLEUSE_APPROVAL_HEADER_SECRET"
 
+#: Mindestlaenge des Header-Geheimnisses. SETZUNG (von Oliver entschieden,
+#: Runde 4) -- aber keine willkuerliche, deshalb die Herleitung:
+#:
+#: Dieser Schalter schaltet den Stufe-2-SCHUTZ AB. Ein Geheimnis, das man
+#: raten kann, ist auf diesem Schalter kein Geheimnis -- und schlimmer als
+#: gar keines, weil der Betreiber sich darauf verlaesst.
+#:
+#: Das hier ist ein Maschine-zu-Maschine-Geheimnis, kein Passwort, das sich
+#: ein Mensch merken muss. Es soll deshalb ERZEUGT und nicht ausgedacht
+#: werden. Die Zahl ist genau so gewaehlt, dass sie das erzwingt:
+#: ``secrets.token_urlsafe(24)`` liefert exakt 32 Zeichen -- die Grenze
+#: liegt also auf dem kleinsten sinnvollen Ergebnis des empfohlenen
+#: Erzeugungswegs, und der in der Fehlermeldung genannte Befehl
+#: (``token_urlsafe(32)``, 43 Zeichen) passt bequem darueber.
+#:
+#: Ein ausgedachter Wert kann die Grenze weiterhin erreichen -- eine deutsche
+#: Passphrase mit 32+ Zeichen ist zulaessig. Ausgeschlossen wird nur die
+#: Klasse, die sich brute-forcen laesst.
+#:
+#: KEIN Bestandsschutz noetig: der Header-Weg ist NEU in diesem Branch (er
+#: entstand als Antwort auf F2 aus Runde 1). Es kann keine Installation
+#: geben, die ein kuerzeres Geheimnis nutzt -- wir brechen nichts.
+APPROVAL_SECRET_MIN_LEN = 32
+
+#: Der empfohlene Erzeugungsbefehl. Steht in der Fehlermeldung, weil eine
+#: Meldung, die nur verbietet, den Betreiber raten laesst -- und er raet dann
+#: etwas, das gerade so durchkommt. Vorbild: die Fernet-Key-Meldung in
+#: configure_reid_crypto().
+APPROVAL_SECRET_HOWTO = (
+    'python3 -c "import secrets; print(secrets.token_urlsafe(32))"'
+)
+
 
 def _validate_approval_header_secret(roh: Any) -> str:
     """Prueft das Header-Geheimnis. BEIM START, nicht beim ersten Request.
@@ -1670,6 +1702,19 @@ def _validate_approval_header_secret(roh: Any) -> str:
             "den Header-Freigabeweg still ABSCHALTEN, waehrend die "
             "Konfiguration so aussieht, als sei er aktiv. Entweder ein "
             "echtes Geheimnis setzen oder die Variable ganz weglassen."
+        )
+    if len(geputzt) < APPROVAL_SECRET_MIN_LEN:
+        # Die LAENGE nennen wir, den WERT nie (Gesetz 5) -- auch ein
+        # untaugliches Geheimnis ist ein Geheimnis und darf nicht ueber die
+        # Startmeldung ins Log wandern.
+        raise DatenschleuseConfigError(
+            f"{APPROVAL_SECRET_ENV} ist zu kurz "
+            f"({len(geputzt)} Zeichen, mindestens {APPROVAL_SECRET_MIN_LEN}). "
+            "Dieser Schalter schaltet den Stufe-2-SCHUTZ ab -- ein Geheimnis, "
+            "das man raten kann, ist auf ihm kein Geheimnis, sondern eine "
+            "Zusage, auf die sich der Betreiber faelschlich verlaesst. "
+            "Es soll erzeugt und nicht ausgedacht werden: "
+            f"{APPROVAL_SECRET_HOWTO}"
         )
     return geputzt
 

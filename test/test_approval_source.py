@@ -225,7 +225,11 @@ class TestHeaderApprovalNeedsOperatorSecret(_Case):
     braucht. Ein blosser Header waere wieder Client-Eingabe."""
 
     HEADER = sc.APPROVAL_HEADER
-    SECRET = "s3cr3t-vom-betreiber"
+    # Mindestens APPROVAL_SECRET_MIN_LEN Zeichen (Runde 4, F2): ein
+    # Geheimnis auf dem Stufe-2-Schalter wird erzeugt, nicht ausgedacht.
+    # Ein zu kurzer Testwert wuerde ab jetzt schon beim Konstruieren
+    # scheitern -- und damit die Freigabe-Wege gar nicht mehr messen.
+    SECRET = "s3cr3t-vom-betreiber-lang-genug-fuer-die-grenze"
 
     def _guard_with_secret(self):
         return _guard(approval_header_secret=self.SECRET)
