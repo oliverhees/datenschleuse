@@ -32,6 +32,7 @@
   - [Fail-Policy](#fail-policy-verfügbarkeit-vs-datenschutz)
   - [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen)
   - [Quasi-Identifier](#quasi-identifier-session-übergreifende-akkumulation)
+  - [Zitate im Multi-Turn](#zitate-citations-was-durchgeht-und-was-nicht)
 - [Was erkannt wird](#-was-erkannt-wird)
 - [Ehrliche DSGVO-Einordnung](#️-ehrliche-dsgvo-einordnung-bitte-lesen)
 - [Lizenz](#-lizenz)
@@ -74,6 +75,7 @@ Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, 
 - **Schutzklassen-Modell** — 3-Stufen-Sensitivitätsklassifizierung, Stufe 3 (Art. 9/10 DSGVO) ist eine harte Code-Garantie, nie konfigurierbar.
 - **Mehrere Modelle wählbar** — mehrere `model_list`-Einträge, automatische Erkennung durch OpenAI-kompatible Clients (inkl. Hermes' Modell-Picker).
 - **Eingebautes Admin-Dashboard** — LiteLLM Admin-UI (`/ui`) zeigt Zeitpunkt, Modell, Kosten, Guardrail-Ergebnisse — **nie Klartext-Content** (`turn_off_message_logging`, live verifiziert: die Spalten sind komplett leer).
+- **Zitate (`citations`) im Multi-Turn** — Anthropic hängt Zitat-Blöcke an Assistant-Nachrichten; schickt dein Client die Historie zurück, laufen sie durch: Struktur wird geprüft, der Freitext darin (zitierte Textstelle, Dokumenttitel) wird maskiert wie jeder andere Text, und in der Antwort stehen wieder die echten Werte — gestreamt wie ungestreamt. Zwei Grenzen gehören dazu: [Zitate: was durchgeht und was nicht](#zitate-citations-was-durchgeht-und-was-nicht).
 - **Fail-closed by default** — Presidio nicht erreichbar → Request wird geblockt, nie unmaskiert durchgelassen.
 - **AGPL-3.0** — der Kern ist echtes Open Source, keine Marketing-Lizenz.
 
@@ -157,6 +159,8 @@ Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
 ## 🛡️ Sicherheitsmodell
 
+Dieser Abschnitt erklärt die Entscheidungen. Die **verbindliche Fassung** — welches Feld einer Anfrage maskiert, welches nur validiert und welches blockiert wird, jeweils mit Begründung — steht in [`docs/foundation/security-baseline.md`](docs/foundation/security-baseline.md). Wenn eine Anfrage blockiert und du wissen willst warum, schlägst du dort nach.
+
 ### Fail-Policy: Verfügbarkeit vs. Datenschutz
 
 Die Datenschleuse sitzt inline im Anfrageweg. Fällt Presidio aus, hat das zwei mögliche Verhalten:
@@ -195,6 +199,17 @@ Fünf deutsche QI-Typen werden über eigene Recognizer erkannt — **Postleitzah
 Schwellwert konfigurierbar über `qi_risk_preset` in `litellm/config.yaml`: `utility` (5, permissiv) · `balanced` (3, **Default**) · `paranoid` (1, maximal streng). Ist `qi_risk_preset` nicht gesetzt, bleibt der QI-Layer komplett aus.
 
 > **Ehrliche Grenze:** LiteLLM erzeugt keine stabile Session-ID von sich aus — der Client muss eine mitschicken (`litellm_session_id` bzw. Header `x-litellm-session-id`). Fehlt sie, fällt die Datenschleuse auf den API-Key-Hash als groben Session-Proxy zurück (ein Key ≈ ein Nutzer, bündelt parallele Chats). Akzeptable Näherung, keine exakte Konversations-Grenze.
+
+### Zitate (`citations`): was durchgeht und was nicht
+
+Arbeitest du mit Anthropic-Modellen und Dokument-Zitaten, hängen an den Antworten `citations`-Blöcke. Schickt dein Client die Historie zurück — der Normalfall im Multi-Turn — laufen die durch die Datenschleuse: Die Struktur wird gegen ein festes Register geprüft, der Freitext darin (zitierte Textstelle, Dokumenttitel) wird maskiert wie jeder andere Text, und in der Antwort werden die Platzhalter wieder durch die echten Werte ersetzt — im Stream genauso wie ohne.
+
+Zwei Grenzen, die du als Betreiber kennen musst:
+
+- **Zitat-Positionen können nach der Re-Identifizierung verrutschen.** Die Zeichen-Indizes eines Zitats (`start_char_index`/`end_char_index`) beziehen sich auf das Dokument **so, wie es gesendet wurde** — also auf die maskierte Fassung. Ist ein Platzhalter länger oder kürzer als der echte Wert, zeigen sie im zurückübersetzten Klartext nicht mehr exakt auf dieselbe Stelle. Der zitierte Text selbst stimmt, nur die Positionsangabe wandert. Zitate auf Seiten- oder Block-Ebene sind davon nicht betroffen.
+- **Web-Search-Zitate blockieren die Folgeanfrage.** Nutzt du Anthropics eingebautes Web-Search-Tool, schickt der Client im nächsten Turn die Such-Blöcke unverändert mit zurück (`server_tool_use`, `web_search_tool_result`). Für die gibt es in der Datenschleuse keinen geprüften Pfad, also blockt sie fail-closed. **Multi-Turn mit Anthropic-Web-Search funktioniert durch diese Datenschleuse nicht.** Das ist eine bewusst akzeptierte Einschränkung, kein Bug — die Blockmeldung nennt die beiden Block-Typen beim Namen und verweist auf die Baseline, damit du das auseinanderhalten kannst. Der erste Turn läuft normal durch, und kommt ein Web-Search-Zitat in einer Antwort an, werden auch dort die Platzhalter aufgelöst.
+
+Warum wir das so gelassen haben und was es kosten würde, es zu öffnen: [`docs/foundation/security-baseline.md`](docs/foundation/security-baseline.md) → „Bekannte Einschränkung: Anthropics natives Web-Search-Tool".
 
 ## 🇩🇪 Was erkannt wird
 
