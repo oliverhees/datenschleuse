@@ -54,7 +54,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, NamedTuple, Optional, Tuple
 
 # httpx ist im offiziellen LiteLLM-Image bereits vorhanden (LiteLLM-Dependency)
 # und wird fuer die Presidio-REST-Calls genutzt.
@@ -232,11 +232,437 @@ KNOWN_UNSUPPORTED_CALL_TYPES = frozenset({
     "send_message",
     "asend_message",
     "apply_guardrail",
+    # --- Nachtrag (DATENSCHLE-69 F4): gegen litellm.types.utils.CallTypes
+    # der Version 1.97.0 abgeglichen. Kein Sicherheitsdefekt -- diese Routen
+    # blockten schon vorher als "unbekannt". Es ist reine Meldungsqualitaet:
+    # ein Betreiber soll den Namen der Route lesen statt nur "unbekannt" und
+    # sofort wissen, woran er ist. Die Namen stammen aus dieser konstanten
+    # Liste, nie aus dem Request (Gesetz 5).
+    # Dateien.
+    "acreate_file",
+    "afile_content",
+    "afile_delete",
+    "afile_list",
+    "afile_retrieve",
+    # Fine-Tuning.
+    "acreate_fine_tuning_job",
+    "acancel_fine_tuning_job",
+    "alist_fine_tuning_jobs",
+    "aretrieve_fine_tuning_job",
+    "acancel_batch",
+    # Assistants/Threads -- tragen Anwendertext in eigenen Schemata.
+    "acreate_assistants",
+    "adelete_assistant",
+    "aget_assistants",
+    "acreate_thread",
+    "aget_thread",
+    "a_add_message",
+    "aget_messages",
+    "arun_thread",
+    "arun_thread_stream",
+    # Code-Interpreter/Sandboxes/Container.
+    "arun_code",
+    "acode_interpreter_tool",
+    "acreate_sandbox",
+    "adelete_sandbox",
+    "acreate_container",
+    "adelete_container",
+    "aretrieve_container",
+    "alist_containers",
+    "alist_container_files",
+    "aupload_container_file",
+    # Vector Stores.
+    "avector_store_create",
+    "avector_store_file_create",
+    "avector_store_file_delete",
+    "avector_store_file_list",
+    "avector_store_file_retrieve",
+    "avector_store_file_update",
+    "avector_store_file_content",
+    # Video.
+    "acreate_video",
+    "avideo_content",
+    "avideo_delete",
+    "avideo_edit",
+    "avideo_extension",
+    "avideo_list",
+    "avideo_remix",
+    "avideo_retrieve",
+    "avideo_retrieve_job",
+    "avideo_create_character",
+    "avideo_get_character",
+    # Ingest/Query/Skills.
+    "aingest",
+    "aquery",
+    "acreate_skill",
 })
 
 # Erlaubte call_types nennen wir in der Blockmeldung NIE mit Client-Werten,
 # sondern nur mit dieser konstanten, unveraenderlichen Liste (Gesetz 5).
 _ALLOWED_CALL_TYPES_HINT = ", ".join(sorted(ALLOWED_CALL_TYPES))
+
+
+# ===========================================================================
+# TOP-LEVEL-FELD-REGISTER DES PAYLOADS (DATENSCHLE-69, zweite Ebene)
+# ===========================================================================
+# Das Register eine Ebene hoeher (ALLOWED_CALL_TYPES) registriert die ROUTE.
+# Es sagt aber nur, WELCHE Route spricht -- nicht, WIE ihr Body aussieht.
+# Genau dort sass die sechste Instanz derselben Fehlerklasse:
+#
+#   DATENSCHLE-57  Content-Part-Typen
+#   DATENSCHLE-64  content-Container
+#   DATENSCHLE-65  Part-Felder
+#   DATENSCHLE-66  Message-Felder
+#   DATENSCHLE-69  Routen                        <- registriert
+#   DATENSCHLE-69  TOP-LEVEL-FELDER DES PAYLOADS <- diese Ebene
+#
+# Warum ein ungepruefte Top-Level-Feld ein Leck ist und nicht nur eine
+# Unsauberkeit -- empirisch belegt gegen litellm 1.97.0:
+#   * ``litellm.utils.get_non_default_completion_params`` (utils.py:3576)
+#     filtert die Top-Level-Keys gegen ``litellm.types.utils.all_litellm_params``.
+#     Alles, was NICHT in dieser Liste steht, wird an den Provider gereicht.
+#   * Benannte OpenAI-Parameter gehen direkt hinaus -- ``suffix`` z.B. ueber
+#     ``main.py:7154`` in die Provider-Params.
+#   * Alles Uebrige landet in ``extra_body`` (``utils.py:4422``) und geht
+#     ebenso hinaus; ``_ensure_extra_body_is_safe`` filtert dort nichts
+#     Sicherheitsrelevantes.
+# Ein unbekanntes Top-Level-Feld ist damit ein vollwertiger Ausgangskanal.
+#
+# Aufbau wie beim Message-Feld-Register (DATENSCHLE-66), nur pro Route:
+#   1) MASKIERT   Freitext ans Zielmodell -> durch DENSELBEN Masker wie der
+#                 content-Pfad. Kein zweites Mapping, sonst bricht der Rueckweg.
+#   2) VALIDIERT  Steuerparameter ohne Freitext. Sie muessen den Provider
+#                 unveraendert erreichen, werden aber eng auf ihre Form
+#                 geprueft. Die Pruefung steht im VALIDATE-Pfad und BLOCKT --
+#                 ein ``isinstance``-Guard im Verarbeitungspfad ist immer ein
+#                 stiller Durchlass (schwerstes Finding von DATENSCHLE-66).
+#   3) ALLES UEBRIGE BLOCKT. Bekannte Felder werden beim Namen genannt
+#      (KNOWN_UNSUPPORTED_PAYLOAD_FIELDS), unbekannte nur als Fingerprint --
+#      auch ein Feldname ist Client-Inhalt (Gesetz 5).
+
+#: Modellnamen duerfen Provider-Praefixe tragen ("azure/meine-deployment").
+PAYLOAD_MODEL_PATTERN = re.compile(r"[A-Za-z0-9_.:/@-]{1,256}")
+
+#: Opake Kennungen (organization, user_id, Callback-Namen). Bewusst eng:
+#: was hier nicht passt, ist kein Bezeichner, sondern ein Freitext-Kanal.
+PAYLOAD_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+#: ``stream_options`` ist ein Schalter-Objekt, kein Textkanal.
+STREAM_OPTIONS_ALLOWED_FIELDS = frozenset({"include_usage", "continuous_usage_stats"})
+
+#: Maximale Anzahl Eintraege in ``stop`` bzw. in einer Callback-Liste. Echte
+#: Requests bleiben weit darunter; eine unbegrenzte Liste ist nur ein Weg,
+#: die Guardrail mit Analyzer-Calls zu fluten.
+PAYLOAD_MAX_LIST_ITEMS = 32
+
+# --- 1) Gemeinsame Steuerparameter beider Routen ---------------------------
+# Werte sind der Name des Formpruefers (siehe _PAYLOAD_VALIDATORS).
+_COMMON_VALIDATED = {
+    "model": "model",
+    "stream": "bool",
+    "stream_options": "stream_options",
+    "temperature": "number",
+    "top_p": "number",
+    "n": "int",
+    "seed": "int",
+    "max_tokens": "int",
+    "presence_penalty": "number",
+    "frequency_penalty": "number",
+    "logit_bias": "logit_bias",
+    "logprobs": "bool_or_int",
+    # Vom Proxy aus der Betreiber-Konfiguration gesetzt, stehen aber NICHT in
+    # all_litellm_params -- sie erreichen den Provider ueber extra_body und
+    # werden deshalb wie Client-Eingaben geprueft statt blind vertraut.
+    "timeout": "number",
+    "drop_params": "bool",
+    "disable_fallbacks": "bool",
+    "organization": "identifier",
+    "user_id": "identifier",
+    "success_callback": "identifier_list",
+    "failure_callback": "identifier_list",
+}
+
+
+class _PayloadRoute(NamedTuple):
+    """Das Payload-Schema EINER Route.
+
+    ``required`` ist das Feld, das den Anwendertext traegt; fehlt es, ist der
+    Payload nicht pruefbar. ``forbidden`` ist das Textfeld der jeweils ANDEREN
+    Route: taucht es hier auf, passt der Body auf zwei Routen gleichzeitig und
+    ist damit mehrdeutig (security-baseline.md). Bisher war diese Regel nur in
+    EINER Richtung umgesetzt -- die Text-Route blockte ein mitgeschicktes
+    ``messages``, die Chat-Route ein mitgeschicktes ``prompt`` nicht.
+    """
+
+    name: str
+    masked: Tuple[str, ...]
+    validated: Dict[str, str]
+    required: str
+    forbidden: str
+
+
+#: /v1/chat/completions -- der Anwendertext steht in ``messages[]``.
+#: ``messages`` selbst maskiert der bestehende Pfad im Hook; hier ist es nur
+#: als "behandelt" registriert.
+CHAT_PAYLOAD_ROUTE = _PayloadRoute(
+    name="Chat-Completion (messages)",
+    masked=(
+        "messages",
+        # Braucht keinen Trick: ``tools[].function.description`` ist ein
+        # regulaeres Chat-Completion-Feld, wird garantiert uebertragen und
+        # traegt in der Praxis Kundennamen und Enum-Listen echter Stammdaten.
+        "tools",
+        "tool_choice",
+        # Legacy-Form derselben Nutzlast (vor tools/tool_choice).
+        "functions",
+        "function_call",
+        # JSON-Schema-Modus: die ``description``-Felder des Schemas sind
+        # Freitext und gehen unveraendert ans Modell.
+        "response_format",
+        "stop",
+        "user",
+    ),
+    validated={
+        **_COMMON_VALIDATED,
+        "max_completion_tokens": "int",
+        "top_logprobs": "int",
+        "parallel_tool_calls": "bool",
+        "service_tier": "identifier",
+        "reasoning_effort": "identifier",
+        "store": "bool",
+    },
+    required="messages",
+    forbidden="prompt",
+)
+
+#: /v1/completions -- der Anwendertext steht in ``prompt``.
+TEXT_PAYLOAD_ROUTE = _PayloadRoute(
+    name="Text-Completion (prompt)",
+    masked=(
+        "prompt",
+        # DER Kanal aus F1: ein FIM-/Code-Completion-Client legt den Kontext
+        # HINTER der Einfuegestelle in ``suffix``. Bei einem Kanzlei- oder
+        # Praxisdokument stehen dort die Mandanten- bzw. Patientendaten.
+        "suffix",
+        "stop",
+        "user",
+    ),
+    validated={
+        **_COMMON_VALIDATED,
+        "best_of": "int",
+        "echo": "bool",
+    },
+    required="prompt",
+    forbidden="messages",
+)
+
+PAYLOAD_ROUTES = {
+    **{ct: CHAT_PAYLOAD_ROUTE for ct in CALL_TYPES_CHAT_MESSAGES},
+    **{ct: TEXT_PAYLOAD_ROUTE for ct in CALL_TYPES_TEXT_PROMPT},
+}
+
+# --- 2) Infrastruktur-Keys: vom Proxy bzw. von litellm selbst gesetzt ------
+# Diese Keys stehen nicht im Body des Clients, sondern legt
+# ``litellm.proxy.litellm_pre_call_utils.add_litellm_data_to_request`` in
+# ``data``, BEVOR der Guardrail-Hook laeuft. Sie duerfen deshalb nicht als
+# "unbekanntes Client-Feld" blocken -- sonst blockt jeder echte Request.
+#
+# Jeder Eintrag steht in ``litellm.types.utils.all_litellm_params`` (1.97.0).
+# Damit filtert ``get_non_default_completion_params`` sie heraus: sie
+# erreichen den Provider NICHT -- weder als benannter Parameter noch ueber
+# ``extra_body``. Genau das ist die Rechtfertigung, sie nicht zu maskieren.
+#
+# ACHTUNG, bewusst NICHT hier drin: ``extra_headers``. Es wird zwar ebenfalls
+# vom Proxy gesetzt, steht aber nicht in all_litellm_params und geht als
+# HTTP-Header an den Provider -- also ein Freitext-Kanal. Es blockt (siehe
+# KNOWN_UNSUPPORTED_PAYLOAD_FIELDS).
+PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
+    # Vom Proxy bei JEDEM Request gesetzt (empirisch gegen 1.97.0 gemessen).
+    "metadata",
+    "proxy_server_request",
+    "secret_fields",
+    # Vom Proxy je nach Header-/Key-Konfiguration gesetzt.
+    "litellm_metadata",
+    "litellm_session_id",
+    "litellm_trace_id",
+    "litellm_call_id",
+    "litellm_logging_obj",
+    "litellm_disabled_callbacks",
+    "provider_specific_header",
+    "allowed_model_region",
+    "headers",
+    "cache",
+    "caching",
+    "ttl",
+    "tags",
+    "num_retries",
+    "max_retries",
+    "stream_timeout",
+    "request_timeout",
+    "api_key",
+    "api_base",
+    "api_version",
+    # Routing-/Betriebsschalter, die litellm selbst auswertet.
+    "base_model",
+    "custom_llm_provider",
+    "model_list",
+    "model_info",
+    "fallbacks",
+    "context_window_fallback_dict",
+    "mock_response",
+    "guardrails",
+    "enable_json_schema_validation",
+    "shared_session",
+    "no-log",
+    "turn_off_message_logging",
+    "preset_cache_key",
+    "id",
+})
+
+# --- 3) Bekannt, aber nicht behandelt -> blockt, wird aber benannt ---------
+# "Was du nicht behandelst, blockt -- und wird benannt." Diese Felder gibt es
+# real; die Datenschleuse prueft sie (noch) nicht. Jeder Eintrag ist ein
+# eigenes Work Item, kein stillschweigendes Durchreichen. Die Namen stammen
+# aus dieser konstanten Liste, NIE aus dem Request (Gesetz 5).
+KNOWN_UNSUPPORTED_PAYLOAD_FIELDS = frozenset({
+    # Freitext-/Binaerkanaele mit eigener Form, die ein eigenes Register
+    # braeuchten:
+    "audio",               # Audio-Ein-/Ausgabe: eigenes Part-Format
+    "modalities",          # schaltet die Audio-Ausgabe frei -> siehe audio
+    "prediction",          # Predicted Outputs: traegt kompletten Nutzertext
+    "thinking",            # Anthropic-Reasoning-Konfiguration
+    "web_search_options",  # Suchanfragen gehen an einen Dritt-Dienst
+    "safety_identifier",   # Endnutzer-Kennung wie user -> eigener Fall
+    "verbosity",
+    # Geht als HTTP-Header bzw. als roher Body-Zusatz an den Provider und
+    # damit komplett an der Payload-Pruefung vorbei:
+    "extra_headers",
+    "extra_body",
+    "deployment_id",
+    "include_server_side_tool_invocations",
+    # Prompt-Management: der Text kaeme dann aus einer fremden Quelle und
+    # stuende gar nicht in dem Payload, den wir pruefen koennen.
+    "prompt_id",
+    "prompt_label",
+    "prompt_version",
+    "prompt_variables",
+    "litellm_system_prompt",
+    "user_continue_message",
+    "assistant_continue_message",
+    "allowed_openai_params",
+})
+
+#: Erlaubte Felder nennen wir in der Blockmeldung nur ueber diese konstanten
+#: Listen, nie mit Client-Werten (Gesetz 5).
+_PAYLOAD_FIELDS_HINT = {
+    route.name: ", ".join(sorted(set(route.masked) | set(route.validated)))
+    for route in (CHAT_PAYLOAD_ROUTE, TEXT_PAYLOAD_ROUTE)
+}
+
+
+# --- 4) Formpruefer der validierten Felder ---------------------------------
+# Ein registriertes Feld mit falschem Typ ist derselbe Defekt wie ein
+# unbekanntes Feld: niemand hat den Inhalt geprueft. Diese Pruefer BLOCKEN
+# deshalb -- sie ueberspringen nie still.
+#
+# In keiner Meldung steht ein Client-WERT, nur der Python-Typname und der
+# Feldname aus unserer eigenen konstanten Liste (Gesetz 5).
+def _payload_form_error(field: str, value: Any, erwartet: str) -> None:
+    raise DatenschleuseBlocked(
+        f"{field} vom Typ {type(value).__name__!r} hat nicht die erwartete "
+        f"Form ({erwartet}) und wird deshalb nicht geprueft -- blockiert "
+        "(fail-closed)."
+    )
+
+
+def _payload_expect_bool(value: Any, field: str) -> None:
+    if not isinstance(value, bool):
+        _payload_form_error(field, value, "true/false")
+
+
+def _payload_expect_int(value: Any, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        _payload_form_error(field, value, "ganze Zahl")
+
+
+def _payload_expect_number(value: Any, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _payload_form_error(field, value, "Zahl")
+
+
+def _payload_expect_bool_or_int(value: Any, field: str) -> None:
+    # ``logprobs`` ist auf der Chat-Route ein Schalter, auf der Text-Route
+    # eine Anzahl. Beides ist eine Zahl bzw. ein Bool -- nie Text.
+    if not isinstance(value, (bool, int)):
+        _payload_form_error(field, value, "true/false oder ganze Zahl")
+
+
+def _payload_expect_model(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not PAYLOAD_MODEL_PATTERN.fullmatch(value):
+        _payload_form_error(field, value, "Modellname")
+
+
+def _payload_expect_identifier(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not PAYLOAD_IDENTIFIER_PATTERN.fullmatch(value):
+        _payload_form_error(field, value, "Bezeichner aus A-Z a-z 0-9 _ . : -")
+
+
+def _payload_expect_identifier_list(value: Any, field: str) -> None:
+    if not isinstance(value, list) or len(value) > PAYLOAD_MAX_LIST_ITEMS:
+        _payload_form_error(field, value, "Liste von Bezeichnern")
+    for item in value:
+        _payload_expect_identifier(item, field)
+
+
+def _payload_expect_logit_bias(value: Any, field: str) -> None:
+    if not isinstance(value, dict):
+        _payload_form_error(field, value, "Objekt aus Token-ID -> Zahl")
+    for key, bias in value.items():
+        # Der SCHLUESSEL ist hier client-kontrolliert und damit potenziell ein
+        # Schmuggelkanal -- deshalb eng auf eine Ziffernfolge geprueft und in
+        # der Meldung nie ausgegeben.
+        if not isinstance(key, str) or not key.isdigit():
+            _payload_form_error(field, key, "Token-ID als Ziffernfolge")
+        if isinstance(bias, bool) or not isinstance(bias, (int, float)):
+            _payload_form_error(field, bias, "Zahl")
+
+
+def _payload_expect_stream_options(value: Any, field: str) -> None:
+    if not isinstance(value, dict):
+        _payload_form_error(field, value, "Objekt")
+    unbekannt = sum(1 for key in value if key not in STREAM_OPTIONS_ALLOWED_FIELDS)
+    if unbekannt:
+        raise DatenschleuseBlocked(
+            f"{field} enthaelt {unbekannt} ungepruefte(s) Feld(er) -- blockiert "
+            "(fail-closed). Erlaubt: "
+            f"{', '.join(sorted(STREAM_OPTIONS_ALLOWED_FIELDS))}."
+        )
+    for key, schalter in value.items():
+        if not isinstance(schalter, bool):
+            # ``key`` stammt hier aus der Allowlist oben, ist also konstant.
+            _payload_form_error(f"{field}.{key}", schalter, "true/false")
+
+
+_PAYLOAD_VALIDATORS = {
+    "bool": _payload_expect_bool,
+    "int": _payload_expect_int,
+    "number": _payload_expect_number,
+    "bool_or_int": _payload_expect_bool_or_int,
+    "model": _payload_expect_model,
+    "identifier": _payload_expect_identifier,
+    "identifier_list": _payload_expect_identifier_list,
+    "logit_bias": _payload_expect_logit_bias,
+    "stream_options": _payload_expect_stream_options,
+}
+
+# Bauart-Absicherung: jedes registrierte Feld braucht einen echten Pruefer.
+# Ein Tippfehler im Register wuerde sonst zur Laufzeit im Verarbeitungspfad
+# landen -- also genau dort, wo ein Fehler zum Durchlass wird.
+for _route in (CHAT_PAYLOAD_ROUTE, TEXT_PAYLOAD_ROUTE):
+    _fehlend = sorted(set(_route.validated.values()) - set(_PAYLOAD_VALIDATORS))
+    if _fehlend:  # pragma: no cover - Import-Zeit-Zusicherung
+        raise RuntimeError(f"Payload-Register ohne Formpruefer: {_fehlend}")
+del _route
 
 
 # ===========================================================================
@@ -973,6 +1399,15 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # nachweislich beherrscht.
         self._validate_call_type(call_type)
 
+        # Danach die FORM des Payloads (DATENSCHLE-69, zweite Ebene). Der
+        # call_type sagt nur, WELCHE Route spricht -- nicht, WIE ihr Body
+        # aussieht. Vorher registrierte der Hook die Route und liess die
+        # FELDER dieser Route ungeprueft: ``suffix`` neben einem sauberen
+        # ``prompt`` und ``tools[].function.description`` neben sauberen
+        # ``messages`` gingen unmaskiert hinaus.
+        route = PAYLOAD_ROUTES[call_type]
+        self._validate_payload_shape(data, route)
+
         messages = data.get("messages")
         masker = Masker()
 
@@ -1156,6 +1591,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 # und genau dort stehen regelmaessig Kundendaten.
                 await self._mask_message_fields(msg, masker, requested_level, approved)
 
+        # --- Uebrige Top-Level-Felder der Route (DATENSCHLE-69, F1/F3) -----
+        # Laeuft NACH messages/prompt und VOR dem Ablegen des Mappings: alles
+        # geht durch DENSELBEN Masker, also in dasselbe reid_map.
+        await self._mask_payload_fields(
+            data, route, masker, requested_level, approved, qi_types,
+            turn_qi, text_slots,
+        )
+
         # Mapping im EIGENEN Metadata-Key ablegen (nicht LiteLLMs Interna).
         metadata = data.get("metadata")
         if not isinstance(metadata, dict):
@@ -1166,17 +1609,35 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Anonymisierungs-Hinweis nur einfuegen, wenn tatsaechlich etwas
         # maskiert wurde (kein Overhead fuer PII-freie Requests) -- und nur
         # dann, wenn messages ueberhaupt eine Liste ist (defensiv, s.o.).
-        if masker.reid_map and isinstance(messages, list):
-            self._inject_anonymization_notice(messages)
+        if masker.reid_map:
+            if isinstance(messages, list):
+                self._inject_anonymization_notice(messages)
+            elif route is TEXT_PAYLOAD_ROUTE:
+                # F5: /v1/completions hat keine Messages, in die der Hinweis
+                # passt -- deshalb lief er hier bisher gar nicht. Ein Modell,
+                # dem niemand die Platzhalter erklaert, halluziniert
+                # erfahrungsgemaess um sie herum. Der Hinweis wird nur bei
+                # tatsaechlicher Maskierung vorangestellt: ein PII-freier
+                # FIM-/Code-Completion-Prompt bleibt damit unangetastet.
+                self._inject_prompt_notice(data)
 
         # --- QI-Layer: Akkumulation ueber die Session + Generalisierung -------
         # WICHTIG (fail-Semantik): ein Fehler im QI-Layer darf die bereits
         # erfolgte direkte-PII-Maskierung NICHT zunichte machen und den Request
         # NICHT blocken (anders als die Presidio-Erreichbarkeit, die hart
         # fail-closed ist). Deshalb defensiv abfangen + loggen.
+        #
+        # AUSNAHME (DATENSCHLE-69 F2): ein fail-closed-Block aus dem QI-Layer
+        # ist KEIN "QI-Fehler, der ignoriert werden darf" -- er ist die
+        # Entscheidung, nichts Ungepruefstes rauszulassen. Wuerde dieses
+        # ``except`` ihn schlucken, waere jeder Block hier drin kosmetisch und
+        # der Slot liefe wieder still durch. Deshalb faengt der Handler ihn
+        # ausdruecklich NICHT.
         if self.qi_enabled and self._qi_store is not None and turn_qi:
             try:
                 self._process_qi(data, user_api_key_dict, turn_qi, text_slots)
+            except DatenschleuseBlocked:
+                raise
             except Exception as exc:  # pragma: no cover - defensiv
                 print(
                     f"[datenschleuse] QI-Layer-Fehler ignoriert (direkte Maskierung "
@@ -1246,6 +1707,262 @@ class DatenschleuseGuardrail(_GuardrailBase):
             "geprueft und ist deshalb blockiert (fail-closed). Geprueft "
             f"werden: {_ALLOWED_CALL_TYPES_HINT}."
         )
+
+    # ---- Top-Level-Feld-Register des Payloads (DATENSCHLE-69) -------------
+    @staticmethod
+    def _validate_payload_shape(data: Any, route: "_PayloadRoute") -> None:
+        """Prueft die FORM des Payloads gegen das Top-Level-Feld-Register.
+
+        Konsequente Allowlist wie eine Ebene tiefer beim Message-Feld-Register:
+        was hier nicht steht, ist ein Feld, dessen Inhalt niemand geprueft hat
+        -- und in litellm 1.97.0 nachweislich ein Ausgangskanal (unbekannte
+        Keys landen in ``extra_body``). Der Routen-Fix registrierte nur die
+        Route; erst diese Pruefung schliesst die Ebene darunter.
+
+        Gesetz 5: in keiner Meldung steht ein Client-Wert -- auch ein FELDNAME
+        ist Client-Inhalt. Ausgegeben werden nur Anzahl, Python-Typname,
+        Namen aus unseren eigenen konstanten Listen und Fingerprints.
+        """
+        if not isinstance(data, dict):
+            raise DatenschleuseBlocked(
+                f"Payload vom Typ {type(data).__name__!r} ist nicht pruefbar "
+                "und deshalb blockiert (fail-closed)."
+            )
+
+        # a) Mehrdeutigkeit -- der Body passt auf ZWEI Routen gleichzeitig.
+        #    Die Text-Route blockte das schon; die Chat-Route nicht. Die Regel
+        #    aus security-baseline.md gilt in beide Richtungen.
+        if data.get(route.forbidden) is not None:
+            raise DatenschleuseBlocked(
+                f"Request der Route {route.name} mit zusaetzlichem "
+                f"{route.forbidden}-Feld ist mehrdeutig und wird deshalb "
+                "blockiert (fail-closed). Erlaubt ist entweder prompt "
+                "(/v1/completions) oder messages (/v1/chat/completions), "
+                "nicht beides."
+            )
+
+        # b) Ohne Traegerfeld gibt es keinen Anwendertext, den wir pruefen
+        #    koennten -- und der Rest des Bodys liefe trotzdem hinaus.
+        if data.get(route.required) is None:
+            raise DatenschleuseBlocked(
+                f"Request der Route {route.name} ohne {route.required}-Feld "
+                "ist nicht pruefbar und deshalb blockiert (fail-closed)."
+            )
+
+        # c) Jedes Feld, das die Datenschleuse nicht kennt, blockt.
+        erlaubt = (
+            set(route.masked)
+            | set(route.validated)
+            | PAYLOAD_FIELDS_INFRASTRUCTURE
+        )
+        unbekannt = [key for key in data if key not in erlaubt]
+        if unbekannt:
+            benannt = sorted(
+                key for key in unbekannt
+                if isinstance(key, str) and key in KNOWN_UNSUPPORTED_PAYLOAD_FIELDS
+            )
+            fremd = [key for key in unbekannt if key not in benannt]
+            teile = []
+            if benannt:
+                teile.append("bekannt, aber nicht im Register: " + ", ".join(benannt))
+            if fremd:
+                teile.append(
+                    "unbekannt (Fingerprint): "
+                    + ", ".join(sorted(_field_fingerprint(k) for k in fremd))
+                )
+            diagnose = "; ".join(teile)
+            _LOG.warning(
+                "Payload blockiert -- ungepruefte Top-Level-Felder [%s]. "
+                "Werte werden bewusst nicht geloggt (Gesetz 5).", diagnose,
+            )
+            raise DatenschleuseBlocked(
+                f"Payload enthaelt {len(unbekannt)} Top-Level-Feld(er), die "
+                f"die Datenschleuse nicht prueft ({diagnose}) -- deshalb "
+                f"blockiert (fail-closed). Geprueft werden auf der Route "
+                f"{route.name} ausschliesslich: "
+                f"{_PAYLOAD_FIELDS_HINT[route.name]}."
+            )
+
+        # d) Bekanntes Feld, falscher Typ -- derselbe Defekt (DATENSCHLE-66 F1).
+        for feld, pruefer in route.validated.items():
+            wert = data.get(feld)
+            if wert is not None:
+                _PAYLOAD_VALIDATORS[pruefer](wert, feld)
+
+    async def _mask_payload_fields(
+        self,
+        data: Dict[str, Any],
+        route: "_PayloadRoute",
+        masker: Masker,
+        requested_level: Any,
+        approved: bool,
+        qi_types: Any,
+        turn_qi: List[Tuple[str, str]],
+        text_slots: List[Tuple[Any, Any]],
+    ) -> None:
+        """Maskiert die registrierten Top-Level-Freitextfelder AUSSER dem
+        Traegerfeld (``messages``/``prompt``) -- das erledigen die bestehenden
+        Pfade im Hook.
+
+        Alles laeuft ueber DENSELBEN ``masker`` und damit dasselbe
+        ``reid_map``: derselbe Wert bekommt in prompt, suffix und tools
+        denselben Platzhalter, und der Rueckweg findet ihn wieder. Ein
+        zweites Mapping waere ein zweiter, unvollstaendiger Rueckweg.
+
+        Die Reihenfolge folgt der Deklaration im Register, damit die
+        Platzhalter-Nummerierung deterministisch bleibt.
+        """
+        for feld in route.masked:
+            if feld == route.required:
+                continue  # messages/prompt: bereits behandelt
+            wert = data.get(feld)
+            if wert is None:
+                continue
+
+            if feld == "suffix":
+                # Wie ein prompt-String behandeln -- inklusive QI-Slot, damit
+                # der QI-Layer auch hier groebern kann.
+                if not isinstance(wert, str):
+                    raise DatenschleuseBlocked(
+                        f"suffix vom Typ {type(wert).__name__!r} wird von der "
+                        "Datenschleuse nicht geprueft und ist deshalb "
+                        "blockiert (fail-closed). Erlaubt ist nur ein String."
+                    )
+                data[feld] = await self._mask_prompt_text(
+                    wert, masker, requested_level, approved, qi_types, turn_qi
+                )
+                text_slots.append((data, feld))
+                continue
+
+            if feld == "stop":
+                data[feld] = await self._mask_stop(
+                    wert, masker, requested_level, approved
+                )
+                continue
+
+            if feld == "user":
+                # Endnutzer-Kennung. Sie geht als Provider-Parameter hinaus und
+                # traegt in der Praxis regelmaessig eine E-Mail-Adresse oder
+                # einen Klarnamen. Maskiert statt validiert: ein Block wuerde
+                # legitime Betreiber-Setups brechen, und ein Platzhalter ist
+                # als Kennung genauso brauchbar wie der Klartext.
+                if not isinstance(wert, str):
+                    raise DatenschleuseBlocked(
+                        f"user vom Typ {type(wert).__name__!r} wird von der "
+                        "Datenschleuse nicht geprueft und ist deshalb "
+                        "blockiert (fail-closed). Erlaubt ist nur ein String."
+                    )
+                data[feld] = await self._mask_text_value(
+                    wert, masker, requested_level, approved
+                )
+                continue
+
+            # tools / tool_choice / functions / function_call / response_format:
+            # verschachtelte Strukturen mit Freitext an beliebiger Tiefe
+            # (``description``, ``enum``-Werte, Schema-Titel). Strukturerhaltend
+            # maskieren -- der Aufruf muss beim Zielmodell benutzbar bleiben.
+            data[feld] = await self._mask_payload_structure(
+                wert, feld, masker, requested_level, approved
+            )
+
+    async def _mask_stop(
+        self, value: Any, masker: Masker, requested_level: Any, approved: bool
+    ) -> Any:
+        """``stop`` ist Freitext, der als Provider-Parameter hinausgeht.
+
+        Maskiert statt geblockt, weil die Stop-Sequenz nach der Maskierung
+        genau zu dem Text passt, den das Modell zu sehen bekommt: der
+        ausgehende Text traegt Platzhalter, also muss die Stop-Sequenz sie
+        ebenfalls tragen. In der Praxis stehen dort ohnehin Marker wie
+        ``\\n\\n`` -- fuer die ist die Maskierung ein No-op."""
+        if isinstance(value, str):
+            return await self._mask_text_value(
+                value, masker, requested_level, approved
+            )
+        if isinstance(value, list):
+            if len(value) > PAYLOAD_MAX_LIST_ITEMS:
+                raise DatenschleuseBlocked(
+                    f"stop enthaelt mehr als {PAYLOAD_MAX_LIST_ITEMS} "
+                    "Eintraege -- blockiert (fail-closed)."
+                )
+            out = []
+            for item in value:
+                if not isinstance(item, str):
+                    raise DatenschleuseBlocked(
+                        f"stop-Eintrag vom Typ {type(item).__name__!r} wird "
+                        "von der Datenschleuse nicht geprueft und ist deshalb "
+                        "blockiert (fail-closed). Erlaubt sind nur Strings."
+                    )
+                out.append(
+                    await self._mask_text_value(
+                        item, masker, requested_level, approved
+                    )
+                )
+            return out
+        raise DatenschleuseBlocked(
+            f"stop vom Typ {type(value).__name__!r} wird von der Datenschleuse "
+            "nicht geprueft und ist deshalb blockiert (fail-closed). Erlaubt "
+            "sind nur String- oder Listen-Werte."
+        )
+
+    async def _mask_payload_structure(
+        self,
+        value: Any,
+        field: str,
+        masker: Masker,
+        requested_level: Any,
+        approved: bool,
+    ) -> Any:
+        """Strukturerhaltende Maskierung eines verschachtelten Top-Level-Felds
+        (``tools``, ``tool_choice``, ``functions``, ``function_call``,
+        ``response_format``).
+
+        Nutzt denselben JSON-Knoten-Masker wie ``tool_calls[].function.
+        arguments`` -- inklusive Tiefenbegrenzung, Schutzklassen-Gate ueber die
+        gesammelten Entity-Typen und Verifikationsdurchlauf auf dem Ergebnis.
+        Der Verifikationsdurchlauf ist die einzige Pruefung, die NICHT
+        pfadgebunden ist: findet der Analyzer im Resultat noch etwas, blockt
+        der Request, statt es hinauszulassen."""
+        collected: List[Dict[str, Any]] = []
+        masked = await self._mask_json_node(value, masker, collected)
+        if collected:
+            # Signalwort und Personen-Referenz stehen typischerweise in
+            # VERSCHIEDENEN Feldern der Struktur -- pro Feld einzeln
+            # klassifiziert wuerde die Kombination nie erkannt. Deshalb ueber
+            # die Gesamtstruktur, wie bei ``arguments``.
+            self._enforce_sensitivity(
+                json.dumps(value, ensure_ascii=False, default=str),
+                [{"entity_type": e.get("entity_type")} for e in collected],
+                requested_level,
+                approved,
+            )
+        await self._verify_no_pii_left(
+            json.dumps(masked, ensure_ascii=False, default=str), masker
+        )
+        return masked
+
+    @staticmethod
+    def _inject_prompt_notice(
+        data: Dict[str, Any], notice: str = ANONYMIZATION_NOTICE
+    ) -> None:
+        """Stellt den Anonymisierungs-Hinweis dem ``prompt`` voran (F5).
+
+        Der Chat-Pfad legt ihn in eine System-Message; /v1/completions hat
+        keine, also fuehrt an einem Praefix kein Weg vorbei. Bei einer
+        Batch-Liste bekommt JEDER Eintrag den Hinweis: die Eintraege sind
+        eigenstaendige Completions, ein Hinweis nur im ersten wuerde die
+        uebrigen unerklaert lassen.
+
+        Wird nur bei tatsaechlicher Maskierung aufgerufen -- ein PII-freier
+        FIM-/Code-Completion-Prompt bleibt dadurch unveraendert."""
+        prompt = data.get("prompt")
+        if isinstance(prompt, str):
+            data["prompt"] = f"{notice}\n\n{prompt}"
+            return
+        if isinstance(prompt, list):
+            for index, item in enumerate(prompt):
+                if isinstance(item, str):
+                    prompt[index] = f"{notice}\n\n{item}"
 
     # ---- Route /v1/completions: Payload mit ``prompt`` (DATENSCHLE-69) ----
     async def _mask_text_prompt(
@@ -1931,11 +2648,56 @@ class DatenschleuseGuardrail(_GuardrailBase):
         text_slots: List[Tuple[Any, Any]], turn_qi: List[Tuple[str, str]]
     ) -> None:
         """Wendet die Generalisierung auf jeden Text-Slot an (wert-basiert;
-        QI-Werte, die in einem Slot nicht vorkommen, sind schlicht No-ops)."""
+        QI-Werte, die in einem Slot nicht vorkommen, sind schlicht No-ops).
+
+        Ein Slot ist ein ``(Container, Schluessel)``-Paar. Es gibt genau zwei
+        Bauarten, weil der Hook genau zwei registriert:
+          * ``(dict, str)``  -- Message/Part/Payload-Feld,
+          * ``(list, int)``  -- Eintrag einer ``prompt``-Batch-Liste.
+
+        F2 (DATENSCHLE-69): hier stand
+        ``container.get(key) if isinstance(container, dict) else None``.
+        Fuer Listen war ``current`` damit immer ``None`` und der Slot wurde
+        STILL uebersprungen -- exakt der ``isinstance``-Guard im
+        Verarbeitungspfad, den security-baseline.md verbietet und den der
+        Guardrail selbst als schwerstes Finding von DATENSCHLE-66 zitiert.
+
+        Die Folge war kein kosmetischer Mangel: Quasi-Identifier werden vom
+        Masker BEWUSST nicht ersetzt, weil dieser Layer sie groebern soll.
+        Faellt er aus, gehen PLZ und Geburtsjahr in VOLLER Aufloesung hinaus.
+        Und ``prompt: ["...", "..."]`` ist die von OpenAI spezifizierte
+        Batch-Form -- also gerade der Fall mit vielen Betroffenen.
+
+        Deshalb: kein neuer still ueberspringender Zweig. Ein Container-Typ
+        oder ein Slot-Inhalt, den dieser Layer nicht bedienen kann, BLOCKT.
+        """
         for container, key in text_slots:
-            current = container.get(key) if isinstance(container, dict) else None
-            if isinstance(current, str):
-                container[key] = qig.apply_generalizations(current, turn_qi)
+            if isinstance(container, dict):
+                current = container.get(key)
+            elif isinstance(container, list):
+                if not isinstance(key, int) or not 0 <= key < len(container):
+                    raise DatenschleuseBlocked(
+                        "QI-Generalisierung kann einen registrierten Text-Slot "
+                        "nicht adressieren (Listenindex ausserhalb des "
+                        "Containers) -- blockiert (fail-closed), statt den "
+                        "Slot still zu ueberspringen."
+                    )
+                current = container[key]
+            else:
+                raise DatenschleuseBlocked(
+                    f"QI-Generalisierung kennt den Slot-Container "
+                    f"{type(container).__name__!r} nicht und kann ihn deshalb "
+                    "nicht groebern -- blockiert (fail-closed). Ein still "
+                    "uebersprungener Slot laesst Quasi-Identifier in voller "
+                    "Aufloesung hinaus."
+                )
+            if not isinstance(current, str):
+                raise DatenschleuseBlocked(
+                    f"QI-Generalisierung erwartet in einem Text-Slot einen "
+                    f"String, fand aber {type(current).__name__!r} -- "
+                    "blockiert (fail-closed)."
+                )
+            container[key] = qig.apply_generalizations(current, turn_qi)
 
     # ---- Post-Call Streaming: streaming-sichere Re-Identification ---------
     async def async_post_call_streaming_iterator_hook(

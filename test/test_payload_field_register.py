@@ -117,11 +117,24 @@ def _guard(**kwargs):
 
 
 def _plain(value):
-    """Der komplette Payload als ein durchsuchbarer String.
+    """Der ausgehende Payload als ein durchsuchbarer String.
 
     Bewusst grob: ein Leck ist ein Leck, egal in welchem Feld der Klartext
     am Ende steht. Genau diese Grobheit hat die F1/F3-PoCs gefunden.
+
+    EINE Ausnahme, und nur diese: ``metadata[REID_MAP_KEY]``. Dort MUSS der
+    Klartext stehen -- das Mapping ist der Rueckweg, ohne den die Antwort
+    nicht re-identifiziert werden kann. Es ist kein Ausgangskanal:
+    ``metadata`` steht in litellms ``all_litellm_params`` und wird von
+    ``get_non_default_completion_params`` herausgefiltert, erreicht den
+    Provider also nicht. Genau deshalb steht ``metadata`` im Register unter
+    PAYLOAD_FIELDS_INFRASTRUCTURE und nicht unter den maskierten Feldern.
     """
+    if isinstance(value, dict) and isinstance(value.get("metadata"), dict):
+        value = dict(value)
+        value["metadata"] = {
+            k: v for k, v in value["metadata"].items() if k != dg.REID_MAP_KEY
+        }
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
