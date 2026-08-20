@@ -242,10 +242,40 @@ weil es zusätzlich noch ein falsches Sicherheitsgefühl erzeugt.
 Leitgedanke deshalb: **Blockiert wird nur, was der Autor des PRs auch
 tatsächlich beheben kann.**
 
-| Was | Wo | Blockiert | Nur Bericht |
-|-----|----|-----------|-------------|
+| Was | Wo | Sperrt den Merge | Nur Bericht |
+|-----|----|------------------|-------------|
 | Python-Abhängigkeiten | `security`-Job in `ci.yml`, bei jedem PR | CRITICAL + HIGH, **nur mit verfügbarem Fix** | alles ohne Fix, MEDIUM, LOW, UNKNOWN |
 | Container-Images | `image-scan.yml`, wöchentlich + bei Pin-Änderung | **nichts** (siehe „Der Presidio-Altbestand") | alles |
+
+**Was „sperrt den Merge" voraussetzt.** Ein roter Check färbt für sich genommen
+nur ein Häkchen rot — verhindern kann er nichts. Die Sperre entsteht erst, wenn
+der Job-Name als *required status check* in einem aktiven Ruleset steht.
+
+Stand **2026-08-20, selbst geprüft** (`gh api repos/oliverhees/datenschleuse/rulesets`):
+Ruleset `main-protection` (ID 21091840) ist **aktiv**, verlangt einen Pull Request
+und vier erforderliche Checks: `test`, `syntax-check`, `security`, `gates`.
+Zusätzlich sind `deletion` und `non_fast_forward` auf `main` gesperrt. Die Spalte
+oben beschreibt damit den tatsächlichen Zustand.
+
+Zwei Dinge, die dabei zusammenhängen und leicht auseinanderlaufen:
+
+- Das Dependency-Gate sperrt, **weil** es im Job `security` sitzt und dieser
+  Name auf der Required-Liste steht. Würde jemand den Scan in einen neu
+  angelegten Job verschieben, wäre die Sperre lautlos weg — der neue Job wäre
+  nicht required. Deshalb wächst die Abdeckung im vorhandenen Job, statt neue
+  anzulegen (siehe „Wo die Scans hängen").
+- `image-scan` steht **korrekt nicht** auf der Liste. Der Workflow hat einen
+  `paths`-Filter; als required Check würde er bei PRs ohne passende Pfade nie
+  ein Ergebnis melden und jeden Merge blockieren. Bestätigt: die vier
+  erforderlichen Checks enthalten `image-scan` nicht.
+
+*Historie, weil die Begründung des PRs daran hing:* Bis zum 2026-08-20 15:02
+gab es **kein** Ruleset (`rulesets` → `[]`, `branches/main/protection` → 404
+„Branch not protected"). Das Risiko-Argument dieses PRs — „blockiert wird beim
+Dependency-Gate" — verlagerte damals auf ein Gate, das es nicht gab. Der
+Security-Audit hat das aufgedeckt; Oliver hat das Ruleset daraufhin aktiviert
+(DATENSCHLE-61). Der Satz stimmt also erst, seit er geprüft wurde — nicht,
+seit er geschrieben wurde.
 
 Begründung im Einzelnen:
 
@@ -311,7 +341,9 @@ auf `exit-code: "1"` gestellt. Der Schalter steht dort kommentiert.
 ### Wo die Scans hängen — und warum getrennt
 
 - **`security`-Job in `ci.yml`** (bestehender Job, Name unverändert). Der Name
-  steht als required Status-Check im Ruleset-Template (DATENSCHLE-61). Hätten
+  steht als required Status-Check im Ruleset `main-protection` — seit dem
+  2026-08-20 **aktiv**, vorher nur ein nicht angewandtes Template
+  (DATENSCHLE-61). Hätten
   wir einen neuen Job `vuln-scan` angelegt, hätte `.github/ruleset-main-protection.json`
   mitgepflegt werden müssen — siehe die Pflege-Regel in `docs/BRANCH-PROTECTION.md`.
   Stattdessen wächst die Abdeckung des vorhandenen Checks.
