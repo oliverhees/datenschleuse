@@ -476,6 +476,14 @@ PAYLOAD_ROUTES = {
 # vom Proxy gesetzt, steht aber nicht in all_litellm_params und geht als
 # HTTP-Header an den Provider -- also ein Freitext-Kanal. Es blockt (siehe
 # KNOWN_UNSUPPORTED_PAYLOAD_FIELDS).
+#
+# BEKANNTE GRENZE dieser Liste, damit sie niemand fuer mehr haelt, als sie
+# ist: "erreicht den Provider nicht" heisst NICHT "ist harmlos". ``metadata``
+# etwa nimmt ein Client entgegen und litellm reicht es an seine
+# Logging-Callbacks weiter. Ein Client, der dort PII hineinschreibt, bekommt
+# sie also nicht zum Modell, wohl aber potenziell ins Log (Gesetz 5). Diese
+# Ebene -- Client-Eingaben auf dem LOGGING-Weg statt auf dem Provider-Weg --
+# deckt dieses Register bewusst nicht ab; sie ist ein eigenes Work Item.
 PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     # Vom Proxy bei JEDEM Request gesetzt (empirisch gegen 1.97.0 gemessen).
     "metadata",
@@ -1405,7 +1413,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # FELDER dieser Route ungeprueft: ``suffix`` neben einem sauberen
         # ``prompt`` und ``tools[].function.description`` neben sauberen
         # ``messages`` gingen unmaskiert hinaus.
-        route = PAYLOAD_ROUTES[call_type]
+        # Kein ``PAYLOAD_ROUTES[call_type]``: ein fehlender Eintrag waere ein
+        # KeyError aus dem Hook heraus -- ein unkontrollierter Fehlerpfad
+        # statt fail-closed (gleiche Klasse Befund wie MAX_JSON_DEPTH,
+        # Security-Audit F7). Passieren kann das nur, wenn jemand eine Route
+        # in ALLOWED_CALL_TYPES aufnimmt, ohne ihr ein Payload-Schema zu
+        # geben -- genau dann muss sie blocken, nicht ungeprueft laufen.
+        route = PAYLOAD_ROUTES.get(call_type)
+        if route is None:  # pragma: no cover - Register-Inkonsistenz
+            raise DatenschleuseBlocked(
+                "Die Route ist zwar zugelassen, hat aber kein hinterlegtes "
+                "Payload-Schema -- ihr Body kann deshalb nicht geprueft "
+                "werden und der Request ist blockiert (fail-closed)."
+            )
         self._validate_payload_shape(data, route)
 
         messages = data.get("messages")
@@ -1922,7 +1942,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
         gesammelten Entity-Typen und Verifikationsdurchlauf auf dem Ergebnis.
         Der Verifikationsdurchlauf ist die einzige Pruefung, die NICHT
         pfadgebunden ist: findet der Analyzer im Resultat noch etwas, blockt
-        der Request, statt es hinauszulassen."""
+        der Request, statt es hinauszulassen.
+
+        Bewusst in Kauf genommen: schlaegt die Erkennung in einem Feld an, das
+        der Provider formal einschraenkt (``response_format.json_schema.name``
+        erlaubt nur ``[A-Za-z0-9_-]``), wird der Request vom Provider
+        abgelehnt statt still mit PII ausgeliefert. Ein gebrochenes Schema ist
+        sichtbar, ein Leck nicht -- dieselbe Abwaegung wie beim Typwechsel
+        Zahl -> String in ``_mask_json_node``."""
         collected: List[Dict[str, Any]] = []
         masked = await self._mask_json_node(value, masker, collected)
         if collected:

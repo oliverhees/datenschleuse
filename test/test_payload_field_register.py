@@ -551,6 +551,31 @@ class TestF2QiListSlots(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("81675", eintrag)
             self.assertNotIn("1978", eintrag)
 
+    async def test_qi_und_hinweis_greifen_gemeinsam_auf_der_batch_liste(self):
+        """Regression: der Anonymisierungs-Hinweis (F5) ersetzt Eintraege der
+        prompt-Liste, die QI-Slots zeigen per Index auf dieselbe Liste. Wuerde
+        der Hinweis die Liste neu aufbauen statt in-place zu ersetzen, zeigten
+        die Slots ins Leere und die QI-Generalisierung liefe wieder ins Nichts
+        -- diesmal nur an anderer Stelle."""
+        guard = self._guard()
+        # Direkte PII (loest den Hinweis aus) UND Quasi-Identifier zugleich.
+        guard._analyze = _qi_analyze_factory({**_QI_MAP, _NAME: "PERSON"})
+        out = await guard.async_pre_call_hook(
+            user_api_key_dict=None,
+            cache=None,
+            data={
+                "model": "gpt-3.5-turbo-instruct",
+                "prompt": [f"{_QI_TEXT}, betreut von {_NAME}"],
+                "metadata": {"session_id": "h"},
+            },
+            call_type="atext_completion",
+        )
+        text = out["prompt"][0]
+        self.assertIn(dg.ANONYMIZATION_NOTICE, text)   # Hinweis da
+        self.assertNotIn(_NAME, text)                  # direkte PII maskiert
+        self.assertNotIn("81675", text)                # QI generalisiert
+        self.assertIn("Region Bayern", text)
+
     async def test_unbekannter_container_typ_blockt_statt_still_zu_ueberspringen(self):
         """Kein neuer ``isinstance``-Zweig, der bei Unbekanntem still
         ueberspringt: ein Container-Typ, den der QI-Layer nicht bedienen kann,
