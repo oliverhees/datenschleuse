@@ -475,5 +475,234 @@ class TestCitationBlockMessagesLeakNothing(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("B" * 50, msg)
 
 
+# ===========================================================================
+# DER RUECKWEG IN SEINER ECHTEN FORM (QA-Audit zu 1e197f9, F1)
+# ===========================================================================
+# Der bisherige Roundtrip-Test dieses Files baut ``content`` als simplen
+# String mit hineinkopiertem Zitattext. Diese Form kommt in keiner realen
+# Antwort vor. Er belegt damit generische String-Re-Identifikation -- NICHT
+# die Zusage, dass Zitate auf dem Rueckweg aufgeloest werden. Das Wort
+# "end-to-end" war dadurch nicht gedeckt.
+#
+# Real sind zwei Formen, und der Hook behandelte BEIDE nicht:
+#   1. ``message.content`` als LISTE von Bloecken. Der Hook verarbeitete
+#      ``content`` nur unter ``isinstance(content, str)`` -- eine Liste
+#      fiel komplett durch.
+#   2. Zitate NEBEN dem Text in ``provider_specific_fields``. LiteLLM legt
+#      sie dort ab (non-streaming: ``citations``, streaming:
+#      ``delta.provider_specific_fields.citation``). Beide Hooks fassten
+#      ``provider_specific_fields`` nirgends an.
+#
+# Folge beim Kunden: der Haupttext kam im Klartext, dasselbe Zitat trug den
+# rohen Platzhalter. Das ist KEIN Vertraulichkeitsleck -- ein
+# stehengebliebener Platzhalter ist die sichere Fehlerrichtung -- aber ein
+# gebrochenes Versprechen.
+
+
+def _placeholder_for(reid_map, klartext):
+    """Der Platzhalter, den der Hinweg fuer diesen Klartext vergeben hat."""
+    treffer = [p for p, v in reid_map.items() if v == klartext]
+    assert treffer, f"Kein Platzhalter fuer {klartext!r} im Mapping"
+    return treffer[0]
+
+
+async def _masked_placeholder(guard):
+    """Faehrt einen echten Hinweg und liefert (request_data, Platzhalter).
+
+    Bewusst ueber den echten Pre-Call-Hook statt mit einem handgebauten
+    Mapping: so ist der Platzhalter derselbe, den die Datenschleuse im
+    Betrieb vergibt, und der Test kann nicht an einem erfundenen Mapping
+    gruen werden.
+    """
+    out = await _run_messages(
+        guard, [{"role": "user", "content": f"Bitte pruefen: {_PII_NAME}"}],
+    )
+    reid_map = out["metadata"][dg.REID_MAP_KEY]
+    return out, _placeholder_for(reid_map, _PII_NAME)
+
+
+class TestResponseCitationsAreReidentified(unittest.IsolatedAsyncioTestCase):
+    """Nicht-gestreamte Antworten in ihrer ECHTEN Form."""
+
+    async def test_citations_in_provider_specific_fields_are_reidentified(self):
+        """Die Form, die LiteLLM aus einer Anthropic-Antwort baut: Text in
+        ``content``, Zitate daneben in ``provider_specific_fields``.
+
+        Vorher: der Text kam im Klartext an, dasselbe Zitat trug den rohen
+        Platzhalter."""
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        response = {"choices": [{"message": {
+            "content": f"Laut Dokument ist {ph} der Ansprechpartner.",
+            "provider_specific_fields": {"citations": [{
+                "type": "char_location",
+                "cited_text": f"{ph} ist zustaendig.",
+                "document_title": f"Akte {ph}",
+                "document_index": 0,
+                "start_char_index": 0,
+                "end_char_index": 20,
+            }]},
+        }}]}
+        back = await guard.async_post_call_success_hook(
+            data=request_data, user_api_key_dict=None, response=response
+        )
+        message = back["choices"][0]["message"]
+        citation = message["provider_specific_fields"]["citations"][0]
+
+        self.assertNotIn(ph, message["content"])
+        self.assertEqual(citation["cited_text"], f"{_PII_NAME} ist zustaendig.")
+        self.assertEqual(citation["document_title"], f"Akte {_PII_NAME}")
+        # Indizes bleiben unangetastet -- sie zeigen auf eine Position,
+        # nicht auf einen Namen.
+        self.assertEqual(citation["start_char_index"], 0)
+        self.assertEqual(citation["end_char_index"], 20)
+
+    async def test_citations_nested_in_a_list_content_block_are_reidentified(self):
+        """``message.content`` als Liste von Bloecken. Der Hook sah bisher
+        nur den String-Fall und liess die ganze Liste unangetastet: weder
+        Text noch Zitat wurden aufgeloest."""
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        response = {"choices": [{"message": {"content": [{
+            "type": "text",
+            "text": f"Laut Dokument ist {ph} zustaendig.",
+            "citations": [{
+                "type": "char_location",
+                "cited_text": f"{ph} ist zustaendig.",
+                "document_title": f"Akte {ph}",
+                "document_index": 0,
+                "start_char_index": 0,
+                "end_char_index": 20,
+            }],
+        }]}}]}
+        back = await guard.async_post_call_success_hook(
+            data=request_data, user_api_key_dict=None, response=response
+        )
+        block = back["choices"][0]["message"]["content"][0]
+
+        self.assertEqual(block["text"], f"Laut Dokument ist {_PII_NAME} zustaendig.")
+        self.assertEqual(
+            block["citations"][0]["cited_text"], f"{_PII_NAME} ist zustaendig."
+        )
+        self.assertEqual(block["citations"][0]["document_title"], f"Akte {_PII_NAME}")
+
+    async def test_web_search_citation_is_reidentified_on_the_way_back(self):
+        """Der Rueckweg ist KEIN Sicherheitspfad, sondern ein Einloese-Pfad:
+        er ersetzt ausschliesslich Platzhalter, die die Datenschleuse selbst
+        vergeben hat, und liefert sie an den KUNDEN zurueck -- nicht an den
+        Provider. Deshalb gilt er fuer JEDEN Zitat-Typ, auch fuer die, die
+        der Hinweg fail-closed blockt. Ein Platzhalter, der hier stehen
+        bleibt, ist ein gebrochenes Versprechen ohne Sicherheitsgewinn."""
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        response = {"choices": [{"message": {
+            "content": "Siehe Quelle.",
+            "provider_specific_fields": {"citations": [{
+                "type": "web_search_result_location",
+                "url": "https://example.invalid/akte",
+                "title": f"Akte {ph}",
+                "cited_text": f"{ph} ist zustaendig.",
+                "encrypted_index": "Eo8BCioIAhgBIiQyYjQ0OWJmZg==",
+            }]},
+        }}]}
+        back = await guard.async_post_call_success_hook(
+            data=request_data, user_api_key_dict=None, response=response
+        )
+        citation = back["choices"][0]["message"][
+            "provider_specific_fields"]["citations"][0]
+
+        self.assertEqual(citation["cited_text"], f"{_PII_NAME} ist zustaendig.")
+        self.assertEqual(citation["title"], f"Akte {_PII_NAME}")
+        # ``encrypted_index`` ist ein Provider-Token und wird NICHT angefasst.
+        self.assertEqual(citation["encrypted_index"], "Eo8BCioIAhgBIiQyYjQ0OWJmZg==")
+
+    async def test_a_response_without_citations_is_unchanged(self):
+        """Die Erweiterung darf den bestehenden String-Pfad nicht stoeren."""
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        response = {"choices": [{"message": {"content": f"Hallo {ph}."}}]}
+        back = await guard.async_post_call_success_hook(
+            data=request_data, user_api_key_dict=None, response=response
+        )
+        self.assertEqual(
+            back["choices"][0]["message"]["content"], f"Hallo {_PII_NAME}."
+        )
+
+
+def _citation_delta_chunk(citation):
+    """Die Form, in der LiteLLM ein Anthropic-``citations_delta`` ausliefert.
+
+    Wichtig fuer den Fix: das Zitat kommt als VOLLSTAENDIGES Objekt pro
+    Event, nicht als ueber Chunks zerlegter String. Deshalb braucht es hier
+    KEINEN Sliding-Window-Puffer wie bei ``delta.content`` -- ein direkter
+    Voll-Ersatz ist ausreichend und richtig.
+    """
+    return {"choices": [{
+        "delta": {
+            "content": None,
+            "provider_specific_fields": {"citation": citation},
+        },
+        "finish_reason": None,
+    }]}
+
+
+async def _agen(items):
+    for item in items:
+        yield item
+
+
+class TestStreamingCitationsAreReidentified(unittest.IsolatedAsyncioTestCase):
+    """Derselbe Defekt im Streaming-Pfad. AK3 verlangt, dass die
+    Re-Identifikation im Stream "ebenso greift wie beim Textkanal" -- fuer
+    Zitate tat sie das gar nicht."""
+
+    async def test_citation_delta_is_reidentified(self):
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        chunks = [_citation_delta_chunk({
+            "type": "char_location",
+            "cited_text": f"{ph} ist zustaendig.",
+            "document_title": f"Akte {ph}",
+            "document_index": 0,
+        })]
+
+        out = []
+        async for chunk in guard.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=None, response=_agen(chunks), request_data=request_data
+        ):
+            out.append(chunk)
+
+        citation = out[0]["choices"][0]["delta"][
+            "provider_specific_fields"]["citation"]
+        self.assertEqual(citation["cited_text"], f"{_PII_NAME} ist zustaendig.")
+        self.assertEqual(citation["document_title"], f"Akte {_PII_NAME}")
+
+    async def test_citation_delta_next_to_a_text_delta_does_not_disturb_it(self):
+        """Ein Chunk kann Text UND Zitat tragen. Der Text-Kanal laeuft ueber
+        den Sliding-Window-Puffer, das Zitat nicht -- die beiden duerfen sich
+        nicht ins Gehege kommen."""
+        guard = _guard()
+        request_data, ph = await _masked_placeholder(guard)
+        chunk = _citation_delta_chunk(
+            {"type": "char_location", "cited_text": f"{ph} ist zustaendig."}
+        )
+        chunk["choices"][0]["delta"]["content"] = f"Laut Akte ist {ph} zustaendig."
+
+        text = ""
+        citation = None
+        async for out in guard.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=None, response=_agen([chunk]), request_data=request_data
+        ):
+            delta = out["choices"][0]["delta"]
+            text += delta.get("content") or ""
+            psf = delta.get("provider_specific_fields") or {}
+            if psf.get("citation") is not None:
+                citation = psf["citation"]
+
+        self.assertEqual(text, f"Laut Akte ist {_PII_NAME} zustaendig.")
+        self.assertIsNotNone(citation)
+        self.assertEqual(citation["cited_text"], f"{_PII_NAME} ist zustaendig.")
+
+
 if __name__ == "__main__":
     unittest.main()
