@@ -363,6 +363,39 @@ MAX_CITATIONS_PER_PART = 1000
 # Zahl bleibt eine Zahl -- das schliesst der Deckel nicht.
 MAX_CITATION_INDEX = 1_000_000_000
 
+# Freitext-Felder eines Zitats auf dem RUECKWEG (QA-Audit F1).
+#
+# Bewusst BREITER als CITATION_FIELDS_MASKED: der Hinweg laesst nur die drei
+# Dokument-Zitattypen durch, die ANTWORT kann jeden Typ tragen -- ein
+# Web-Search-Zitat entsteht serverseitig ueber das Top-Level-Feld ``tools``
+# und musste nie durch den Hinweg.
+#
+# Warum die Breite hier keine Sicherheitsfrage ist: der Rueckweg ist ein
+# EINLOESE-Pfad, kein Pruef-Pfad. ``reidentify_full`` ersetzt ausschliesslich
+# Platzhalter, die dieser Request selbst vergeben hat, und das Ergebnis geht
+# an den KUNDEN, nicht an den Provider. Ein Feld zu viel kann hier nichts
+# leaken; ein Feld zu wenig laesst einen Platzhalter beim Kunden stehen.
+# Deshalb ist die Fehlerrichtung hier die umgekehrte als auf dem Hinweg:
+# grosszuegig statt fail-closed.
+#
+# ``encrypted_index`` und ``file_id`` stehen bewusst NICHT hier: opake
+# Provider-Token, die byte-identisch bleiben muessen.
+CITATION_RESPONSE_TEXT_FIELDS = (
+    "cited_text",       # alle fuenf Zitat-Typen
+    "document_title",   # die drei Dokument-Typen
+    "title",            # search_result_location, web_search_result_location
+    "source",           # search_result_location
+    "url",              # web_search_result_location
+    # ``supported_text`` steht in KEINER Anthropic-Doku -- LiteLLM erfindet
+    # das Feld beim Normalisieren und fuellt es mit ``content["text"]``, also
+    # dem VOLLEN Text des Assistant-Blocks, den das Zitat stuetzt
+    # (transformation.py, ## CITATIONS). Damit ist es derselbe Freitext wie
+    # der Antworttext selbst und traegt dieselben Platzhalter. Wer nur die
+    # Anthropic-Feldnamen kennt, laesst hier einen kompletten
+    # Antworttext-Klon mit rohen Platzhaltern beim Kunden stehen.
+    "supported_text",
+)
+
 _ALLOWED_CITATION_TYPES_HINT = ", ".join(sorted(ALLOWED_CITATION_TYPES))
 _ALLOWED_CITATION_FIELDS_HINT = {
     citation_type: ", ".join(sorted(fields))
@@ -2142,6 +2175,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     chunk, text_processors
                 ):
                     text_templates[field] = chunk
+                # Zitate: VOR der content-Pruefung, denn ein Chunk mit einem
+                # ``citations_delta`` traegt typischerweise gar kein
+                # Text-Delta und wuerde unten unveraendert durchgereicht.
+                self._stream_reidentify_citations(chunk, reid_map)
                 content = self._extract_delta(chunk)
                 if content is None:
                     # Chunk ohne Text-Delta (role-only, finish_reason, usage) ->
@@ -2222,6 +2259,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
                         message["content"] = new_content
                     else:
                         message.content = new_content
+                elif isinstance(content, list):
+                    # Die zweite reale Form (QA-Audit F1): Anthropic
+                    # antwortet mit einer LISTE von Bloecken. Bisher gab es
+                    # hier nur den String-Zweig, eine Liste fiel still durch
+                    # -- der gesamte Antworttext blieb beim Platzhalter.
+                    self._reidentify_content_blocks(content, reid_map)
                 # Der Rueckweg muss dieselben Felder abdecken wie der Hinweg
                 # (DATENSCHLE-66): gibt das Modell tool_calls zurueck, stehen
                 # die Platzhalter in ``arguments`` -- ohne Ersetzung bekaeme
@@ -2293,6 +2336,96 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 self._reidentify_function_payload(self._field(call, "function"), reid_map)
 
         self._reidentify_function_payload(self._field(message, "function_call"), reid_map)
+
+        # Zitate liegen bei LiteLLM NEBEN dem Text, nicht darin
+        # (QA-Audit F1). Ohne diesen Aufruf kam der Haupttext im Klartext
+        # an und dasselbe Zitat trug den rohen Platzhalter.
+        self._reidentify_provider_specific_fields(message, reid_map)
+
+    # ---- Rueckweg fuer Zitate (QA-Audit F1) -------------------------------
+    def _reidentify_citation(self, citation: Any, reid_map: Dict[str, str]) -> None:
+        """Loest die Platzhalter in den Freitext-Feldern EINES Zitats auf.
+
+        In-place, wie der gesamte Rueckweg: der Aufrufer haelt eine Referenz
+        auf das Objekt, das der Client bekommt. Ein Neu-Binden wuerde die
+        Aenderung verlieren.
+        """
+        for field in CITATION_RESPONSE_TEXT_FIELDS:
+            value = self._field(citation, field)
+            if isinstance(value, str):
+                self._set_field(citation, field, reidentify_full(value, reid_map))
+
+    def _reidentify_citation_list(
+        self, citations: Any, reid_map: Dict[str, str], depth: int = 0,
+    ) -> None:
+        """Eine Zitat-Liste. Eine Ebene Verschachtelung wird mitgenommen,
+        weil LiteLLM die Zitate je nach Version pro Textblock gruppiert --
+        dann steht dort eine Liste von Listen. Die Tiefe ist hart begrenzt:
+        was hier ankommt, ist Provider-Ausgabe und keine gepruefte Struktur.
+        """
+        if not isinstance(citations, list) or depth > 1:
+            return
+        for citation in citations:
+            if isinstance(citation, list):
+                self._reidentify_citation_list(citation, reid_map, depth + 1)
+                continue
+            self._reidentify_citation(citation, reid_map)
+
+    def _reidentify_provider_specific_fields(
+        self, container: Any, reid_map: Dict[str, str],
+    ) -> None:
+        """Zitate aus ``provider_specific_fields`` -- der Ort, an dem LiteLLM
+        sie ablegt, wenn es eine Anthropic-Antwort ins OpenAI-Format bringt.
+
+        Zwei Schluessel, weil die beiden Pfade sie unterschiedlich benennen:
+        non-streaming ``citations`` (Liste), streaming ``citation``
+        (Einzelobjekt aus einem ``citations_delta``). Beide werden behandelt,
+        damit eine LiteLLM-Version, die die Benennung angleicht, den Rueckweg
+        nicht wieder stilllegt.
+        """
+        psf = self._field(container, "provider_specific_fields")
+        if psf is None:
+            return
+        single = self._field(psf, "citation")
+        if single is not None:
+            self._reidentify_citation(single, reid_map)
+        self._reidentify_citation_list(self._field(psf, "citations"), reid_map)
+
+    def _reidentify_content_blocks(
+        self, content: Any, reid_map: Dict[str, str],
+    ) -> None:
+        """``content`` als LISTE von Bloecken -- die Form, in der Anthropic
+        antwortet. Der Hook verarbeitete ``content`` bisher nur unter
+        ``isinstance(content, str)``; eine Liste fiel komplett durch, also
+        blieb der GANZE Antworttext beim Platzhalter stehen.
+
+        Jeder Block traegt seinen Text und ggf. seine eigenen Zitate.
+        """
+        if not isinstance(content, list):
+            return
+        for block in content:
+            text = self._field(block, "text")
+            if isinstance(text, str):
+                self._set_field(block, "text", reidentify_full(text, reid_map))
+            self._reidentify_citation_list(
+                self._field(block, "citations"), reid_map
+            )
+
+    def _stream_reidentify_citations(
+        self, chunk: Any, reid_map: Dict[str, str],
+    ) -> None:
+        """Zitate im Stream.
+
+        Anders als Text und ``arguments`` kommt ein Zitat als VOLLSTAENDIGES
+        Objekt pro Event -- Anthropics ``citations_delta`` traegt das ganze
+        Zitat, nicht ein Fragment davon. Deshalb hier ein direkter
+        Voll-Ersatz statt eines Sliding-Window-Puffers: der haette nichts zu
+        puffern und wuerde nur das letzte Zitat zurueckhalten.
+        """
+        delta = self._chunk_delta(chunk)
+        if delta is None:
+            return
+        self._reidentify_provider_specific_fields(delta, reid_map)
 
     @staticmethod
     def _chunk_delta(chunk: Any) -> Any:
@@ -2385,6 +2518,16 @@ class DatenschleuseGuardrail(_GuardrailBase):
             for field in STREAM_TEXT_DELTA_FIELDS:
                 if isinstance(self._field(delta, field), str):
                     self._set_field(delta, field, "")
+            # Zitate ebenso: trug die Vorlage ein ``citations_delta``, ist es
+            # beim Client bereits angekommen. Ohne dieses Leeren liefert der
+            # Abschluss-Chunk dasselbe Zitat ein zweites Mal aus -- derselbe
+            # Defekt, den dieser Helfer fuer Reasoning, refusal und
+            # tool_calls bereits behandelt.
+            psf = self._field(delta, "provider_specific_fields")
+            if psf is not None:
+                for field in ("citation", "citations"):
+                    if self._field(psf, field) is not None:
+                        self._set_field(psf, field, None)
         for _key, function in self._iter_stream_functions(chunk):
             if function is None:
                 continue
