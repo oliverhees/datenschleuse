@@ -177,3 +177,20 @@ Community-Asset für die DACH-KI-Szene.
 - Erkennungsrate ist nie 100%. Bei jeder Recognizer-Änderung gegen Testfälle prüfen.
 - Bei neuen deutschen Entitäten: Recognizer + Testfall + Benchmark-Eintrag zusammen
   liefern — inklusive rotem Test zuerst (Gesetz 2).
+
+## Mandatory external review
+- After completing any code change and before every commit, delegate to the external-reviewer subagent. A task is NOT finished until this review ran.
+- Fix all Critical findings immediately. Present Warning and Suggestion findings to me for a decision.
+- Never skip the review silently. If the PAL MCP server or the external models are unreachable, stop and tell me explicitly.
+
+### Externe Modelle: Identitaets-Halluzination ist normal
+- Die externen Pruefmodelle (`glm-5.2`, `kimi-k3` ueber EUrouter) behaupten auf
+  Nachfrage, "Claude von Anthropic" zu sein — auf Deutsch, Englisch und Chinesisch.
+  Das ist eine **halluzinierte Selbstauskunft**, kein Fehler und kein Umleiten auf
+  Claude. Belegt am 2026-08-20 durch die HTTP-Header des Anbieters:
+  `x-model-used: kimi-k3`, `x-provider-slug: nebius`, `x-routing-strategy: default`.
+- Nie als kaputte Kette melden, nie deswegen das Modell wechseln, nie die
+  Selbstauskunft eines Modells als Beleg fuer seine Herkunft nehmen.
+- Wer tatsaechlich wissen muss, welches Modell geantwortet hat, liest den Header
+  `x-model-used` in `pal-mcp-server/logs/mcp_server.log`. Das ist die einzige
+  belastbare Quelle.
