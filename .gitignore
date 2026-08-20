@@ -2,7 +2,45 @@
 *.log
 __pycache__/
 .DS_Store
-.claude/
+# --- .claude/: Prozess gehoert ins Repo, Laufzeitzustand nicht -----------
+# Frueher stand hier pauschal `.claude/`. Damit lagen ALLE Prozess-Gates
+# dieses Projekts ausserhalb von Git: Stop-Gate, Guard, Verdict-Skript,
+# Rollendefinitionen, Slash-Befehle. Die Verfassung schrieb Prozesse vor,
+# deren Ausfuehrung nicht mitgeliefert wurde. Begruendung, Befunde und
+# Messwerte: docs/adr/0004-prozess-infrastruktur-versionieren.md
+#
+# Bewusst als ALLOW-LIST formuliert, nicht als Deny-List. Die Fehler-
+# richtung ist der Punkt: Bei einer Deny-List landet die naechste, noch
+# unbekannte Laufzeitdatei automatisch IM Repo. Hier landet sie automatisch
+# draussen, und wer eine neue Prozessdatei aufnehmen will, muss das
+# ausdruecklich hinschreiben.
+#
+# GRENZE DIESER ZUSAGE, damit sie nicht mehr verspricht als sie haelt: Sie
+# gilt fuer alles DIREKT unter .claude/. Eine Ebene tiefer greift sie nicht
+# -- `.claude/hooks/state.json` waere NICHT ignoriert, weil die Negation das
+# ganze Verzeichnis wieder hereinholt. Heute schreibt dort nichts hinein;
+# faengt ein Hook damit an, gehoert seine Zustandsdatei ausdruecklich in
+# diese Datei. Bewusst nicht ueber Dateityp-Filter geloest
+# (`!.claude/hooks/*.sh`): Der wuerde eine legitime neue Nicht-.sh-Datei
+# lautlos aus dem Repo halten -- und genau diese Fehlerklasse ist der Grund,
+# aus dem es dieses ADR ueberhaupt gibt.
+#
+# Warum das keine Kosmetik ist: `verdict.sh` bricht ab, sobald
+# `git status --porcelain` etwas anderes als `?? .gates/` meldet. EINE
+# nicht ignorierte Laufzeitdatei legt damit alle Gate-Verdicts im Projekt
+# still -- lautlos, weil niemand den Zusammenhang vermutet.
+.claude/*
+!.claude/agents/
+!.claude/commands/
+!.claude/hooks/
+!.claude/settings.json
+# Fallback-Marker: Faellt scope.sh aus, schreiben track.sh und stop-gate.sh
+# direkt neben das Arbeitsverzeichnis statt nach .claude/scopes/. Ohne
+# CLAUDE_PROJECT_DIR kann das jedes Unterverzeichnis treffen, nicht nur die
+# Repo-Wurzel -- deshalb pfadunabhaengig.
+**/.last_code_edit
+**/.last_test_run
+**/.stop_block_count
 docker-compose.override.yml
 local-cockpit-test/
 test/e2e/artifacts/

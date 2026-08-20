@@ -68,6 +68,18 @@ except ImportError:  # pragma: no cover - Abhängigkeit fehlt
     )
     sys.exit(2)
 
+try:
+    # `regex`, nicht die stdlib `re`: der Analyzer nutzt intern `import regex
+    # as re`. Nur `regex` akzeptiert die gejointen Muster mit gekapselten
+    # Inline-Flags exakt so, wie der Analyzer sie kompiliert.
+    import regex
+except ImportError:  # pragma: no cover - Abhängigkeit fehlt
+    print(
+        "FEHLER: `regex` ist nicht installiert. Bitte `pip install -r test/requirements.txt` ausführen.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 
 # --------------------------------------------------------------------------- #
 # Konfiguration / Defaults
@@ -91,6 +103,104 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 
 # Gültige Werte für `expected_recall` im Korpus.
 VALID_EXPECTED_RECALL = {"must_detect", "known_gap"}
+
+
+# --------------------------------------------------------------------------- #
+# Erkennungsziel (Gate) — Quelle: docs/foundation/erkennungsziel.md
+# --------------------------------------------------------------------------- #
+#
+# Die Schwellen sind nach ERKENNUNGSMECHANISMUS gestaffelt, nicht pauschal. Ein
+# einzelner Wert für alle Typen wäre nicht verteidigungsfähig: musterbasierte
+# Erkennung (Regex, Prüfsumme) ist deterministisch, statistische Erkennung
+# (spaCy-NER) ist es nicht — und innerhalb des NER unterscheiden sich die
+# Klassen erheblich. Belege und Herleitung in erkennungsziel.md §5.
+
+TARGET_RECALL_OVERALL = 0.95
+
+# Musterbasierte Typen: Regex/Prüfsumme, deterministisch. Hier gibt es keine
+# Modell-Ausrede — ein Fehltreffer ist ein Muster- oder Konfigurationsfehler.
+TARGET_RECALL_PATTERN_BASED = 0.98
+
+# Statistische Typen: gestaffelt nach dem, was de_core_news_lg laut eigener
+# Modell-Metadaten überhaupt leistet (in-domain, Wikipedia-Text):
+# PER R 0.9202 | LOC R 0.8794 | ORG R 0.7630.
+TARGET_RECALL_BY_TYPE = {
+    "PERSON": 0.90,
+    "LOCATION": 0.85,
+    "ORGANIZATION": 0.75,
+}
+
+TARGET_STOERQUOTE_MAX = 0.10
+TARGET_PRECISION = 0.90
+
+# Unter diesem Support trägt eine Quote keine Aussage — 0/1 ist kein Signal.
+TARGET_PER_TYPE_MIN_SUPPORT = 3
+
+
+def target_for_type(entity_type: str) -> float:
+    """Recall-Ziel für einen Entity-Typ.
+
+    Alles, was nicht ausdrücklich als statistischer NER-Typ geführt wird, gilt
+    als musterbasiert und bekommt die hohe Schwelle. Diese Richtung ist die
+    sichere: ein neuer Custom-Recognizer wird streng geprüft, bis jemand
+    bewusst entscheidet, ihn niedriger einzustufen.
+    """
+    return TARGET_RECALL_BY_TYPE.get(entity_type, TARGET_RECALL_PATTERN_BASED)
+
+
+def evaluate_targets(result: "BenchmarkResult") -> list[str]:
+    """Prüft ein Ergebnis gegen das Erkennungsziel.
+
+    Gibt eine Liste von Klartext-Verstößen zurück; leere Liste = alle Gates
+    erfüllt. Bewusst als reine Funktion ohne IO, damit sie ohne laufenden
+    Analyzer testbar ist.
+    """
+    verstoesse: list[str] = []
+
+    overall = result.must_detect_overall
+    recall = overall.recall
+    if recall is not None and recall < TARGET_RECALL_OVERALL:
+        verstoesse.append(
+            f"Recall gesamt {recall:.1%} < Ziel {TARGET_RECALL_OVERALL:.0%} "
+            f"(TP={overall.tp} FN={overall.fn})"
+        )
+
+    precision = overall.precision
+    if precision is not None and precision < TARGET_PRECISION:
+        verstoesse.append(
+            f"Precision {precision:.1%} < Ziel {TARGET_PRECISION:.0%} "
+            f"(FP={overall.fp})"
+        )
+
+    # Ein Korpus ohne Negativ-Fälle kann die Precision-Seite nicht belegen. Das
+    # ist kein "bestanden", sondern eine ungeprüfte Seite — genau der Zustand,
+    # der DATENSCHLE-70/-71 jahrelang unsichtbar gehalten hat.
+    if result.negative_case_count == 0:
+        verstoesse.append(
+            "Keine Negativ-Fälle im Korpus — die Precision-Seite ist unbelegt. "
+            "Ein Lauf ohne Fehlalarm-Köder misst nur die halbe Wahrheit."
+        )
+    else:
+        stoerquote = result.stoerquote
+        if stoerquote is not None and stoerquote > TARGET_STOERQUOTE_MAX:
+            verstoesse.append(
+                f"Stoerquote {stoerquote:.1%} > Ziel {TARGET_STOERQUOTE_MAX:.0%} "
+                f"({result.negative_cases_with_fp}/{result.negative_case_count} "
+                "PII-freie Texte gestört)"
+            )
+
+    for entity_type, tally in sorted(result.must_detect_by_type.items()):
+        if tally.support < TARGET_PER_TYPE_MIN_SUPPORT:
+            continue
+        type_recall = tally.recall
+        ziel = target_for_type(entity_type)
+        if type_recall is not None and type_recall < ziel:
+            verstoesse.append(
+                f"Recall {entity_type} {type_recall:.1%} < Ziel {ziel:.0%} "
+                f"(TP={tally.tp} FN={tally.fn})"
+            )
+
+    return verstoesse
 
 
 class BenchmarkError(Exception):
@@ -285,8 +395,91 @@ def _build_ground_truth_entity(
 # --------------------------------------------------------------------------- #
 
 
+def load_stopwords(path: Path) -> tuple[list[str], int]:
+    """Lädt die Nicht-PII-Wortliste und gibt die Presidio-``allow_list`` zurück.
+
+    Die Liste ist eine reine Datendatei (``presidio/de-stopwords.yml``); der
+    Benchmark nutzt den Presidio-Mechanismus direkt — ``allow_list`` +
+    ``allow_list_match`` + ``regex_flags`` am /analyze-Request, keine
+    Benchmark-Sonderlogik.
+
+    NICHT verwechseln mit dem ausgelieferten Zustand: Der Guardrail sendet die
+    ``allow_list`` derzeit NICHT (kein Aufrufer ausserhalb von test/ setzt sie).
+    Ein Lauf MIT dieser Liste misst also, was nach der in
+    ``docs/foundation/erkennungsziel.md`` §7 spezifizierten Guardrail-Aenderung
+    erreichbar waere; den heutigen Betriebszustand misst der Lauf OHNE Liste.
+
+    ``regex_flags`` ist PFLICHT und wird bewusst nicht defaultet: der Analyzer
+    setzt sonst DOTALL|MULTILINE|IGNORECASE. Unter MULTILINE sind ``^``/``$``
+    Zeilen-Anker statt Vollspan-Anker — ein Span wie
+    ``"Zahlungsart\nLoewenstein"`` würde dann komplett unterdrückt, inklusive
+    des echten Nachnamens (Security-Finding F1 gegen 32e648c).
+
+    :returns: (Muster-Liste, regex_flags)
+    """
+    try:
+        with path.open(encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+    except OSError as exc:
+        raise BenchmarkError(f"Stoppwortliste nicht lesbar: {path} ({exc})") from exc
+    except yaml.YAMLError as exc:
+        raise BenchmarkError(f"Stoppwortliste ist kein gültiges YAML: {path} ({exc})") from exc
+
+    if not isinstance(doc, dict):
+        raise BenchmarkError(f"Stoppwortliste {path}: erwartet ein Mapping auf oberster Ebene.")
+    if doc.get("allow_list_match") != "regex":
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: allow_list_match muss 'regex' sein "
+            f"(gefunden: {doc.get('allow_list_match')!r})."
+        )
+    if "regex_flags" not in doc:
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: 'regex_flags' fehlt. Ohne explizite Flags "
+            "defaultet der Analyzer auf DOTALL|MULTILINE|IGNORECASE — dann sind "
+            "^/$ Zeilen-Anker und mehrzeilige Spans werden komplett "
+            "unterdrückt (Security-Finding F1)."
+        )
+    regex_flags = doc["regex_flags"]
+    if not isinstance(regex_flags, int) or isinstance(regex_flags, bool):
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: 'regex_flags' muss eine Ganzzahl sein "
+            f"(gefunden: {regex_flags!r})."
+        )
+
+    entries = doc.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise BenchmarkError(f"Stoppwortliste {path}: 'entries' fehlt oder ist leer.")
+
+    patterns: list[str] = []
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict) or not isinstance(entry.get("pattern"), str):
+            raise BenchmarkError(
+                f"Stoppwortliste {path}: entries[{idx}] hat kein String-Feld 'pattern'."
+            )
+        patterns.append(entry["pattern"])
+
+    # Das GEJOINTE Muster muss kompilieren — der Analyzer joint mit "|", und
+    # einzeln kompilierbare Muster können gejoint scheitern (z.B. globale
+    # Inline-Flags nicht am Anfang). Hier scheitern ist besser als im Betrieb.
+    try:
+        regex.compile("|".join(patterns), flags=regex_flags)
+    except Exception as exc:
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: das gejointe Muster kompiliert nicht "
+            f"({exc}). Der Analyzer joint alle Einträge mit '|' zu EINEM "
+            "Ausdruck."
+        ) from exc
+
+    return patterns, regex_flags
+
+
 def analyze_text(
-    session: requests.Session, base_url: str, text: str, timeout: float
+    session: requests.Session,
+    base_url: str,
+    text: str,
+    timeout: float,
+    allow_list: Optional[list[str]] = None,
+    regex_flags: int = 0,
 ) -> list[PredictedEntity]:
     """Schickt einen Text an POST {base_url}/analyze und parst die Antwort.
 
@@ -294,7 +487,12 @@ def analyze_text(
     unerwartetem Response-Format — es gibt KEIN stilles Verschlucken.
     """
     endpoint = base_url.rstrip("/") + "/analyze"
-    payload = {"text": text, "language": "de"}
+    payload: dict[str, Any] = {"text": text, "language": "de"}
+    if allow_list:
+        payload["allow_list"] = allow_list
+        payload["allow_list_match"] = "regex"
+        # Explizit — sonst DOTALL|MULTILINE|IGNORECASE per Server-Default.
+        payload["regex_flags"] = regex_flags
 
     try:
         response = session.post(endpoint, json=payload, timeout=timeout)
@@ -419,6 +617,7 @@ class CaseMatch:
     """Ergebnis des Matchings eines einzelnen Cases."""
 
     case_id: str
+    text: str
     is_negative: bool
     matched_gt_indices: dict[int, int]  # gt-index -> pred-index
     unmatched_pred_indices: list[int]
@@ -459,6 +658,7 @@ def match_case(
 
     return CaseMatch(
         case_id=case.case_id,
+        text=case.text,
         is_negative=case.is_negative,
         matched_gt_indices=matched_gt,
         unmatched_pred_indices=unmatched_pred,
@@ -482,6 +682,24 @@ class BenchmarkResult:
     known_gap_by_type: dict[str, Tally] = field(default_factory=dict)
     negative_fp_by_type: dict[str, int] = field(default_factory=dict)
     negative_fp_total: int = 0
+
+    # Störquote: Anteil der Negativ-Fälle mit MINDESTENS einem False Positive.
+    # Ergänzt die Precision, weil die case-übergreifende Precision-Formel
+    # TP/(TP+FP) Buckets mischt: die TP stammen aus Positiv-Fällen, die FP aus
+    # Negativ-Fällen. Dadurch lässt sich die Precision durch Hinzufügen von
+    # Positiv-Fällen optisch verbessern, ohne dass ein einziger Fehlalarm
+    # verschwindet. Die Störquote ist gegen diesen Effekt immun und beantwortet
+    # die Frage, die für die Nutzbarkeit zählt: Wie oft zerschießt die
+    # Datenschleuse einen Text, der gar keine PII enthält?
+    negative_case_count: int = 0
+    negative_cases_with_fp: int = 0
+    negative_case_offenders: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def stoerquote(self) -> Optional[float]:
+        if self.negative_case_count == 0:
+            return None
+        return self.negative_cases_with_fp / self.negative_case_count
 
     # Informativ (fließt NICHT in Precision):
     positive_case_unmatched: list[dict[str, Any]] = field(default_factory=list)
@@ -554,6 +772,28 @@ def aggregate(matches: list[CaseMatch], overlap_min_ratio: float) -> BenchmarkRe
                     }
                 )
 
+        # --- Störquote: Negativ-Fälle mit mindestens einem Fehlalarm ---
+        if match.is_negative:
+            result.negative_case_count += 1
+            if match.unmatched_pred_indices:
+                result.negative_cases_with_fp += 1
+                result.negative_case_offenders.append(
+                    {
+                        "case_id": match.case_id,
+                        "text": match.text,
+                        "detections": [
+                            {
+                                "entity_type": match.predictions[pi].entity_type,
+                                "span": match.text[
+                                    match.predictions[pi].start : match.predictions[pi].end
+                                ],
+                                "score": match.predictions[pi].score,
+                            }
+                            for pi in match.unmatched_pred_indices
+                        ],
+                    }
+                )
+
         # --- Presidio-Seite: unmatched Detektionen ---
         for pi in match.unmatched_pred_indices:
             pred = match.predictions[pi]
@@ -605,6 +845,7 @@ def render_stdout_report(
     overlap_min_ratio: float,
     case_count: int,
     timestamp: str,
+    stopwords_path: Optional[str] = None,
 ) -> None:
     """Druckt einen lesbaren Report auf stdout."""
     line = "=" * 74
@@ -616,6 +857,10 @@ def render_stdout_report(
     print(f"  Korpus          : {corpus_path}")
     print(f"  Cases           : {case_count}")
     print(f"  Overlap-Schwelle: {overlap_min_ratio:.2f} (Anteil des kürzeren Spans)")
+    print(
+        "  Stoppwortliste : "
+        + (stopwords_path if stopwords_path else "keine (Rohzustand des Analyzers)")
+    )
     print(line)
 
     # --- must_detect gesamt ---
@@ -657,6 +902,30 @@ def render_stdout_report(
         print(f"    {result.negative_fp_total} False Positive(s):")
         for entity_type, count in sorted(result.negative_fp_by_type.items()):
             print(f"      - {entity_type}: {count}")
+
+    print(
+        f"    Störquote: {_fmt_rate(result.stoerquote)} "
+        f"({result.negative_cases_with_fp}/{result.negative_case_count} "
+        "PII-freie Texte mit mindestens einem Fehlalarm)"
+    )
+    if result.negative_case_offenders:
+        print("    Betroffene Fälle:")
+        for offender in result.negative_case_offenders:
+            treffer = ", ".join(
+                f"{d['entity_type']}:{d['span']!r}" for d in offender["detections"]
+            )
+            print(f"      - [{offender['case_id']}] {treffer}")
+
+    # --- Erkennungsziel-Gate ---
+    print()
+    print("  ERKENNUNGSZIEL (docs/foundation/erkennungsziel.md)")
+    verstoesse = evaluate_targets(result)
+    if not verstoesse:
+        print("    Alle Gates erfüllt. ✅")
+    else:
+        print(f"    {len(verstoesse)} Gate(s) verfehlt:")
+        for v in verstoesse:
+            print(f"      - {v}")
 
     # --- Positiv-Fall-Extra-Detektionen (informativ) ---
     print()
@@ -724,6 +993,7 @@ def build_json_report(
     overlap_min_ratio: float,
     case_count: int,
     timestamp: str,
+    stopwords_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Baut den strukturierten JSON-Report."""
     return {
@@ -754,8 +1024,36 @@ def build_json_report(
             "detail": result.known_gap_detail,
         },
         "negative_cases": {
+            "count": result.negative_case_count,
             "false_positives_total": result.negative_fp_total,
             "false_positives_by_type": dict(sorted(result.negative_fp_by_type.items())),
+            "cases_with_false_positive": result.negative_cases_with_fp,
+            "stoerquote": (
+                None if result.stoerquote is None else round(result.stoerquote, 4)
+            ),
+            "stoerquote_note": (
+                "Anteil der PII-freien Texte mit mindestens einem Fehlalarm. "
+                "Ergänzt die Precision, weil TP/(TP+FP) Buckets mischt: TP kommen "
+                "aus Positiv-Fällen, FP aus Negativ-Fällen. Dadurch lässt sich die "
+                "Precision durch Hinzufügen von Positiv-Fällen optisch verbessern, "
+                "ohne dass ein Fehlalarm verschwindet. Die Störquote ist dagegen "
+                "immun und bildet ab, was ein Anwender tatsächlich erlebt."
+            ),
+            "offenders": result.negative_case_offenders,
+        },
+        "stopwords_path": stopwords_path,
+        "erkennungsziel": {
+            "quelle": "docs/foundation/erkennungsziel.md",
+            "schwellen": {
+                "recall_overall": TARGET_RECALL_OVERALL,
+                "recall_pattern_based": TARGET_RECALL_PATTERN_BASED,
+                "recall_by_type": TARGET_RECALL_BY_TYPE,
+                "stoerquote_max": TARGET_STOERQUOTE_MAX,
+                "precision": TARGET_PRECISION,
+                "per_type_min_support": TARGET_PER_TYPE_MIN_SUPPORT,
+            },
+            "verstoesse": evaluate_targets(result),
+            "bestanden": not evaluate_targets(result),
         },
         "positive_case_unmatched_detections": result.positive_case_unmatched,
         "offset_ambiguities": result.ambiguities,
@@ -813,6 +1111,34 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Mindest-Overlap-Anteil (0..1) für einen Treffer "
         f"(Default: {DEFAULT_OVERLAP_MIN_RATIO}).",
     )
+    parser.add_argument(
+        "--check-targets",
+        action="store_true",
+        help="Ergebnis gegen das Erkennungsziel aus docs/foundation/"
+        "erkennungsziel.md prüfen und bei Verfehlung mit Exit-Code 1 enden. "
+        "Ohne das Flag bewertet der Exit-Code weiterhin nur den LAUF, nicht "
+        "die Qualität (Default-Vertrag bleibt unverändert).",
+    )
+    parser.add_argument(
+        "--stopwords",
+        type=Path,
+        default=None,
+        help="Pfad zu presidio/de-stopwords.yml. Wird die Datei angegeben, "
+        "schickt der Benchmark ihre Muster als Presidio-'allow_list' mit. "
+        "ACHTUNG: Das misst den ERREICHBAREN, nicht den ausgelieferten "
+        "Zustand — der Guardrail sendet die Liste derzeit NICHT "
+        "(Spezifikation: docs/foundation/erkennungsziel.md §7). Ohne das "
+        "Flag misst der Lauf den Rohzustand des Analyzers, und das ist "
+        "der Zustand, den ein Betreiber heute erlebt.",
+    )
+    parser.add_argument(
+        "--no-stopwords",
+        dest="stopwords",
+        action="store_const",
+        const=None,
+        help="Explizit ohne Stoppwortliste messen (Default-Verhalten; nützlich, "
+        "um in Skripten den Vorher-Lauf sichtbar zu markieren).",
+    )
     return parser.parse_args(argv)
 
 
@@ -827,10 +1153,17 @@ def run_benchmark(args: argparse.Namespace) -> tuple[BenchmarkResult, int]:
 
     cases = load_corpus(args.corpus)
 
+    if args.stopwords:
+        allow_list, regex_flags = load_stopwords(args.stopwords)
+    else:
+        allow_list, regex_flags = None, 0
+
     matches: list[CaseMatch] = []
     with requests.Session() as session:
         for case in cases:
-            predictions = analyze_text(session, args.url, case.text, args.timeout)
+            predictions = analyze_text(
+                session, args.url, case.text, args.timeout, allow_list, regex_flags
+            )
             matches.append(match_case(case, predictions, args.overlap_ratio))
 
     return aggregate(matches, args.overlap_ratio), len(cases)
@@ -853,6 +1186,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         overlap_min_ratio=args.overlap_ratio,
         case_count=case_count,
         timestamp=timestamp,
+        stopwords_path=str(args.stopwords) if args.stopwords else None,
     )
 
     report = build_json_report(
@@ -862,6 +1196,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         overlap_min_ratio=args.overlap_ratio,
         case_count=case_count,
         timestamp=timestamp,
+        stopwords_path=str(args.stopwords) if args.stopwords else None,
     )
     try:
         write_json_report(report, args.output)
@@ -870,6 +1205,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     print(f"  JSON-Report geschrieben: {args.output}")
+
+    if args.check_targets:
+        verstoesse = evaluate_targets(result)
+        if verstoesse:
+            print(
+                "FEHLER: Erkennungsziel verfehlt — "
+                + "; ".join(verstoesse),
+                file=sys.stderr,
+            )
+            return 1
+
     return 0
 
 
