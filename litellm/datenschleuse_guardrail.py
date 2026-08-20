@@ -497,9 +497,16 @@ KNOWN_UNSUPPORTED_PART_TYPES = frozenset({
 
 # Konstanter Verweis auf die Stelle, an der die Einschraenkung begruendet
 # steht. Ohne ihn hat ein Betreiber keinen Pfad zur Doku.
+#
+# Der zitierte Abschnittstitel ist bewusst NUR der ASCII-identische Teil
+# der echten Ueberschrift (Review-Finding S1): sie lautet "Bekannte
+# Einschraenkung: ..." mit Umlaut-ae. Wer den hier ausgegebenen Text per
+# Ctrl+F sucht, faende die transliterierte Fassung nicht -- der Reststring
+# "Anthropics natives Web-Search-Tool" steht dagegen zeichengleich im
+# Dokument. Meldungen bleiben ASCII (sie gehen durch fremde Log-Pipelines).
 _WEB_SEARCH_LIMITATION_DOC = (
-    "docs/foundation/security-baseline.md "
-    "(\"Bekannte Einschraenkung: Anthropics natives Web-Search-Tool\")"
+    "im Repo unter docs/foundation/security-baseline.md, "
+    "Abschnitt \"Anthropics natives Web-Search-Tool\""
 )
 
 # Konstante Hinweistexte pro Part-Typ (nie Client-Werte, Gesetz 5).
@@ -1445,7 +1452,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     " Bekannte, akzeptierte Einschraenkung, kein Fehler "
                     "dieser Anfrage: Multi-Turn mit Anthropics Web-Search "
                     "funktioniert durch diese Datenschleuse nicht. "
-                    f"Begruendung in {_WEB_SEARCH_LIMITATION_DOC}."
+                    f"Begruendung {_WEB_SEARCH_LIMITATION_DOC}."
                 )
             else:
                 # part_type ist voll client-kontrolliert (beliebiger Inhalt,
