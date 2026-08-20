@@ -377,6 +377,57 @@ class TestCitationStructureIsValidatedFailClosed(unittest.IsolatedAsyncioTestCas
         }])
         self.assertIn("web_search_result_location", msg)
 
+    async def test_web_search_echo_also_blocks_one_level_higher(self):
+        """Der Grund, warum ``web_search_result_location`` NICHT geoeffnet
+        wurde -- als Test statt als Behauptung im Kommentar.
+
+        Anthropic verlangt fuer die Fortsetzung einer Web-Search-Konversation
+        ausdruecklich, dass der Client die Assistant-Bloecke unveraendert
+        zurueckschickt:
+
+            "send the assistant's content blocks back exactly as you received
+            them, including each result's encrypted_content. ... If
+            encrypted_content is missing or modified, the request fails with
+            a 400 validation error."
+
+        Ein spec-konformer Echo traegt also AUCH ``server_tool_use`` und
+        ``web_search_tool_result``. Die blocken am PART-Typ -- eine Ebene
+        ueber dem Zitat. Wer nur den Zitat-Typ oeffnet, verschiebt den Block,
+        er beseitigt ihn nicht: der Kunde haette den Bug weiter, und bezahlt
+        waere es mit einem ungedeckelten ``encrypted_index``-Kanal.
+
+        Schlaegt dieser Test eines Tages fehl, weil die Part-Typen zugelassen
+        wurden, ist die Abwaegung neu zu fuehren -- und die bekannte
+        Einschraenkung in security-baseline.md gehoert dann angefasst.
+        """
+        for part in (
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_01WYG3ziw53XMcoyKL4XcZmE",
+                "name": "web_search",
+                "input": {"query": "wer ist zustaendig"},
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_01WYG3ziw53XMcoyKL4XcZmE",
+                "content": [{
+                    "type": "web_search_result",
+                    "url": "https://example.invalid/a",
+                    "title": "Seite",
+                    "encrypted_content": "EqgfCioIARgBIiQ3YTAwMjY1Mg==",
+                }],
+            },
+        ):
+            with self.subTest(part_type=part["type"]):
+                guard = _guard()
+                messages = [
+                    {"role": "user", "content": "Wer ist zustaendig?"},
+                    {"role": "assistant", "content": [part]},
+                    {"role": "user", "content": "Und warum?"},
+                ]
+                with self.assertRaises(dg.DatenschleuseBlocked):
+                    await _run_messages(guard, messages)
+
     async def test_search_result_citation_blocks_and_is_named(self):
         msg = await self._assert_blocks([{
             "type": "search_result_location",

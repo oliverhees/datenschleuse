@@ -338,10 +338,36 @@ ALLOWED_CITATION_TYPES = frozenset(ALLOWED_CITATION_FIELDS)
 #   web_search_result_location  -- traegt ``url``/``title`` als Freitext UND
 #                                  ``encrypted_index``, das den Provider
 #                                  byte-identisch erreichen muss
-# Beide entstehen ausschliesslich aus Part-Typen (``search_result``,
-# Web-Search-Ergebnisse), die die Datenschleuse ohnehin am Part-TYP blockt.
-# Ein Verarbeitungspfad hier waere toter Code mit offenem Freitext-Kanal.
-# Eintragen ist eine bewusste Entscheidung mit Work Item -- nicht nebenbei.
+#
+# KORREKTUR (QA-Audit zu 1e197f9): Hier stand, beide entstuenden
+# "ausschliesslich aus Part-Typen, die die Datenschleuse ohnehin am Part-TYP
+# blockt", ein Pfad hier waere deshalb toter Code. Fuer
+# ``search_result_location`` stimmt das -- der Typ setzt einen
+# ``search_result``-Part voraus, und der blockt. Fuer
+# ``web_search_result_location`` stimmt es NICHT: Anthropics natives
+# Web-Search-Tool wird ueber das TOP-LEVEL-Feld ``tools`` aktiviert
+# ({"type": "web_search_20250305", "name": "web_search"}), braucht keinen
+# Content-Part, und das Zitat haengt danach an einem normalen ``text``-Block.
+# Der Typ ist also erreichbar. Die Begruendung war falsch.
+#
+# WARUM ER TROTZDEM BLOCKT -- neu begruendet statt stillschweigend behalten:
+# Ihn allein zu oeffnen repariert den Kundenfall nicht. Anthropic verlangt
+# fuer die Fortsetzung, dass der Client die Assistant-Bloecke unveraendert
+# zurueckschickt, ``server_tool_use`` und ``web_search_tool_result``
+# eingeschlossen -- die blocken am PART-Typ, eine Ebene hoeher. Die Anfrage
+# scheitert dann eben dort. Bezahlt waere das mit ``encrypted_index``, fuer
+# das Anthropic weder Zeichenmenge noch Laenge dokumentiert: ein opaker
+# Provider-Token-Kanal ohne belegbare Obergrenze, der nicht maskiert werden
+# darf. Realer Sicherheitspreis, kein funktionaler Gegenwert.
+#
+# FOLGE, ehrlich benannt: Multi-Turn mit Anthropics Web-Search funktioniert
+# durch diese Datenschleuse nicht. Bekannte, akzeptierte Einschraenkung --
+# siehe docs/foundation/security-baseline.md. Wer sie aufheben will, braucht
+# ein Work Item, das BEIDE Ebenen zusammen behandelt.
+#
+# Der RUECKWEG ist davon unberuehrt: kommt ein Web-Search-Zitat in einer
+# Antwort an, werden seine Platzhalter aufgeloest
+# (CITATION_RESPONSE_TEXT_FIELDS deckt alle fuenf Typen ab).
 KNOWN_UNSUPPORTED_CITATION_TYPES = frozenset({
     "search_result_location",
     "web_search_result_location",

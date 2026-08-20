@@ -77,10 +77,60 @@ Namen nach, praktisch wäre es eine Dauerstörung.
 
 Bewusst **nicht** zugelassen sind die beiden übrigen Zitat-Typen
 `search_result_location` und `web_search_result_location`: sie tragen
-`source`, `url` und `title` als Freitext sowie `encrypted_index`, das den
-Provider byte-identisch erreichen muss. Beide entstehen nur aus Part-Typen,
-die die Datenschleuse ohnehin am Typ blockt. Ebenso blockt `file_id` — es
-existiert nur antwortseitig, ein schema-konformer Client sendet es nie.
+`source`, `url` und `title` als Freitext sowie `encrypted_index`, ein opakes
+Provider-Token, das den Provider byte-identisch erreichen muss. Ebenso blockt
+`file_id` — es existiert nur antwortseitig, ein schema-konformer Client
+sendet es nie.
+
+> **Korrektur (QA-Audit zu `1e197f9`).** Eine frühere Fassung dieses
+> Abschnitts begründete beide Blocks damit, die Typen entstünden
+> „ausschließlich aus Part-Typen, die die Datenschleuse ohnehin am Part-Typ
+> blockt". Für `search_result_location` stimmt das — der Typ setzt einen
+> `search_result`-Content-Part voraus, und der blockt. **Für
+> `web_search_result_location` stimmt es nicht.** Anthropics natives
+> Web-Search-Server-Tool wird über das Top-Level-Feld `tools` aktiviert
+> (`{"type": "web_search_20250305", "name": "web_search"}`); es braucht
+> keinen Content-Part. Das Zitat hängt anschließend an einem ganz normalen
+> `text`-Block. Die Aussage war also falsch, und mit ihr die Einordnung
+> „toter Code".
+
+### Bekannte Einschränkung: Anthropics natives Web-Search-Tool
+
+**Multi-Turn-Konversationen mit Anthropics Web-Search-Server-Tool
+funktionieren durch die Datenschleuse nicht.** Das ist eine bewusst
+akzeptierte Einschränkung, kein Versehen — und ein beworbenes Kernfeature,
+also für Betreiber relevant.
+
+Was passiert: Der erste Turn läuft durch. Antwortet das Modell mit
+Web-Search-Zitaten und schickt der Client die Historie zurück — der Normalfall
+im Multi-Turn — blockt die Folgeanfrage fail-closed.
+
+Der Block greift dabei an **zwei** Stellen, nicht an einer:
+
+1. **Am Part-Typ.** Anthropic verlangt für die Fortsetzung ausdrücklich,
+   dass der Client die Assistant-Blöcke unverändert zurückschickt,
+   `server_tool_use` und `web_search_tool_result` eingeschlossen — mit
+   `encrypted_content`, das sonst mit einem 400 quittiert wird. Beide
+   Part-Typen stehen nicht im Register und blocken.
+2. **Am Zitat-Typ.** `web_search_result_location` ist nicht zugelassen.
+
+**Warum wir den Zitat-Typ trotzdem nicht öffnen.** Ihn allein zuzulassen
+würde den Kundenfall *nicht* reparieren: die Anfrage blockte dann eben eine
+Ebene höher am Part-Typ. Bezahlt wäre das mit einem `encrypted_index`, für
+das Anthropic weder Zeichenmenge noch Länge dokumentiert — ein opaker
+Provider-Token-Kanal ohne belegbare Obergrenze, der byte-identisch
+durchlaufen muss und deshalb nicht maskiert werden kann. Realer
+Sicherheitspreis, kein funktionaler Gegenwert. Wer die Web-Search-Kette
+unterstützen will, braucht ein eigenes Work Item, das **beide** Ebenen
+zusammen behandelt.
+
+Was heute schon gilt: Kommt ein Web-Search-Zitat auf dem **Rückweg** an,
+werden seine Platzhalter aufgelöst (siehe oben). Der Kunde sieht dort also
+keine `<PERSON_0>`.
+
+Ergänzend, außerhalb dieses Work Items: Das Top-Level-Feld `tools` wird von
+diesem Guardrail nicht geprüft. Das eigene Register dafür entsteht in
+DATENSCHLE-69.
 
 Zwei Grenzen, die für Betreiber zählen:
 - Die Zitat-Indizes beziehen sich auf das Dokument **wie gesendet**, also auf
@@ -88,11 +138,23 @@ Zwei Grenzen, die für Betreiber zählen:
   `start_char_index`/`end_char_index` im re-identifizierten Klartext nicht
   mehr exakt auf dieselbe Stelle. `page_location` und die Block-Index-Typen
   sind davon nicht betroffen.
-- Die Re-Identifikation deckt Zitate im **Antwort**-Pfad nicht ab. Sie
-  entstehen dort nur aus `document`-Parts, und die blockt die Datenschleuse
-  am Part-Typ — der Fall kann durch diesen Proxy also nicht auftreten. Wird
-  der `document`-Typ je zugelassen, gehört dieser Pfad (inklusive des
-  Streaming-Events `citations_delta`) mit demselben Work Item nachgezogen.
+- Die Re-Identifikation deckt Zitate im **Antwort**-Pfad ab: nicht-gestreamt
+  über `provider_specific_fields.citations`, im Stream über
+  `provider_specific_fields.citation` (das `citations_delta`-Event). Sie gilt
+  für **alle fünf** Zitat-Typen, auch die, die der Hinweg blockt — der
+  Rückweg ist ein Einlöse-Pfad zum Kunden, kein Prüf-Pfad, und ersetzt
+  ausschließlich Platzhalter, die dieser Request selbst vergeben hat.
+  Mit-abgedeckt ist `supported_text`, ein von LiteLLM erfundenes Feld, das
+  den vollen stützenden Antworttext trägt. Nicht angefasst werden
+  `encrypted_index` und `file_id` (opake Provider-Token).
+
+  > **Korrektur (QA-Audit zu `1e197f9`).** Eine frühere Fassung behauptete,
+  > der Antwort-Pfad „kann durch diesen Proxy nicht auftreten", weil Zitate
+  > dort nur aus `document`-Parts entstünden. Das war aus demselben Grund
+  > falsch wie oben (Web-Search braucht keinen Content-Part) — und der Pfad
+  > war tatsächlich defekt: der Haupttext kam im Klartext an, dasselbe Zitat
+  > trug den rohen Platzhalter. Behoben; kein Vertraulichkeitsleck, ein
+  > stehengebliebener Platzhalter ist die sichere Fehlerrichtung.
 
 **„Validiert" heißt Struktur, nicht Inhalt.** In der Tabelle bedeutet
 „validiert" ausschließlich: das Feld hat den erwarteten Typ und — wo eine
