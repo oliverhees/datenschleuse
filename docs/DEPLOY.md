@@ -45,6 +45,9 @@ Dateien fuer den Deploy:
    | `DATENSCHLEUSE_STATE_TTL_SECONDS` | – | Default `86400` (24 h) |
    | `DATENSCHLEUSE_REID_KEY` | – | Fernet-Key wie oben. Ohne ihn erzeugt die Guardrail beim Start einen **prozesslokalen** — richtig fuer einen Worker, **falsch ab zwei**: mehrere Worker teilen dann keinen Schluessel und die Re-Identifikation schlaegt scheinbar zufaellig fehl. Die Guardrail warnt beim Start. |
    | `DATENSCHLEUSE_REID_TTL` | – | Default `3600` (1 h). Muss > 0 sein — ein Wert <= 0 bricht den Start ab, statt die Re-Identifikation still abzuschalten. |
+   | `DATENSCHLEUSE_APPROVAL_HEADER_SECRET` | – | `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. Schaltet den **Header-Freigabeweg fuer Schutzklasse 2** ein. Ohne ihn ist dieser Weg AUS (sicherer Default) — nicht "offen fuer alle". Mindestens 32 Zeichen: der Schalter schaltet Schutz AB, ein ratbares Geheimnis ist auf ihm keines. Wird beim Start geprueft, der Proxy startet sonst nicht. Siehe unten. |
+   | `DATENSCHLEUSE_MAX_ANALYZER_CALLS` | – | Default `1200`. Obergrenze fuer Presidio-Analyseaufrufe **pro Request** — die eigentliche Kostenbremse. Siehe unten. |
+   | `DATENSCHLEUSE_MAX_MESSAGES` | – | Default `4096`. Obergrenze fuer die Anzahl Nachrichten pro Request (Strukturgroesse). Siehe unten. |
 
 3. **Domain vergeben:** Coolify erkennt am Service `datenschleuse` die
    `SERVICE_FQDN_DATENSCHLEUSE_4000`-Markierung und schlaegt automatisch eine
@@ -86,6 +89,90 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
 (Login: `UI_USERNAME` / `UI_PASSWORD`).
 
 ---
+
+## Die drei Schutz- und Grenzschalter
+
+Alle drei sind optional und haben brauchbare Vorgaben. Wer sie nicht setzt,
+bekommt den sicheren Fall. Wer sie falsch setzt, erfaehrt es **beim Start** —
+nicht beim ersten Request.
+
+### `DATENSCHLEUSE_APPROVAL_HEADER_SECRET` — Freigabe fuer Schutzklasse 2
+
+Die Datenschleuse stuft jede Anfrage in Schutzklassen ein. Stufe 3 blockt
+immer. Stufe 2 blockt ebenfalls — **es sei denn**, der Betreiber hat sie
+freigegeben. Freigeben darf ausschliesslich der Betreiber, nie der Client:
+ein Gate, das der Kontrollierte selbst abschalten kann, ist kein Gate.
+
+Es gibt zwei Betreiber-Wege. Der eine ist die Key-/Team-Konfiguration im
+Proxy. Der andere ist dieser Header — und der ist **nur aktiv, wenn ein
+Geheimnis konfiguriert ist**. Ohne Geheimnis waere der Header wieder blosse
+Client-Eingabe.
+
+```bash
+# Geheimnis erzeugen
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+```bash
+# Verwenden (Client-Seite)
+curl ... -H "X-Datenschleuse-Sensitivity-Approval: <das Geheimnis>"
+```
+
+Beim Start geprueft, der Proxy startet sonst gar nicht erst:
+
+- muss eine Zeichenkette sein,
+- mindestens **32 Zeichen** — es soll **erzeugt** und nicht ausgedacht
+  werden; eine deutsche Passphrase mit 32+ Zeichen ist zulaessig,
+- als UTF-8 darstellbar,
+- nicht nur Leerzeichen (das wuerde den Weg still abschalten, waehrend die
+  Konfiguration so aussieht, als sei er aktiv).
+
+Der Wert wird konstantzeitig verglichen und danach **in jedem Fall**
+redigiert — auch bei falschem Wert, auch wenn die Pruefung fehlschlaegt.
+Er wandert nicht ins Log.
+
+### `DATENSCHLEUSE_MAX_ANALYZER_CALLS` — die Kostenbremse
+
+Jedes Textfragment einer Anfrage geht einzeln an Presidio. Das sind nicht
+nur die Nachrichten: auch jeder Text-Part, jeder `tool_calls`-Eintrag, jeder
+Schluessel und Wert in `arguments`, jedes Feld in `tools`. Eine **einzige**
+Nachricht kann damit zehntausende Aufrufe ausloesen.
+
+Der Default `1200` ist so hergeleitet:
+
+- **gemessen:** rund 23,6 ms pro Analyseaufruf,
+- **gesetzt:** 30 s als Obergrenze fuer die Zeit, die eine *einzelne*
+  Anfrage einen Worker belegen darf — das ist eine Betreiber-Toleranz,
+  keine Messung,
+- 30 s / 23,6 ms ≈ 1271 → abgerundet 1200.
+
+Zur Groessenordnung: ein normaler Chat mit fuenf Nachrichten kostet fuenf
+Aufrufe. Er sieht die Grenze nie. Wer sehr grosse Tool-Schemata oder viele
+Bild-Parts faehrt, hebt sie an:
+
+```bash
+DATENSCHLEUSE_MAX_ANALYZER_CALLS=3000
+```
+
+Die Blockmeldung nennt immer, wie viele Aufrufe die Anfrage gebraucht haette
+— damit klar ist, um welche Groessenordnung es geht, statt nur, dass etwas
+zu gross war.
+
+### `DATENSCHLEUSE_MAX_MESSAGES` — die Strukturgroesse
+
+Begrenzt die Anzahl Nachrichten pro Anfrage. Seit dem Analyzer-Budget ist
+das **nicht** mehr die Kostenbremse, sondern nur noch eine Schranke gegen
+absurd grosse Historien (100 000 leere Nachrichten kosten null Analysen,
+aber sehr wohl Speicher).
+
+Der Default `4096` entspricht rund 1350 Tool-Runden — weit jenseits dessen,
+was eine einzelne Agenten-Sitzung erreicht. Der frühere Wert von 256 fiel
+nach rund 85 Tool-Runden und traf damit Coding-Agenten im Normalbetrieb.
+
+**Wichtig zu wissen:** Dieser Block wiederholt sich. Der Client schickt die
+Historie beim naechsten Versuch erneut mit, also blockt auch der
+Folge-Request. Die Meldung sagt das ausdruecklich und nennt den Schalter —
+sonst waere die Sitzung tot, ohne dass jemand weiss warum.
 
 ## Ehrliche Hinweise
 

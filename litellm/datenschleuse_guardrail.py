@@ -694,7 +694,32 @@ PAYLOAD_MAX_PROMPT_ITEMS = 64
 #: Wer sie aendern will, braucht Betriebsdaten: der erste Betreiber, der an
 #: die Grenze stoesst, liefert sie. Bis dahin bewusst konservativ und
 #: bewusst aenderbar.
-PAYLOAD_MAX_MESSAGES = 256
+#
+# RUNDE 4, F8 -- neu belegt und einstellbar gemacht.
+#
+# Der Betriebsbefund: 256 ging durch, 257 blockte. Ein Tool-Zyklus kostet
+# DREI Messages (Aufruf, Ergebnis, Antwort) -- die Grenze fiel also nach
+# rund 85 Tool-Runden. Fuer Coding-Agenten ist das der Normalfall, nicht
+# der Ausnahmefall. Und der Ausfall war TERMINAL: der Client schickt die
+# volle Historie erneut, jeder Folge-Request blockt ebenfalls. Die Sitzung
+# war tot, ohne Hinweis worauf.
+#
+# Was sich geaendert hat: seit F3 ist diese Zahl NICHT MEHR die
+# Kostenbremse. Das ist das Analyzer-Call-Budget
+# (PAYLOAD_MAX_ANALYZER_CALLS), und es greift frueher und genauer, weil es
+# auf der Einheit sitzt, die die Kosten wirklich treibt. Diese Grenze hier
+# begrenzt seither nur noch die STRUKTURGROESSE: eine Historie aus 100 000
+# leeren Nachrichten kostet null Analysen, aber sehr wohl Speicher und
+# Traversierungszeit.
+#
+# Deshalb darf sie deutlich hoeher liegen, ohne etwas aufzugeben. 4096
+# entspricht rund 1350 Tool-Runden -- weit jenseits dessen, was eine
+# einzelne Agenten-Sitzung erreicht, und immer noch eine Grenze.
+PAYLOAD_MAX_MESSAGES = 4096
+
+#: Betreiberseitig einstellbar. Eine Grenze, die eine Sitzung TERMINAL
+#: beendet und verschweigt, was hilft, ist ein Betriebsausfall mit Ansage.
+MAX_MESSAGES_ENV = "DATENSCHLEUSE_MAX_MESSAGES"
 
 # ===========================================================================
 # Analyzer-Call-Budget (DATENSCHLE-69, Runde 4, F3)
@@ -1715,6 +1740,26 @@ APPROVAL_SECRET_HOWTO = (
 )
 
 
+def _validate_max_messages(roh: Any) -> int:
+    """Prueft die Nachrichtengrenze. BEIM START, wie jede Betreiber-Zahl."""
+    if roh is None or roh == "":
+        return PAYLOAD_MAX_MESSAGES
+    try:
+        wert = int(roh)
+    except (TypeError, ValueError):
+        raise DatenschleuseConfigError(
+            f"{MAX_MESSAGES_ENV} ist keine ganze Zahl. Erwartet wird die "
+            "maximale Anzahl Nachrichten pro Request "
+            f"(Vorgabe: {PAYLOAD_MAX_MESSAGES})."
+        ) from None
+    if wert <= 0:
+        raise DatenschleuseConfigError(
+            f"{MAX_MESSAGES_ENV} muss groesser als 0 sein (war: {wert}). "
+            "Ein Wert <= 0 wuerde JEDEN Chat-Request blocken."
+        )
+    return wert
+
+
 def _validate_max_analyzer_calls(roh: Any) -> int:
     """Prueft die Budget-Grenze. BEIM START, wie jede andere Betreiber-Zahl.
 
@@ -2118,6 +2163,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_store: Any = None,
         approval_header_secret: Optional[str] = None,
         max_analyzer_calls: Optional[int] = None,
+        max_messages: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
         # Krypto-Konfiguration ZUERST und beim START (W2/W3). Ein
@@ -2202,6 +2248,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if _budget_roh is None:
             _budget_roh = os.getenv(MAX_ANALYZER_CALLS_ENV)
         self.max_analyzer_calls = _validate_max_analyzer_calls(_budget_roh)
+
+        _msgs_roh = max_messages
+        if _msgs_roh is None:
+            _msgs_roh = kwargs.pop("max_messages", None)
+        if _msgs_roh is None:
+            _msgs_roh = os.getenv(MAX_MESSAGES_ENV)
+        self.max_messages = _validate_max_messages(_msgs_roh)
 
         # Ein wiederverwendeter httpx-Client statt eines neuen pro Aufruf
         # (F3): vorher kostete JEDE Analyse einen frischen TCP-Handshake.
@@ -2990,8 +3043,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     gesetzt = True
         return gesetzt
 
-    @staticmethod
-    def _validate_messages_count(data: Dict[str, Any]) -> None:
+    def _validate_messages_count(self, data: Dict[str, Any]) -> None:
         """Begrenzt die Anzahl Messages -- VOR der ersten Analyse.
 
         Steht im Validate-Pfad und nicht in der Maskierungsschleife: eine
@@ -3001,14 +3053,20 @@ class DatenschleuseGuardrail(_GuardrailBase):
         In der Meldung erscheint nur die GRENZE, nie ein Inhalt (Gesetz 5).
         """
         messages = data.get("messages")
-        if isinstance(messages, list) and len(messages) > PAYLOAD_MAX_MESSAGES:
+        if isinstance(messages, list) and len(messages) > self.max_messages:
+            # Genannt werden nur ANZAHLEN und Schalternamen, nie ein Inhalt
+            # (Gesetz 5). Und der Schalter wird genannt, weil dieser Block
+            # TERMINAL ist: der Client schickt die volle Historie erneut,
+            # jeder Folge-Request blockt ebenfalls. Ohne den Hinweis waere
+            # die Sitzung tot, ohne dass jemand weiss warum.
             raise DatenschleuseBlocked(
-                f"messages enthaelt mehr als {PAYLOAD_MAX_MESSAGES} "
-                "Eintraege -- blockiert (fail-closed). Ein unbegrenztes "
-                "Gespraech belegt den Worker beliebig lange. Die eigentliche "
-                "Kostenbremse ist das Analyzer-Call-Budget "
-                f"({MAX_ANALYZER_CALLS_ENV}); diese Grenze hier begrenzt "
-                "zusaetzlich die Groesse des Gespraechs selbst."
+                f"messages enthaelt {len(messages)} Eintraege, erlaubt sind "
+                f"{self.max_messages} -- blockiert (fail-closed). Achtung, "
+                "dieser Block wiederholt sich: der Client schickt die "
+                "Historie erneut mit. Der Betreiber kann die Grenze ueber "
+                f"{MAX_MESSAGES_ENV} anheben; die eigentliche Kostenbremse "
+                f"ist ohnehin das Analyzer-Call-Budget "
+                f"({MAX_ANALYZER_CALLS_ENV})."
             )
 
     @staticmethod

@@ -1103,15 +1103,26 @@ class TestRegisterInvariants(unittest.TestCase):
 class TestMessagesListeHatEineObergrenze(unittest.IsolatedAsyncioTestCase):
     """Die HAUPTROUTE braucht dieselbe Grenze wie die Nebenroute (W9).
 
-    ``prompt`` wurde begrenzt, ``messages`` nicht -- dabei gilt die
-    Begruendung wortgleich: jeder Eintrag kostet einen eigenen
-    Analyzer-Call, ein einzelner Request skaliert linear in Worker-Zeit.
-    Auf der Hauptroute mit dem groesseren Volumen. Eine Route zu begrenzen
+    ``prompt`` wurde begrenzt, ``messages`` nicht. Eine Route zu begrenzen
     und die Hauptroute offen zu lassen, ist die halbe Massnahme.
+
+    NACHGEZOGEN (Runde 4, F3/F8): Die urspruengliche Begruendung hier lautete
+    "jeder Eintrag kostet einen eigenen Analyzer-Call". Das war FALSCH und
+    genau der Befund F3 -- eine einzelne Message kann tausende Aufrufe
+    kosten (Parts, tool_calls, arguments). Die Kostenbremse ist seither das
+    Analyzer-Call-Budget; diese Grenze hier begrenzt nur noch die
+    STRUKTURGROESSE des Gespraechs.
+
+    Deshalb bekommt der Guard hier ein bewusst hohes Analyzer-Budget: sonst
+    schlaegt beim Gespraech an der Grenze das BUDGET zu, und diese Klasse
+    wuerde gar nicht mehr die Nachrichtengrenze messen, sondern eine andere.
+    Ein Test, der aus dem falschen Grund gruen ist, misst nichts.
     """
 
     def _guard(self):
-        guard = dg.DatenschleuseGuardrail()
+        guard = dg.DatenschleuseGuardrail(
+            max_analyzer_calls=dg.PAYLOAD_MAX_MESSAGES * 4
+        )
         guard._analyze = fake_analyze
         return guard
 
