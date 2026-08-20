@@ -294,5 +294,76 @@ class TestTier3StaysUnreachable(_Case):
         self.assertIn("Stufe 3", str(ctx.exception))
 
 
+class TestBeideFreigabeKeysWerdenGestrippt(_Case):
+    """Security-F2b: gestrippt wurde der FALSCHE Key.
+
+    ``_strip_body_approval`` entfernte nur ``SENSITIVITY_APPROVAL_KEY``
+    ("sensitivity_approval"). Ein client-gesetztes
+    ``metadata["datenschleuse_sensitivity_approval"]`` -- der BETREIBER-Key
+    -- blieb stehen und wanderte in den Logging-Kanal.
+
+    Kein Zugriffs-Bypass: ``_operator_approved`` liest ``data["metadata"]``
+    nie, die Freigabe kommt ausschliesslich aus Key-Konfiguration oder
+    Header-Geheimnis. Aber genau der Schaden, den der eigene Docstring
+    verhindern will: der Eintrag "saehe fuer jeden spaeteren Leser aus, als
+    HAETTE eine Freigabe vorgelegen" -- eine Falschaussage im Audit-Trail,
+    und ausgerechnet unter dem Namen, den ein Leser fuer den echten
+    Betreiber-Kanal haelt.
+    """
+
+    async def test_betreiber_key_aus_dem_body_wird_entfernt(self):
+        """DER Befund F2b."""
+        data = _tier2_body({sc.OPERATOR_APPROVAL_KEY: True})
+        await self.assert_blocked(data)
+        self.assertNotIn(
+            sc.OPERATOR_APPROVAL_KEY,
+            data.get("metadata", {}),
+            "Der Betreiber-Freigabe-Key aus dem BODY bleibt stehen und "
+            "taeuscht spaeteren Lesern eine Freigabe vor.",
+        )
+
+    async def test_beide_keys_gleichzeitig_werden_entfernt(self):
+        """Ein Client, der beide Namen ausprobiert, hinterlaesst keinen."""
+        data = _tier2_body(
+            {sc.SENSITIVITY_APPROVAL_KEY: True, sc.OPERATOR_APPROVAL_KEY: True}
+        )
+        await self.assert_blocked(data)
+        meta = data.get("metadata", {})
+        self.assertNotIn(sc.SENSITIVITY_APPROVAL_KEY, meta)
+        self.assertNotIn(sc.OPERATOR_APPROVAL_KEY, meta)
+
+    async def test_betreiber_key_auch_in_litellm_metadata(self):
+        """Beide Metadaten-Kanaele, wie beim anderen Key auch.
+
+        litellm propagiert je nach Codepfad ``metadata`` ODER
+        ``litellm_metadata``. Ein Fix, der nur einen kennt, ist derselbe
+        Alias-Fehler wie seinerzeit ``headers``/``extra_headers``.
+        """
+        data = _tier2_body({})
+        data["litellm_metadata"] = {sc.OPERATOR_APPROVAL_KEY: True}
+        await self.assert_blocked(data)
+        self.assertNotIn(
+            sc.OPERATOR_APPROVAL_KEY, data.get("litellm_metadata", {})
+        )
+
+    async def test_betreiber_key_aus_dem_body_gibt_keine_freigabe(self):
+        """Die Gegenprobe zum Strippen: er hat nie gewirkt und wirkt auch
+        weiterhin nicht. F2b ist eine Audit-Trail-Frage, kein Bypass -- diese
+        Zusicherung haelt fest, dass das so BLEIBT."""
+        data = _tier2_body({sc.OPERATOR_APPROVAL_KEY: True})
+        await self.assert_blocked(data)
+
+    async def test_echte_betreiber_freigabe_bleibt_unangetastet(self):
+        """Der Fix darf den GUELTIGEN Weg nicht beschaedigen: die Freigabe
+        aus der Key-Konfiguration kommt nicht aus dem Body und wird deshalb
+        auch nicht gestrippt."""
+        data = _tier2_body({sc.OPERATOR_APPROVAL_KEY: True})
+        key = _KeyAuth(metadata={sc.OPERATOR_APPROVAL_KEY: True})
+        out = await self.assert_passed(data, key_auth=key)
+        self.assertIsNotNone(out)
+        # Und der Body-Eintrag ist trotzdem weg.
+        self.assertNotIn(sc.OPERATOR_APPROVAL_KEY, data.get("metadata", {}))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

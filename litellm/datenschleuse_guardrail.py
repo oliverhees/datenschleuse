@@ -2307,13 +2307,28 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Beide Kanaele, weil litellm je nach Codepfad ``metadata`` ODER
         ``litellm_metadata`` propagiert. Ein Fix, der nur einen abdeckt, waere
         derselbe Alias-Fehler wie seinerzeit ``headers``/``extra_headers``.
+
+        Und beide NAMEN (Security-F2b). Hier wurde nur
+        ``SENSITIVITY_APPROVAL_KEY`` entfernt -- ein client-gesetztes
+        ``metadata[OPERATOR_APPROVAL_KEY]`` blieb stehen. Kein Bypass:
+        ``_operator_approved`` liest ``data["metadata"]`` nie. Aber genau
+        der Schaden, den dieser Docstring oben beschreibt -- und
+        ausgerechnet unter dem Namen, den ein spaeterer Leser fuer den
+        ECHTEN Betreiber-Kanal haelt. Ein falscher Eintrag im Audit-Trail
+        ist schlimmer, wenn er glaubwuerdig aussieht.
         """
         gesetzt = False
         for meta_key in ("metadata", "litellm_metadata"):
             meta = data.get(meta_key)
-            if isinstance(meta, dict) and sc.SENSITIVITY_APPROVAL_KEY in meta:
-                meta.pop(sc.SENSITIVITY_APPROVAL_KEY, None)
-                gesetzt = True
+            if not isinstance(meta, dict):
+                continue
+            for approval_key in (
+                sc.SENSITIVITY_APPROVAL_KEY,
+                sc.OPERATOR_APPROVAL_KEY,
+            ):
+                if approval_key in meta:
+                    meta.pop(approval_key, None)
+                    gesetzt = True
         return gesetzt
 
     def _operator_approved(
