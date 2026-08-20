@@ -179,18 +179,102 @@ Community-Asset für die DACH-KI-Szene.
   liefern — inklusive rotem Test zuerst (Gesetz 2).
 
 ## Mandatory external review
-- After completing any code change and before every commit, delegate to the external-reviewer subagent. A task is NOT finished until this review ran.
-- Fix all Critical findings immediately. Present Warning and Suggestion findings to me for a decision.
-- Never skip the review silently. If the PAL MCP server or the external models are unreachable, stop and tell me explicitly.
+
+Externe Reviews decken blinde Flecken auf, die ein Modell derselben Familie
+nicht sieht. Deshalb sind sie Pflicht — nicht auf Anforderung, nicht optional.
+
+- After completing any code change and before every commit, delegate to the
+  external-reviewer subagent. A task is NOT finished until this review ran.
+  Delegiert wird — der Lead führt den Review nicht selbst aus und behebt auch
+  nicht selbst (Gesetz 8). Fixes gehen an den zuständigen Teammate.
+- Critical und High werden sofort behoben, per Delegation. Medium und Low gehen
+  an Oliver zur Entscheidung. Maßgeblich ist immer die Projektskala, nicht die
+  Skala des externen Reviewers (siehe Severity-Abbildung).
+- Never skip the review silently. If the PAL MCP server or the external models
+  are unreachable, stop and tell Oliver explicitly.
+
+### Severity-Abbildung (bindend)
+
+Der externe Reviewer meldet in Critical/Warning/Suggestion, das Projekt führt
+Critical/High/Medium/Low. Vor jeder Entscheidung wird übersetzt — sonst wird
+aus einem Befund, der auf der Projektskala High wäre, ein „Warning" und damit
+eine formlose Entscheidung an der Merge-Sperre aus Gesetz 5 vorbei.
+
+| Externer Reviewer | Projektskala | Folge |
+|---|---|---|
+| Critical | Critical | Merge gesperrt, sofortiger Fix per Delegation |
+| Warning | High **oder** Medium — der Reviewer stuft ein und begründet die Einstufung | High: Merge gesperrt (Gesetz 5). Medium: Entscheidung durch Oliver |
+| Suggestion | Low | Entscheidung durch Oliver |
+
+**Ein Warning ohne begründete Einstufung gilt als High.** Im Zweifel die
+schärfere Stufe: Ein zu hoch eingestufter Befund kostet eine Rückfrage, ein zu
+niedrig eingestufter umgeht das Gate.
+
+### Datengrenze für den externen Review (bindend)
+
+Der Review geht an einen Inferenz-Anbieter. Der ist weder intern (Plane) noch
+öffentlich (Repo), sondern eine dritte Kategorie — und für ein Produkt, dessen
+Verkaufsargument lautet, dass nichts die eigene Maschine verlässt, ist das der
+Punkt, an dem man genau sein muss. Die Grenze liegt deshalb so eng wie möglich
+um das Heikle und lässt alles Übrige durch.
+
+**Nie gesendet wird:**
+1. **Secrets und Schlüsselmaterial** jeder Art — `.env`, Keys, Tokens,
+   Zugangsdaten, Zertifikate (Gesetz 5).
+2. **Fix-Diffs zu Sicherheitslücken, die noch nicht behoben und veröffentlicht
+   sind** — einschließlich der reproduzierenden Tests, die Gesetz 10 verlangt.
+   SECURITY.md sagt Meldenden Coordinated Disclosure zu. Ein reproduzierender
+   Exploit-Test bei einem Dritten, bevor der Fix draußen ist, bricht diese
+   Zusage. Nach dem Release des Fixes ist der Weg wieder offen.
+3. **Kundendaten und echte personenbezogene Daten.** Testfälle arbeiten mit
+   erfundenen Daten — das gilt im Repo ohnehin.
+
+**Vor dem Senden läuft `.claude/hooks/pre-egress.sh` und muss mit 0 enden.**
+Der Check ist fail-closed: fehlendes Werkzeug, unbrauchbares Werkzeug,
+Scannerfehler, unlesbare oder leere Nutzlast und jeder Fund blocken den Egress.
+Kein Werkzeug heißt nicht „durch", es heißt „gestoppt". Er prüft Punkt 1
+maschinell (gitleaks plus verbotene Pfade); **Punkt 2 und 3 entscheidet der
+delegierende Agent**, weil sie sich nicht maschinell erkennen lassen. Der Check
+sagt das bei jedem grünen Lauf dazu.
+
+> **Voraussetzung:** `gitleaks` muss lokal installiert sein. Ohne gitleaks
+> blockt der Check, damit läuft kein externer Review — und damit kein Commit.
+> Das ist gewollt und nicht der Fehlerfall, den man wegkonfiguriert:
+> `.github/workflows/ci.yml` scannt erst nach dem Push, also erst *nachdem* der
+> Diff den Rechner verlassen hätte. Wer ohne gitleaks arbeiten muss, braucht den
+> Notausgang unten, nicht eine Ausnahme im Check.
+
+**Reihenfolge zum internen Audit:** Der externe Review ersetzt das
+Security-Audit nach Gesetz 5 nicht, erfüllt es nicht und läuft nicht an ihm
+vorbei. Bindend ist das interne Verdict. Bei sicherheitsrelevanten Änderungen
+(Auth, Crypto, Input-Handling, DB-Queries, Payment, Session-Handling) läuft das
+interne Audit **zuerst**; der externe Review folgt danach auf demselben Stand.
+Bis dahin erfüllt das interne Audit die Pflicht aus dieser Regel.
+
+**Einsatzgrenze des Reviewers:** Der `external-reviewer` wird ausschließlich auf
+eigene Änderungen angesetzt, nie auf fremde Beiträge (Community-PRs, Forks,
+eingereichte Patches). Er liest Dateien, führt Bash aus und hat im selben
+Werkzeugkasten einen Ausgangskanal; auf fremdkontrolliertem Text ist das eine
+Prompt-Injection-Fläche mit Egress. Seine Werkzeugliste ist auf das Nötige
+gekürzt — das verkleinert die Fläche, es ist keine Sicherheitsgrenze
+(ADR-0004, Befund 7).
+
+**Notausgang:** Fällt PAL oder der Anbieter aus, wird nicht gesendet und nicht
+stillschweigend weitergearbeitet — der Ausfall wird gemeldet. Oliver kann den
+externen Review für einen benannten Vorgang aussetzen, etwa für einen
+Security-Hotfix oder bei einem längeren Anbieterausfall. Die Aussetzung wird am
+Work Item dokumentiert: Grund, Umfang, und wann sie endet. Nur Oliver, nie ein
+Agent, nie stillschweigend.
 
 ### Externe Modelle: Identitaets-Halluzination ist normal
-- Die externen Pruefmodelle (`glm-5.2`, `kimi-k3` ueber EUrouter) behaupten auf
-  Nachfrage, "Claude von Anthropic" zu sein — auf Deutsch, Englisch und Chinesisch.
-  Das ist eine **halluzinierte Selbstauskunft**, kein Fehler und kein Umleiten auf
-  Claude. Belegt am 2026-08-20 durch die HTTP-Header des Anbieters:
-  `x-model-used: kimi-k3`, `x-provider-slug: nebius`, `x-routing-strategy: default`.
+- Die externen Prüfmodelle behaupten auf Nachfrage, „Claude von Anthropic" zu
+  sein — auf Deutsch, Englisch und Chinesisch. Das ist eine **halluzinierte
+  Selbstauskunft**, kein Fehler und kein Umleiten auf Claude. Viele offene
+  Modelle sind auf synthetischen Daten trainiert und erben die Selbstbeschreibung
+  ihrer Lehrer-Modelle.
 - Nie als kaputte Kette melden, nie deswegen das Modell wechseln, nie die
-  Selbstauskunft eines Modells als Beleg fuer seine Herkunft nehmen.
-- Wer tatsaechlich wissen muss, welches Modell geantwortet hat, liest den Header
-  `x-model-used` in `pal-mcp-server/logs/mcp_server.log`. Das ist die einzige
-  belastbare Quelle.
+  Selbstauskunft eines Modells als Beleg für seine Herkunft nehmen.
+- Belastbar ist allein der Modell-Header in der Antwort des Anbieters, nie die
+  Aussage des Modells. Welche Modelle konkret laufen, über welchen Anbieter und
+  wo das Log dazu liegt, steht in `.claude/agents/external-reviewer.md` und am
+  Work Item DATENSCHLE-87 — bewusst nicht hier (Begründung dort, LOW-1).

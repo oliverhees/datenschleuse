@@ -36,6 +36,30 @@ Tier-3-Block lässt sich umgehen) priorisiere ich den Fix.
 Ich bitte um angemessene Zeit zur Behebung, bevor Details öffentlich gemacht
 werden (Coordinated Disclosure).
 
+## Was mit deiner Meldung passiert — externer Code-Review im Entwicklungsprozess
+
+Im Entwicklungsprozess dieses Projekts läuft ein **externer Code-Review**: Diffs
+gehen vor dem Commit an ein Modell eines Inferenz-Anbieters, den ich nicht
+selbst betreibe. Das deckt blinde Flecken auf, verschiebt aber auch Daten. Was
+das für deine Meldung heißt:
+
+- **Deine Meldung, dein Reproduktionspfad und der Fix-Diff samt reproduzierendem
+  Test gehen nicht durch diesen Kanal**, solange die Lücke nicht behoben und
+  veröffentlicht ist. Das ist keine Absichtserklärung, sondern bindend in
+  `CLAUDE.md` festgehalten („Datengrenze für den externen Review") und wird vor
+  jedem Senden durch einen fail-closed Check (`.claude/hooks/pre-egress.sh`)
+  abgesichert. Nach dem Release des Fixes ist der Weg wieder offen.
+- **Secrets, Zugangsdaten und personenbezogene Daten gehen nie durch diesen
+  Kanal.** Der Check blockt, wenn er Schlüsselmaterial oder verbotene Pfade im
+  Diff findet — und ebenso, wenn er selbst nicht laufen kann.
+- **Zu Aufbewahrung und Trainingsnutzung beim Anbieter dieses Kanals liegt keine
+  Zusage vor, auf die ich dich verweisen könnte.** Genau deshalb ist die Grenze
+  eng gezogen, statt auf Zusagen zu bauen.
+- **Der Kanal betrifft ausschließlich meinen Entwicklungsprozess.** Die
+  Datenschleuse selbst sendet nichts dorthin. Wer die Software betreibt, ist
+  davon nicht berührt — dort gilt weiterhin, was in der
+  [README](README.md) steht.
+
 ## Bekannte, konzeptionelle Grenzen
 
 Kein Ersatz für eine Meldung, aber zur Einordnung, was *keine* Sicherheitslücke
