@@ -960,6 +960,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
             # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
             # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
             policy = "redact" if self.image_redactor_url else "block"
+        # Bewusst OHNE ``_ist_registriert``: ``policy`` ist zwei Zeilen
+        # weiter oben durch ``.strip().lower()`` gelaufen, und beide
+        # geben fuer str-Subklassen ein exaktes ``str`` zurueck -- eine
+        # Tarnung ist hier bereits zerstoert, bevor verglichen wird.
+        # Dazu kommt sie aus Betreiber-Konfiguration (kwargs/ENV), nicht
+        # aus dem Request. Verifiziert, nicht angenommen.
         if policy not in IMAGE_POLICIES:
             raise ValueError(
                 f"image_policy={policy!r} unbekannt — erlaubt: {', '.join(sorted(IMAGE_POLICIES))}"
@@ -1143,6 +1149,13 @@ class DatenschleuseGuardrail(_GuardrailBase):
     ) -> dict:
         """Maskiert PII in allen Chat-Messages und legt das Re-Id-Mapping in
         den Metadaten ab. Nur fuer Chat-/Text-Completions relevant."""
+        # Bewusst OHNE ``_ist_registriert``: ``call_type`` ist LiteLLMs
+        # eigener Dispatch-Parameter, kein Client-JSON. Und die Richtung
+        # stimmt: eine Tarnung als bekannter Aufruftyp fuehrt HIER zu
+        # MEHR Pruefung (die Maskierung laeuft), nicht zu weniger. Wer
+        # die Maskierung ueberspringen will, braucht dafuer keine
+        # Subklasse -- ein beliebiger unbekannter String genuegt, und das
+        # ist gewolltes Verhalten fuer Nicht-Chat-Aufrufe.
         if call_type not in ("completion", "text_completion", "acompletion", None):
             return data
 
@@ -1656,14 +1669,14 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"{', '.join(sorted(CACHE_CONTROL_ALLOWED_FIELDS))}."
             )
         marker = value.get("type")
-        if not isinstance(marker, str) or marker not in CACHE_CONTROL_TYPES:
+        if not _ist_registriert(marker, CACHE_CONTROL_TYPES):
             raise DatenschleuseBlocked(
                 f"cache_control.type (Typ {type(marker).__name__!r}) ist kein "
                 "bekannter Caching-Marker -- blockiert (fail-closed). Erlaubt: "
                 f"{', '.join(sorted(CACHE_CONTROL_TYPES))}."
             )
         ttl = value.get("ttl")
-        if ttl is not None and (not isinstance(ttl, str) or ttl not in CACHE_CONTROL_TTLS):
+        if ttl is not None and not _ist_registriert(ttl, CACHE_CONTROL_TTLS):
             raise DatenschleuseBlocked(
                 f"cache_control.ttl (Typ {type(ttl).__name__!r}) ist kein "
                 "bekannter Wert -- blockiert (fail-closed). Erlaubt: "
@@ -1736,22 +1749,20 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 )
 
             citation_type = citation.get("type")
-            if (
-                not isinstance(citation_type, str)
-                or citation_type not in ALLOWED_CITATION_TYPES
-            ):
+            # ``_ist_registriert`` deckt beide Rollen dieser Pruefung ab: die
+            # Allowlist entscheidet ueber "erlaubt -> maskieren und rausgehen
+            # lassen", und der Typ waehlt darunter per Index in
+            # ALLOWED_CITATION_FIELDS / CITATION_FIELDS_MASKED den Pfad. Eine
+            # getarnte Subklasse lief bisher komplett unblockiert durch und
+            # wurde als der getarnte Typ weiterverarbeitet (die vom Pruefer
+            # als MEDIUM benannte fuenfte Variante).
+            if not _ist_registriert(citation_type, ALLOWED_CITATION_TYPES):
                 # citation_type ist voll client-kontrolliert und darf nie roh
                 # in die Meldung. Genannt wird er NUR, wenn er exakt einem
                 # Wert unserer Konstante entspricht -- dann ist der
                 # ausgegebene String unsere Konstante, nicht der Request.
-                #
-                # ``type(...) is str`` statt ``isinstance``: siehe die
-                # ausfuehrliche Begruendung in _validate_part_shape. Dieses
-                # Muster stand hier zuerst; es mitzuziehen verhindert, dass
-                # die Kopie repariert und das Original stehengelassen wird.
-                if (
-                    type(citation_type) is str
-                    and citation_type in KNOWN_UNSUPPORTED_CITATION_TYPES
+                if _ist_registriert(
+                    citation_type, KNOWN_UNSUPPORTED_CITATION_TYPES
                 ):
                     grund = (
                         f"Zitat-Typ '{citation_type}' traegt Freitext- bzw. "
@@ -1770,14 +1781,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 )
 
             allowed = ALLOWED_CITATION_FIELDS[citation_type]
-            unknown = [key for key in citation if key not in allowed]
+            unknown = [
+                key for key in citation if not _ist_registriert(key, allowed)
+            ]
             if unknown:
+                # Partition ueber dasselbe Praedikat statt ueber ``key not in
+                # benannt`` -- siehe _validate_message_shape.
                 benannt = sorted(
                     key for key in unknown
-                    if isinstance(key, str)
-                    and key in KNOWN_UNSUPPORTED_CITATION_FIELDS
+                    if _ist_registriert(key, KNOWN_UNSUPPORTED_CITATION_FIELDS)
                 )
-                fremd = [key for key in unknown if key not in benannt]
+                fremd = [
+                    key for key in unknown
+                    if not _ist_registriert(
+                        key, KNOWN_UNSUPPORTED_CITATION_FIELDS
+                    )
+                ]
                 teile = []
                 if benannt:
                     teile.append(
@@ -1835,7 +1854,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"tool_call vom Typ {type(call).__name__!r} ist nicht pruefbar "
                 "und deshalb blockiert (fail-closed)."
             )
-        unknown = sum(1 for key in call if key not in TOOL_CALL_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in call
+            if not _ist_registriert(key, TOOL_CALL_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"tool_call enthaelt {unknown} ungepruefte(s) Feld(er) -- "
@@ -1848,8 +1870,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # ``type`` fehlt bei manchen Clients -- historisch impliziert das
         # "function". Ein ANDERER Typ ist dagegen ein uns unbekanntes Format
         # mit unbekannten Feldern -> blocken.
-        if call_type is not None and (
-            not isinstance(call_type, str) or call_type not in ALLOWED_TOOL_CALL_TYPES
+        if call_type is not None and not _ist_registriert(
+            call_type, ALLOWED_TOOL_CALL_TYPES
         ):
             raise DatenschleuseBlocked(
                 f"tool_call mit nicht erlaubtem Typ (Typ {type(call_type).__name__!r}) "
@@ -1875,7 +1897,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"{field} vom Typ {type(function).__name__!r} ist nicht pruefbar "
                 "und deshalb blockiert (fail-closed)."
             )
-        unknown = sum(1 for key in function if key not in TOOL_CALL_FUNCTION_ALLOWED_FIELDS)
+        unknown = sum(
+            1 for key in function
+            if not _ist_registriert(key, TOOL_CALL_FUNCTION_ALLOWED_FIELDS)
+        )
         if unknown:
             raise DatenschleuseBlocked(
                 f"{field} enthaelt {unknown} ungepruefte(s) Feld(er) -- blockiert "
@@ -2208,6 +2233,12 @@ class DatenschleuseGuardrail(_GuardrailBase):
         direct: List[Dict[str, Any]] = []
         qi: List[Dict[str, Any]] = []
         for ent in entities:
+            # Bewusst OHNE ``_ist_registriert``: ``entity_type`` stammt aus
+            # der Analyzer-Antwort (unsere eigenen Recognizer-Namen),
+            # ``qi_types`` aus der Betreiber-Konfiguration. Kein Pfad
+            # traegt hier einen Client-Wert hinein, und das Ergebnis wird
+            # weder formatiert noch geloggt -- es waehlt nur zwischen zwei
+            # Maskierungsstrategien, die beide maskieren.
             if ent.get("entity_type") in qi_types:
                 qi.append(ent)
             else:

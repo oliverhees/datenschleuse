@@ -461,5 +461,86 @@ class TestVerhaltensNeutralitaet(_AliasAssertions):
         G._validate_tool_call({"id": "call_1"})
 
 
+# ===========================================================================
+# 6) AEQUIVALENZBEWEIS: die Pruefhilfe ist fuer echte str deckungsgleich
+#    mit dem alten ``x in register`` -- ueber ALLE Register des Moduls.
+# ===========================================================================
+class TestAequivalenzUeberAlleRegister(unittest.TestCase):
+    """Die Verhaltens-Neutralitaet wird nicht behauptet, sondern erschoepfend
+    nachgerechnet: fuer jedes exakte ``str`` und jedes Register des Moduls
+    muss ``_ist_registriert(x, R)`` genau dasselbe liefern wie ``x in R``.
+
+    Damit haengt die Neutralitaet nicht daran, dass jemand alle 19
+    Aufrufstellen einzeln richtig umgestellt hat -- sie folgt aus der
+    Eigenschaft der Hilfe selbst. Und ein kuenftiges Register faellt
+    automatisch unter denselben Beweis, sobald es hier eingetragen wird.
+    """
+
+    def _register(self):
+        reg = {
+            "ALLOWED_MESSAGE_FIELDS": dg.ALLOWED_MESSAGE_FIELDS,
+            "ALLOWED_ROLES": dg.ALLOWED_ROLES,
+            "KNOWN_UNSUPPORTED_MESSAGE_FIELDS": dg.KNOWN_UNSUPPORTED_MESSAGE_FIELDS,
+            "ALLOWED_PART_TYPES": dg.ALLOWED_PART_TYPES,
+            "KNOWN_UNSUPPORTED_PART_TYPES": dg.KNOWN_UNSUPPORTED_PART_TYPES,
+            "KNOWN_UNSUPPORTED_PART_FIELDS": dg.KNOWN_UNSUPPORTED_PART_FIELDS,
+            "IMAGE_URL_ALLOWED_FIELDS": dg.IMAGE_URL_ALLOWED_FIELDS,
+            "IMAGE_URL_DETAILS": dg.IMAGE_URL_DETAILS,
+            "CACHE_CONTROL_ALLOWED_FIELDS": dg.CACHE_CONTROL_ALLOWED_FIELDS,
+            "CACHE_CONTROL_TYPES": dg.CACHE_CONTROL_TYPES,
+            "CACHE_CONTROL_TTLS": dg.CACHE_CONTROL_TTLS,
+            "ALLOWED_CITATION_TYPES": dg.ALLOWED_CITATION_TYPES,
+            "KNOWN_UNSUPPORTED_CITATION_TYPES": dg.KNOWN_UNSUPPORTED_CITATION_TYPES,
+            "KNOWN_UNSUPPORTED_CITATION_FIELDS": dg.KNOWN_UNSUPPORTED_CITATION_FIELDS,
+            "TOOL_CALL_ALLOWED_FIELDS": dg.TOOL_CALL_ALLOWED_FIELDS,
+            "ALLOWED_TOOL_CALL_TYPES": dg.ALLOWED_TOOL_CALL_TYPES,
+            "TOOL_CALL_FUNCTION_ALLOWED_FIELDS": dg.TOOL_CALL_FUNCTION_ALLOWED_FIELDS,
+        }
+        for typ, felder in dg.ALLOWED_PART_FIELDS.items():
+            reg[f"ALLOWED_PART_FIELDS[{typ}]"] = felder
+        for typ, felder in dg.ALLOWED_CITATION_FIELDS.items():
+            reg[f"ALLOWED_CITATION_FIELDS[{typ}]"] = felder
+        return reg
+
+    def test_echte_str_verhalten_sich_deckungsgleich(self):
+        reg = self._register()
+        # Getestet wird jedes Wort gegen JEDES Register -- also auch jeder
+        # Nicht-Treffer, nicht nur die Treffer.
+        woerter = {"", "x", "voellig_neu", "TEXT", "text ", "5M", "Function"}
+        for eintraege in reg.values():
+            woerter |= set(eintraege)
+
+        vergleiche = 0
+        for name, eintraege in sorted(reg.items()):
+            for wort in sorted(woerter):
+                self.assertIs(type(wort), str)
+                self.assertEqual(
+                    wort in eintraege,
+                    dg._ist_registriert(wort, eintraege),
+                    f"{name}: {wort!r} verhaelt sich anders als vor dem Fix",
+                )
+                vergleiche += 1
+        # Untergrenze statt exakter Zahl: waechst ein Register, waechst der
+        # Beweis mit, ohne dass dieser Test bricht.
+        self.assertGreater(vergleiche, 1000)
+
+    def test_nicht_str_bleibt_ueberall_fail_closed(self):
+        for name, eintraege in sorted(self._register().items()):
+            for wert in (1, 0, None, True, False, (), frozenset(), 3.5, b"text"):
+                self.assertFalse(
+                    dg._ist_registriert(wert, eintraege),
+                    f"{name}: {wert!r} gilt faelschlich als registriert",
+                )
+
+    def test_ist_echter_str_lehnt_subklassen_ab(self):
+        self.assertTrue(dg._ist_echter_str("text"))
+        self.assertFalse(dg._ist_echter_str(_alias("text")))
+        # Auch eine voellig harmlose Subklasse ohne __eq__/__hash__ zaehlt
+        # nicht -- die Regel ist Typidentitaet, nicht "boesartig aussehend".
+        class Harmlos(str):
+            pass
+        self.assertFalse(dg._ist_echter_str(Harmlos("text")))
+
+
 if __name__ == "__main__":
     unittest.main()
