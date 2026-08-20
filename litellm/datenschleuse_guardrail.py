@@ -1962,6 +1962,45 @@ class DatenschleuseGuardrail(_GuardrailBase):
         data: dict,
         call_type: str,
     ) -> dict:
+        """Der Eingang -- und die Zusicherung, dass auch ein BLOCK sauber
+        endet.
+
+        Duenner Mantel um ``_pre_call_guarded``. Er existiert fuer genau
+        einen Fall: der Re-Sync des Logging-Schnappschusses lief nur auf dem
+        ERFOLGSPFAD. Wird ein Request geblockt, blieb der unmaskierte
+        Schnappschuss stehen und ging an die FAILURE-Callbacks. Der
+        Provider-Call war verhindert, das Log-Leck nicht.
+
+        Und zwar ausgerechnet bei den schutzwuerdigsten Daten: geblockt
+        wird, was zu sensibel zum Rauslassen ist (Stufe 2/3) oder was die
+        Guardrail nicht pruefen kann. Ein Request, der zu heikel fuer das
+        Modell ist, darf nicht ungeschuetzt im Log stehen.
+
+        Der Mantel faengt NICHTS ab -- jede Ausnahme fliegt unveraendert
+        weiter, der Block bleibt ein Block. Er raeumt nur den Schnappschuss
+        auf, bevor er sie weiterreicht.
+        """
+        try:
+            return await self._pre_call_guarded(
+                user_api_key_dict, cache, data, call_type
+            )
+        except BaseException:
+            # Bewusst BaseException und bewusst ohne Filter auf unsere
+            # eigenen Ausnahmetypen: WARUM abgebrochen wurde, ist fuer die
+            # Frage "steht da noch Klartext" egal. Ein Fehlerpfad, den
+            # jemand spaeter hinzufuegt, ist damit automatisch mit abgedeckt
+            # -- dieselbe Logik wie beim Neubau des Schnappschusses statt
+            # feldweisem Nachziehen.
+            self._redact_logging_snapshot(data)
+            raise
+
+    async def _pre_call_guarded(
+        self,
+        user_api_key_dict: Any,
+        cache: Any,
+        data: dict,
+        call_type: str,
+    ) -> dict:
         """Maskiert PII in allen Chat-Messages und legt das Re-Id-Mapping in
         den Metadaten ab. Nur fuer Chat-/Text-Completions relevant."""
         # Route-Pruefung VOR allem anderen (DATENSCHLE-69). Frueher stand hier
@@ -2448,6 +2487,34 @@ class DatenschleuseGuardrail(_GuardrailBase):
             for key, value in data.items()
             if key not in LOGGING_SNAPSHOT_EXCLUDE
         }
+
+    #: Was im Schnappschuss eines GEBLOCKTEN Requests stehen bleibt.
+    #: Eine Konstante, kein Rest des Payloads -- alles andere waere wieder
+    #: eine Liste von Feldern, an die jemand gedacht hat.
+    BLOCKED_SNAPSHOT_BODY = {
+        "datenschleuse": "request blocked -- body withheld from logging"
+    }
+
+    @classmethod
+    def _redact_logging_snapshot(cls, data: Any) -> None:
+        """Ersetzt den Logging-Schnappschuss eines geblockten Requests.
+
+        ERSETZEN statt maskieren: der Block bedeutet, dass dieser Payload
+        NICHT geprueft werden konnte oder nicht hinausgehen darf. Ihn
+        nachtraeglich maskieren zu wollen hiesse, genau die Pruefung
+        nachzuholen, die gerade fehlgeschlagen ist.
+
+        Es geht dabei nichts verloren: die Kostenerfassung lebt vom
+        Provider-Call, und den hat es nicht gegeben. Ein Dict bleibt es
+        trotzdem -- ``standard_logging_payload`` und die Failure-Callbacks
+        lesen den Schnappschuss auch im Fehlerfall, und ein ``None`` waere
+        ein Fix, der einen anderen Defekt erzeugt.
+        """
+        if not isinstance(data, dict):
+            return
+        psr = data.get("proxy_server_request")
+        if isinstance(psr, dict) and "body" in psr:
+            psr["body"] = dict(cls.BLOCKED_SNAPSHOT_BODY)
 
     # ---- Route-Register (DATENSCHLE-69) -----------------------------------
     @staticmethod

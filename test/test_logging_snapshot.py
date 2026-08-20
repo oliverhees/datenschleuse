@@ -308,6 +308,91 @@ class TestLoggingSnapshotNoPlaintext(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(_NAME, json.dumps(snap, ensure_ascii=False, default=str))
 
 
+class TestGeblockterRequestLaesstKeinenKlartextZurueck(
+    unittest.IsolatedAsyncioTestCase
+):
+    """Der Block verhindert den Provider-Call -- aber nicht das Log.
+
+    ``_resync_logging_snapshot`` lief nur auf dem ERFOLGSPFAD. Wird ein
+    Request geblockt, bleibt der unmaskierte Schnappschuss stehen und geht
+    an die FAILURE-Callbacks. Der Provider-Call wird verhindert, das
+    Log-Leck nicht.
+
+    Und zwar ausgerechnet bei den schutzwuerdigsten Daten: geblockt wird,
+    was zu sensibel zum Rauslassen ist (Stufe 2/3) oder was die Guardrail
+    nicht pruefen kann. Ein Request, der zu heikel fuer das Modell ist, darf
+    nicht ungeschuetzt im Log landen.
+    """
+
+    async def _blocked(self, data, call_type="acompletion"):
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _guard().async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type=call_type
+            )
+        return data
+
+    async def test_block_wegen_ungepruefter_felder_laesst_keinen_klartext(self):
+        """Block in der FORMPRUEFUNG -- vor jeder Maskierung.
+
+        Der haerteste Fall: der Hook bricht ab, bevor auch nur ein Feld
+        maskiert wurde. Der Schnappschuss traegt den kompletten Rohtext.
+        """
+        body = _base_body(dg.CHAT_PAYLOAD_ROUTE)
+        body["messages"] = [
+            {"role": "user", "content": f"Hallo {_NAME}, IBAN {_IBAN}"}
+        ]
+        # Ein bekanntes, aber nicht behandeltes Feld -> fail-closed.
+        body["audio"] = {"voice": "alloy", "format": "wav"}
+        data = await self._blocked(as_proxy_would(body))
+        flat = snapshot_of(data)
+        self.assertNotIn(_NAME, flat, "Klartext-Name im Snapshot nach Block")
+        self.assertNotIn(_IBAN, flat, "Klartext-IBAN im Snapshot nach Block")
+
+    async def test_block_wegen_unbekannter_route_laesst_keinen_klartext(self):
+        """Block auf der obersten Ebene -- die Route ist gar nicht
+        zugelassen."""
+        body = _base_body(dg.CHAT_PAYLOAD_ROUTE)
+        body["messages"] = [
+            {"role": "user", "content": f"Hallo {_NAME}, IBAN {_IBAN}"}
+        ]
+        data = await self._blocked(as_proxy_would(body), call_type="aimage_generation")
+        flat = snapshot_of(data)
+        self.assertNotIn(_NAME, flat)
+        self.assertNotIn(_IBAN, flat)
+
+    async def test_der_geblockte_snapshot_bleibt_ein_dict(self):
+        """Die Konsumenten duerfen nicht ueber die Form stolpern.
+
+        ``standard_logging_payload`` und die Failure-Callbacks lesen den
+        Schnappschuss auch im Fehlerfall. Ein ``None`` oder ein String waere
+        ein Fix, der einen anderen Defekt erzeugt.
+        """
+        body = _base_body(dg.CHAT_PAYLOAD_ROUTE)
+        body["messages"] = [{"role": "user", "content": f"Hallo {_NAME}"}]
+        body["audio"] = {"voice": "alloy"}
+        data = await self._blocked(as_proxy_would(body))
+        snap = data["proxy_server_request"]["body"]
+        self.assertIsInstance(snap, dict)
+
+    async def test_erfolgreicher_request_bleibt_unveraendert_brauchbar(self):
+        """Gegenprobe: die Redaktion darf NUR im Block-Fall greifen.
+
+        Sonst waere die Kostenerfassung fuer jeden normalen Request kaputt --
+        ein Fix, der einen anderen Defekt erzeugt.
+        """
+        body = _base_body(dg.CHAT_PAYLOAD_ROUTE)
+        body["messages"] = [{"role": "user", "content": f"Hallo {_NAME}"}]
+        out = await _guard().async_pre_call_hook(
+            user_api_key_dict=None,
+            cache=None,
+            data=as_proxy_would(body),
+            call_type="acompletion",
+        )
+        snap = out["proxy_server_request"]["body"]
+        self.assertEqual(snap.get("model"), "gpt-4o")
+        self.assertIn("messages", snap)
+
+
 class TestLoggingSnapshotShape(unittest.IsolatedAsyncioTestCase):
     """Die FORM des Schnappschusses. Was wir nicht pruefen koennen, blockt --
     dieselbe Doktrin wie ueberall sonst im Register."""
