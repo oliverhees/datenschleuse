@@ -345,10 +345,16 @@ def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[i
     """
     if not reid_map:
         return text, []
-    keys = sorted(reid_map, key=len, reverse=True)
+    # Security-Finding S4: ein LEERER Schluessel ist kein Platzhalter, aber
+    # ``text.startswith("", i)`` ist immer wahr. Der Index rueckte dann nie
+    # vor -- die Schleife lief endlos und fuellte dabei den Speicher. Solche
+    # Schluessel hier einmal aussortieren statt in der heissen Schleife.
+    keys = [k for k in sorted(reid_map, key=len, reverse=True) if k]
+    if not keys:
+        return text, []
     # Alle Platzhalter beginnen mit demselben Zeichen; die Vorpruefung darauf
     # macht den Durchlauf linear statt quadratisch.
-    starts = {k[0] for k in keys if k}
+    starts = {k[0] for k in keys}
 
     teile: List[str] = []
     fueller: List[Tuple[int, int]] = []
@@ -374,40 +380,86 @@ def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[i
     return "".join(teile), fueller
 
 
-def _is_filler_artifact(probe: str, entity: Dict[str, Any],
-                        filler_spans: List[Tuple[int, int]]) -> bool:
-    r"""Ist dieser Treffer erst durch die Neutralisierung entstanden?
+# Obergrenze fuer die Zerlegung eines einzelnen Treffers (siehe
+# _filler_segments). Wird sie gerissen, gilt der Treffer als echt und blockt.
+# Fail-closed: lieber ein Fehlalarm als ein unbemerkter Durchlass.
+_MAX_FILLER_SEGMENTS = 16
 
-    Ja genau dann, wenn sein Kern einen Fuellerbereich beruehrt. "Kern" heisst:
-    ohne umgebenden Whitespace. Das ist wichtig fuer beide Richtungen --
 
-    - Ein Muster wie ``Nord\s*wind`` greift auf ``Nord<PERSON_0>wind`` erst,
-      nachdem der Platzhalter zum Leerzeichen wurde. Sein Kern enthaelt den
-      Fueller, also Artefakt: verwerfen.
-    - Ein Muster wie ``\s*Nordwind`` wuerde einen davor liegenden Fueller nur
-      als Randzeichen mitnehmen. Sein Kern (``Nordwind``) liegt daneben, also
-      ein ECHTER Rest: behalten und blocken.
+def _filler_segments(probe: str, entity: Dict[str, Any],
+                     filler_spans: List[Tuple[int, int]]) -> Optional[List[str]]:
+    r"""Zerlegt den Kern eines Treffers an den Fuellergrenzen.
 
-    Ein Treffer, der nach dem Trimmen leer ist, bestand nur aus Whitespace --
-    den kann es ohne Fueller nicht gegeben haben.
+    "Kern" heisst: ohne umgebenden Whitespace. Rueckgabe:
+
+    ``None``
+        Kein Artefakt-Verdacht -- der Treffer ist zu BEHALTEN. Entweder
+        beruehrt sein Kern gar keinen Fueller (``\s*Nordwind`` nimmt einen
+        davor liegenden Fueller nur als Randzeichen mit), oder sein Span ist
+        unlesbar bzw. degeneriert. Im Zweifel blocken.
+    ``[]``
+        Der Kern bestand nur aus Fuellern und Whitespace. Ohne die
+        Neutralisierung haette es diesen Treffer nicht gegeben: verwerfen.
+    ``[...]``
+        Die Klartext-Segmente zwischen den Fuellern, getrimmt und ohne
+        Duplikate. Der Aufrufer prueft sie EINZELN nach.
+
+    Security-Finding S1 (HIGH): Vorher lieferte diese Stelle ein blankes
+    "Artefakt: ja/nein" -- und verwarf den GESAMTEN Treffer, sobald
+    irgendein Fueller in seinem Kern lag. Damit ging ``Anna <PERSON_0>
+    Mueller`` im Klartext hinaus: der Analyzer findet den Namen ueber den
+    Fueller hinweg, und genau dieser Fund wurde als Artefakt abgetan. Die
+    Zerlegung trennt die beiden Faelle sauber: ``Nord`` und ``wind`` sind
+    einzeln kein Fund (Artefakt), ``Anna`` und ``Mueller`` sind es sehr wohl.
     """
     if not filler_spans:
-        return False
+        return None
     try:
         start = int(entity["start"])
         end = int(entity["end"])
     except (KeyError, TypeError, ValueError):
         # Unlesbarer Treffer: NICHT als Artefakt abtun -- im Zweifel blocken.
-        return False
+        return None
     start = max(0, start)
     end = min(len(probe), end)
+    if start >= end:
+        # Security-Finding S3: verdrehte (start > end) und ausserhalb des
+        # Textes liegende Spans landeten frueher im selben Zweig wie ein
+        # reiner Whitespace-Treffer und galten als Artefakt. Das ist etwas
+        # anderes: hier wissen wir gar nichts ueber den Fund. Nicht
+        # schlucken -- im Zweifel blocken.
+        return None
     while start < end and probe[start].isspace():
         start += 1
     while end > start and probe[end - 1].isspace():
         end -= 1
     if start >= end:
-        return True  # reiner Whitespace-Treffer
-    return any(fs < end and start < fe for fs, fe in filler_spans)
+        return []  # reiner Whitespace-Treffer
+
+    innere = sorted((max(fs, start), min(fe, end))
+                    for fs, fe in filler_spans if fs < end and start < fe)
+    if not innere:
+        return None  # Fueller nur am Rand -> echter Rest
+
+    segmente: List[str] = []
+    cursor = start
+    for fs, fe in innere:
+        stueck = probe[cursor:fs].strip()
+        if stueck:
+            segmente.append(stueck)
+        cursor = max(cursor, fe)
+    stueck = probe[cursor:end].strip()
+    if stueck:
+        segmente.append(stueck)
+
+    # Duplikate kosten nur Analyzer-Aufrufe, reihenfolgestabil entfernen.
+    eindeutig = list(dict.fromkeys(segmente))
+    if len(eindeutig) > _MAX_FILLER_SEGMENTS:
+        # Ein Treffer, der ueber so viele Platzhalter laeuft, ist kein
+        # normaler Fehlalarm mehr. Statt beliebig viele Analyzer-Aufrufe zu
+        # starten: als echt behandeln und blocken.
+        return None
+    return eindeutig
 
 
 class DatenschleuseBlocked(Exception):
@@ -1629,15 +1681,17 @@ class DatenschleuseGuardrail(_GuardrailBase):
         Typ- oder Praefix-Filter zu ersetzen sieht einfacher aus und bringt
         Finding F10 zurueck. Der Unterschied ist nicht kosmetisch: Ein Filter
         nach Typ entfernt auch ECHTE Funde, ein Filter nach Fueller-Herkunft
-        nur die Artefakte.
+        nur die Artefakte. Und sie durch ein blankes "Kern beruehrt Fueller
+        -> weg" zu ersetzen bringt Finding S1 zurueck (siehe
+        ``_is_filler_artifact``).
         """
         if not isinstance(text, str) or not text.strip():
             return
         probe, filler_spans = _build_probe(text, masker.reid_map)
-        leftovers = [
-            e for e in await self._analyze(probe)
-            if not _is_filler_artifact(probe, e, filler_spans)
-        ]
+        leftovers = []
+        for e in await self._analyze(probe):
+            if not await self._is_filler_artifact(probe, e, filler_spans):
+                leftovers.append(e)
         if leftovers:
             types = sorted({str(e.get("entity_type")) for e in leftovers})
             # Nur die Entity-TYPEN nennen (Presidio-Vokabular, kein
@@ -1659,6 +1713,49 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "erst der zweite Durchlauf anschlaegt. In beiden Faellen "
                 "gilt: im Zweifel nicht rauslassen."
             )
+
+    async def _is_filler_artifact(
+        self, probe: str, entity: Dict[str, Any],
+        filler_spans: List[Tuple[int, int]]
+    ) -> bool:
+        r"""Ist dieser Treffer erst durch die Neutralisierung entstanden?
+
+        Security-Finding S1 (HIGH). Die Frage laesst sich NICHT an der
+        Ueberlappung allein entscheiden. Ein Fueller im Kern heisst nur, dass
+        die Neutralisierung den Treffer moeglicherweise ueberhaupt erst
+        ermoeglicht hat -- er kann trotzdem echte PII enthalten:
+
+            "Anna <PERSON_0> Mueller"  ->  Probe "Anna   Mueller"
+
+        Der Analyzer findet den Namen ueber den Fueller hinweg. Wer diesen
+        Treffer pauschal verwirft, laesst ``Anna Mueller`` im Klartext
+        hinaus -- und zwar fuer JEDEN Typ, nicht nur fuer die eigenen.
+
+        Also wird der Treffer an den Fuellergrenzen aufgeteilt und jedes
+        Segment EINZELN nachgeprueft. Ein Artefakt ist er nur, wenn kein
+        Segment fuer sich stehen bleibt:
+
+        - ``Nord\s*wind`` auf ``Nord<PERSON_0>wind``: ``Nord`` und ``wind``
+          sind einzeln kein Fund -> Artefakt, verwerfen.
+        - ``Anna``/``Mueller``: beide einzeln PERSON -> echter Fund, blocken.
+
+        Bewusst ueber ``_analyze`` und nicht ueber ``_presidio_analyze``: das
+        ist dieselbe Naht, die auch der erste Durchlauf nutzt (die eigenen
+        Regeln haengen dort mit drin) und an der die Tests dieses Moduls die
+        Erkennung ersetzen. Die Segmente enthalten keine Platzhalter mehr,
+        eine Rekursion in den Verifikationsdurchlauf gibt es also nicht.
+
+        Kosten: zusaetzliche Analyzer-Aufrufe NUR fuer Treffer, deren Kern
+        tatsaechlich einen Fueller enthaelt -- im Normalbetrieb keiner.
+        """
+        segmente = _filler_segments(probe, entity, filler_spans)
+        if segmente is None:
+            return False
+        for stueck in segmente:
+            if await self._analyze(stueck):
+                # Ein Segment traegt fuer sich PII -> kein Artefakt.
+                return False
+        return True
 
     async def _mask_arguments(
         self, raw: Any, masker: Masker, requested_level: Any, approved: bool
