@@ -384,6 +384,13 @@ _COMMON_VALIDATED = {
     "user_id": "identifier",
     "success_callback": "identifier_list",
     "failure_callback": "identifier_list",
+    # Verbindungs-Keys, die der Proxy legitim selbst setzt und die den
+    # Provider byte-identisch erreichen muessen -- deshalb eng validiert
+    # statt geblockt (gleiche Logik wie tool_call_id auf Message-Ebene).
+    # ``api_version`` landet auf Azure im Query-String der URL: ohne dieses
+    # enge Muster ist das eine Parameter-Injection in die Provider-URL.
+    "api_version": "api_version",
+    "api_key": "credential",
 }
 
 
@@ -471,11 +478,40 @@ PAYLOAD_ROUTES = {
 # ``data``, BEVOR der Guardrail-Hook laeuft. Sie duerfen deshalb nicht als
 # "unbekanntes Client-Feld" blocken -- sonst blockt jeder echte Request.
 #
-# KRITERIUM (geschaerft nach dem zweiten Security-Gate). Ein Key darf hier
-# nur stehen, wenn er den Provider auf KEINEM Weg erreicht -- nicht im Body,
-# nicht als HTTP-Header, nicht ueber Verbindungs-Konfiguration.
+# KRITERIUM (zweimal geschaerft, jeweils nach einem Security-Gate). Ein Key
+# darf hier nur stehen, wenn BEIDES gilt:
 #
-# Die erste Fassung dieser Liste prueft nur die erste Bedingung: "steht in
+#   (a) Er erreicht den Provider auf KEINEM Weg -- nicht im Body, nicht als
+#       HTTP-Header, nicht in der URL bzw. deren Query-String, nicht ueber
+#       Verbindungs-Konfiguration. Und das ist GEMESSEN, nicht angenommen.
+#   (b) Er bestimmt nicht, WOHIN die Anfrage geht, MIT WESSEN Zugangsdaten
+#       oder OB sie ueberhaupt hinausgeht. Diese Frage ist schaerfer als
+#       (a): ``api_base`` traegt selbst keine PII und leitet trotzdem den
+#       kompletten Verkehr auf einen fremden Server um.
+#
+# Die URL kam erst im dritten Gate dazu -- und der Fehler lag in der
+# MESSMETHODE, nicht in einem einzelnen Key: geprueft wurden Header und Body,
+# die URL stand nicht auf der Liste. ``api_version`` geht auf Azure genau
+# dort hinaus, als Query-Parameter
+# (``?api-version=2024-02-01&…``). Gegen ``openai`` ist derselbe Key dicht.
+#
+# DARAUS FOLGT, und das ist wichtiger als jeder Einzelfund:
+#   * Die Messung ist PROVIDER-ABHAENGIG. Was gegen einen Provider-Handler
+#     dicht ist, muss es gegen einen anderen nicht sein. Gemessen wird
+#     deshalb gegen mehrere, mindestens openai und azure.
+#   * Ein FEHLER in der Messung ist kein Freibrief. Laeuft der Aufruf nicht
+#     durch oder kommt kein Request an, lautet das Ergebnis NICHT GEMESSEN --
+#     und ein nicht gemessener Key gehoert nicht auf diese Liste. Genau so
+#     waere ``model_list`` beinahe durchgerutscht (Verbindungsfehler), und
+#     genau so ist ``mock_response`` hier herausgeflogen.
+#   * Eine Messung ist nur so gut wie ihre WERTFORM. Ein Marker in der
+#     falschen Struktur misst nichts. Deshalb bekommt jeder Key eine Form,
+#     die er real annehmen kann.
+#   * Die Messliste wird gegen DIESE Konstante abgeglichen, nicht von Hand
+#     gefuehrt. Sechs Keys waren nie gemessen worden, weil sie in der
+#     Messliste schlicht fehlten -- darunter ``api_base``.
+#
+# Die erste Fassung dieser Liste prueft nur eine Teilbedingung: "steht in
 # ``litellm.types.utils.all_litellm_params``, wird also von
 # ``get_non_default_completion_params`` (utils.py, Funktionsdefinition) aus
 # den Provider-Parametern gefiltert". Das ist NOTWENDIG, aber nicht
@@ -525,16 +561,11 @@ PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     "max_retries",
     "stream_timeout",
     "request_timeout",
-    "api_key",
-    "api_base",
-    "api_version",
     # Routing-/Betriebsschalter, die litellm selbst auswertet.
     "base_model",
-    "custom_llm_provider",
     "model_info",
     "fallbacks",
     "context_window_fallback_dict",
-    "mock_response",
     "guardrails",
     "enable_json_schema_validation",
     "shared_session",
@@ -569,6 +600,21 @@ PAYLOAD_FIELDS_TRANSPORT_CHANNELS = frozenset({
     # die landen ebenfalls auf der Leitung. Ein Client hat an der
     # Routing-Konfiguration ohnehin nichts zu suchen.
     "model_list",
+    # --- Dritte Runde: die URL und die Verbindung selbst -------------------
+    # ``api_version`` landet auf Azure im QUERY-STRING der Provider-URL.
+    # Gegen openai ist derselbe Key dicht -- deshalb wird provider-
+    # uebergreifend gemessen. Er blockt nicht, sondern wird eng VALIDIERT:
+    # der Proxy setzt ihn selbst aus dem Query-String eines Azure-Clients,
+    # und er muss den Provider byte-identisch erreichen.
+    "api_version",
+    # ``api_key`` geht als ``authorization``-Header hinaus. Ebenfalls eng
+    # validiert statt geblockt: Pass-Through-Auth ist ein legitimes Setup.
+    "api_key",
+    # ``api_base`` traegt selbst keine PII -- er bestimmt das ZIEL. Gemessen
+    # mit einem zweiten Mitschnitt-Server: ein client-gesetzter api_base
+    # leitet die komplette Anfrage dorthin um. Der Proxy setzt ihn nie
+    # selbst, also blockt er.
+    "api_base",
 })
 
 
@@ -598,6 +644,15 @@ KNOWN_UNSUPPORTED_PAYLOAD_FIELDS = frozenset({
     # Routing-/Verbindungs-Konfiguration: die Deployment-Eintraege tragen
     # eigene extra_headers und gehen damit auf die Leitung.
     "model_list",
+    # Bestimmt das ZIEL der Anfrage. Gemessen: leitet den kompletten Verkehr
+    # auf einen fremden Server um. Der Proxy setzt ihn nie selbst.
+    "api_base",
+    # Waehlt den Provider-Handler und damit, ob ueberhaupt eine URL mit
+    # Query-Parametern gebaut wird. Der Proxy setzt ihn nie selbst.
+    "custom_llm_provider",
+    # Unterdrueckt den echten Aufruf -- dadurch NICHT messbar. Ungemessen
+    # darf nach dem Kriterium oben nicht passieren.
+    "mock_response",
     "extra_body",
     "deployment_id",
     "include_server_side_tool_invocations",
@@ -704,7 +759,29 @@ def _payload_expect_stream_options(value: Any, field: str) -> None:
             _payload_form_error(f"{field}.{key}", schalter, "true/false")
 
 
+#: Azure-API-Versionen sind Datumsstempel, optional mit Vorschau-Suffix.
+#: Bewusst ohne ``&`` und ``=``: genau damit haengt man einen zweiten
+#: Query-Parameter an die Provider-URL an.
+API_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(-preview)?")
+
+#: Zugangsdaten sind zusammenhaengende Tokens ohne Leerzeichen und ohne
+#: Zeilenumbrueche. Ein Freitext passt hier nicht hinein.
+CREDENTIAL_PATTERN = re.compile(r"[A-Za-z0-9_.:/+=-]{1,512}")
+
+
+def _payload_expect_api_version(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not API_VERSION_PATTERN.fullmatch(value):
+        _payload_form_error(field, value, "Datumsstempel wie 2024-02-01")
+
+
+def _payload_expect_credential(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not CREDENTIAL_PATTERN.fullmatch(value):
+        _payload_form_error(field, value, "Zugangs-Token ohne Leerzeichen")
+
+
 _PAYLOAD_VALIDATORS = {
+    "api_version": _payload_expect_api_version,
+    "credential": _payload_expect_credential,
     "bool": _payload_expect_bool,
     "int": _payload_expect_int,
     "number": _payload_expect_number,

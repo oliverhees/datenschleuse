@@ -819,12 +819,30 @@ class TestTransportEnvelope(_HookCase):
         self.assertIn("model_list", str(exc))
 
     def test_transportkanaele_stehen_auf_keiner_passier_liste(self):
-        """Das eigentliche Kriterium, geschaerft: 'erreicht den Provider auf
-        KEINEM Weg' -- Body, HTTP-Header oder Verbindungs-Konfiguration."""
+        """Das eigentliche Kriterium: 'erreicht den Provider auf KEINEM Weg'
+        -- Body, HTTP-Header, URL/Query-String oder Verbindungs-Konfiguration.
+
+        Ein Transportkanal darf nie UNGEPRUEFT passieren. Erlaubt sind genau
+        zwei Behandlungen: blocken, oder eng validieren, wenn der Wert den
+        Provider byte-identisch erreichen muss (api_version, api_key) --
+        dieselbe Logik wie bei tool_call_id auf Message-Ebene.
+        """
         for feld in dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS:
             with self.subTest(feld=feld):
-                self.assertNotIn(feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE)
-                self.assertIn(feld, dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS)
+                self.assertNotIn(
+                    feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE,
+                    f"{feld} erreicht den Provider und darf nicht ungeprueft "
+                    "passieren",
+                )
+                geblockt = feld in dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS
+                validiert = any(
+                    feld in route.validated
+                    for route in (dg.CHAT_PAYLOAD_ROUTE, dg.TEXT_PAYLOAD_ROUTE)
+                )
+                self.assertTrue(
+                    geblockt or validiert,
+                    f"{feld} ist weder geblockt noch validiert",
+                )
 
     def test_extra_headers_und_headers_werden_gleich_behandelt(self):
         """Derselbe Kanal, zwei Namen -- sie duerfen nie auseinanderlaufen."""
@@ -997,11 +1015,64 @@ class TestInfrastructureClaimHoldsAtRuntime(unittest.TestCase):
         self.assertIn("headers", erfuellen_altes_kriterium)
         self.assertNotIn("extra_headers", set(all_litellm_params))
 
-    def test_jeder_transportkanal_blockt(self):
+    def test_jeder_transportkanal_ist_geblockt_oder_validiert(self):
+        """Nie ungeprueft. Blocken oder eng validieren -- nichts dazwischen."""
         for feld in dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS:
             with self.subTest(feld=feld):
-                self.assertIn(feld, dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS)
                 self.assertNotIn(feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE)
+                geblockt = feld in dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS
+                validiert = any(
+                    feld in route.validated
+                    for route in (dg.CHAT_PAYLOAD_ROUTE, dg.TEXT_PAYLOAD_ROUTE)
+                )
+                self.assertTrue(geblockt or validiert)
+
+
+# ===========================================================================
+# Mess-Abdeckung -- der strukturelle Fix fuer die Ursache dieser Runde
+# ===========================================================================
+class TestMeasurementCoverage(unittest.TestCase):
+    """Sechs Keys der Passier-Liste waren NIE gemessen worden -- darunter
+    ``api_base``. Nicht weil die Messung schlecht war, sondern weil die
+    Messliste von Hand gefuehrt wurde und von der Konstante abgedriftet ist.
+
+    Dieser Test macht das unmoeglich: wer einen Key auf die Passier-Liste
+    setzt, ohne ihn zu messen und hier einzutragen, bekommt einen roten Test.
+    Der Eintrag ist damit eine bewusste Handlung mit Beleg -- genau das, was
+    die Baseline unter "einen Beleg, keine Vermutung" verlangt.
+    """
+
+    #: Gemessen gegen litellm 1.97.0 mit dem Verfahren aus
+    #: docs/foundation/security-baseline.md: mitschneidender Provider-Server,
+    #: ein echter completion()-Aufruf pro Key, geprueft werden URL inklusive
+    #: Query-String, HTTP-Header UND Body -- gegen openai, azure und
+    #: anthropic. Ergebnis fuer jeden Key hier: erreicht den Provider nicht.
+    GEMESSEN_DICHT = frozenset({
+        "metadata", "proxy_server_request", "secret_fields",
+        "litellm_metadata", "litellm_session_id", "litellm_trace_id",
+        "litellm_call_id", "litellm_logging_obj", "litellm_disabled_callbacks",
+        "allowed_model_region", "cache", "caching", "ttl", "tags",
+        "num_retries", "max_retries", "stream_timeout", "request_timeout",
+        "base_model", "model_info", "fallbacks",
+        "context_window_fallback_dict", "guardrails",
+        "enable_json_schema_validation", "shared_session", "no-log",
+        "turn_off_message_logging", "preset_cache_key", "id",
+    })
+
+    def test_jeder_key_der_passier_liste_ist_gemessen(self):
+        ungemessen = sorted(dg.PAYLOAD_FIELDS_INFRASTRUCTURE - self.GEMESSEN_DICHT)
+        self.assertEqual(
+            ungemessen, [],
+            "Diese Keys passieren ungeprueft, ohne dass gemessen wurde, ob "
+            f"sie den Provider erreichen: {ungemessen}. Erst messen "
+            "(Verfahren siehe security-baseline.md), dann eintragen.",
+        )
+
+    def test_kein_gemessener_kanal_gilt_als_dicht(self):
+        kollision = sorted(
+            self.GEMESSEN_DICHT & dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS
+        )
+        self.assertEqual(kollision, [], f"widerspruechlich gefuehrt: {kollision}")
 
 
 # ===========================================================================

