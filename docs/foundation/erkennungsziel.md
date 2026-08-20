@@ -37,19 +37,28 @@ ihres Autors, nicht das System.**
 
 ### 1.2 Messung nach Erweiterung des Korpus
 
-Korpus erweitert auf 79 Cases: 26 gemessene Negativ-Fälle (ASCII-Umschrift,
+Korpus erweitert auf 82 Cases: 26 gemessene Negativ-Fälle (ASCII-Umschrift,
 deutsche Schema-Schlüssel, Fachbegriffe) plus 8 Positiv-Kontrollen mit echten
-Nachnamen in ASCII-Umschrift.
+Nachnamen in ASCII-Umschrift, dazu drei Positiv-Kontrollen aus dem
+Security-Audit (zweizeiliges Label-Wert-Paar, „Nachname, Vorname").
 
-| Kennzahl | vorher (45 Cases) | erweitert (79 Cases) | mit Stoppwortliste |
+| Kennzahl | vorher (45 Cases) | erweitert (82 Cases) | mit Stoppwortliste |
 |---|---|---|---|
-| Recall (`must_detect`) | 100,0 % (43/43) | 100,0 % (51/51) | **100,0 % (51/51)** |
-| Precision | 100,0 % | 66,2 % | **96,2 %** |
-| False Positives | 0 | 26 | **2** |
-| Störquote | (nicht erhoben) | 81,2 % (26/32) | **6,2 % (2/32)** |
+| Recall (`must_detect`) | 100,0 % (43/43) | 100,0 % (54/54) | **100,0 % (54/54)** |
+| Precision | 100,0 % | 66,2 % | **81,8 %** |
+| False Positives | 0 | 26 | **12** |
+| Störquote | (nicht erhoben) | 81,2 % (26/32) | **37,5 % (12/32)** |
 
 Die mittlere Spalte ist die ehrliche Ausgangslage: **vier von fünf PII-freien
 Texten wurden gestört.**
+
+> **Revision nach Security-Audit.** Eine frühere Fassung dieses Dokuments wies
+> hier 96,2 % Precision und 6,2 % Störquote aus. Diese Zahlen waren unbrauchbar:
+> Sie wurden durch Stoppwort-Einträge erzeugt, die auch **echte Namen**
+> unterdrückten — vier von acht Recall-Kontrollnamen gingen im Klartext durch
+> (Details in [ADR-0002](../adr/0002-nicht-pii-wortliste.md)). Der Rückbau auf
+> das sicher Belegbare kostet 15 Prozentpunkte Precision. Die schlechtere Zahl
+> ist die richtige.
 
 ### 1.3 Warum zusätzlich die Störquote
 
@@ -107,8 +116,15 @@ Deshalb braucht das Ziel zwei Zahlen, nicht eine.
 | **Precision** (aus Negativ-Fällen) | **≥ 90 %** | V1 blockierend |
 | Recall bei `known_gap` | keine Vorgabe | nur berichtet |
 
-**Aktueller Stand gegen dieses Ziel:** Recall 100 %, Precision 96,2 %,
-Störquote 6,2 % — alle vier Gates erfüllt.
+**Aktueller Stand gegen dieses Ziel:** Recall 100 %, Precision 81,8 %,
+Störquote 37,5 % — **zwei Gates verfehlt** (Precision, Störquote).
+
+Das ist beabsichtigt so ausgewiesen. Die Verfehlung hat genau eine Ursache:
+DATENSCHLE-70 (ASCII-umschriebene Wörter) ist über den `allow_list`-Mechanismus
+nicht lösbar, weil dieser nur den Span-Text sieht und Fehlalarm wie echter Name
+denselben Span erzeugen. Solange der kontextsensitive Recognizer fehlt, bleibt
+das Gate rot. Ein Absenken des Ziels wäre die Reaktion, vor der Abschnitt 3
+ausdrücklich warnt.
 
 ### Begründung der einzelnen Werte
 
@@ -181,34 +197,54 @@ Die Liste liegt in `presidio/de-stopwords.yml`. Sie steht dort und nicht in
 
 ### 4.2 Warum die Liste keinen Recall kostet
 
-`allow_list` vergleicht gegen den **vollständigen** erkannten Span, nicht gegen
-einzelne Tokens darin. Jedes Muster ist mit `^...$` verankert und unterdrückt
-deshalb nur, wenn der ganze Span exakt das Stoppwort ist. Sobald der NER den
-Span auf Namenskontext verbreitert, greift die Unterdrückung nicht mehr:
+`allow_list` vergleicht gegen den **vollständigen** erkannten Span. Jedes Muster
+ist mit `\A...\z` verankert und unterdrückt deshalb nur, wenn der ganze Span
+exakt das Stoppwort ist.
+
+**Warum `\A...\z` und nicht `^...$`:** Der Analyzer defaultet `regex_flags` auf
+`DOTALL|MULTILINE|IGNORECASE`. Unter `MULTILINE` matchen `^`/`$` an jedem
+Zeilenumbruch **innerhalb** des Spans — sie sind dann Zeilen-Anker, kein
+Vollspan-Anker:
 
 ```
-"Frau Menge und Herr Mueller melden sich."
-  ohne Liste : PERSON 'Frau Menge', PERSON 'Herr Mueller'
-  mit  Liste : PERSON 'Frau Menge', PERSON 'Herr Mueller'   (unverändert)
+Span "Zahlungsart\nLoewenstein"
+  mit ^zahlungsart$   : Treffer -> ganzer Span weg, Nachname verloren
+  mit \Azahlungsart\z : kein Treffer -> PERSON 'Loewenstein' bleibt
 ```
 
-Diese Eigenschaft wird von `test/test_de_stopwords.py` maschinell erzwungen —
-ein unverankerter Eintrag lässt den Test fehlschlagen. Sie ist damit keine
-Absichtserklärung, sondern eine geprüfte Invariante.
+Genau daran ist die erste Fassung gescheitert (Security-Finding F1). Zusätzlich
+wird `regex_flags: 0` explizit gesendet, statt den Server-Default zu erben.
 
-### 4.3 Bewusst nicht behoben
+`test/test_de_stopwords.py` erzwingt beides maschinell und baut den Matcher
+dafür exakt so nach, wie der Analyzer ihn konstruiert — gejoint mit `|`, geprüft
+mit `search`, mit den tatsächlich gesendeten Flags. Der frühere Test prüfte pro
+Muster mit `fullmatch` ohne Flags und konnte den Defekt deshalb nicht finden.
 
-Zwei gemessene Fehlalarme bleiben stehen — `spaeter` und `fasse`. Beide sind
-zugleich mögliche deutsche Nachnamen, und `allow_list` sieht nur den Span-Text,
-keinen Kontext. Gemessen: Mit diesen Termen auf der Liste verschwindet **beides**
-— der Fehlalarm *und* der echte Name (`"Herr Spaeter"`, `"Herr Fasse"`). Anders
-als bei `Frau Menge` verbreitert der NER den Span hier nicht, die Verankerung
-schützt also nicht.
+### 4.3 Bewusst nicht behoben — DATENSCHLE-70 vollständig
+
+Zwölf gemessene Fehlalarme bleiben stehen. Sie sind über `allow_list`
+**grundsätzlich nicht** behebbar, nicht nur „noch nicht":
+
+Der Mechanismus vergleicht ausschließlich den Span-Text. Fehlalarm und echter
+Name erzeugen aber denselben Span:
+
+```
+"Aendere keinen einzigen Wert."  -> PERSON 'Aendere'   (Fehlalarm)
+"Herr Aendere ruft an."          -> PERSON 'Aendere'   (Name)
+```
+
+Für den Matcher sind beide identisch — jede Unterdrückung trifft beide. Das
+betrifft alle ASCII- und Umlaut-Verbformen sowie `spaeter`, `fasse`, `fuege`,
+`menge` und `rueckruf`. Bei `fuege` (Füge) und `menge` (Menge) ist die
+Namenslesart nicht theoretisch, sondern ein realer deutscher Familienname; beide
+standen in der ersten Fassung auf der Liste und haben dort messbar Namen
+unterdrückt.
 
 Da das Anti-Kriterium „kein Recall-Verlust" nicht verhandelbar ist, bleiben
-diese beiden Fälle offen. Der erforderliche Mechanismus wäre ein
-kontextsensitiver Recognizer im Analyzer-Image, der Anrede- und Titel-Kontext
-(`Herr`, `Frau`, `Dr.`) auswertet, bevor er unterdrückt. Eigenes Work Item.
+diese Fälle offen. Der erforderliche Mechanismus wäre ein kontextsensitiver
+Recognizer im Analyzer-Image, der Anrede- und Titel-Kontext (`Herr`, `Frau`,
+`Dr.`) auswertet, bevor er unterdrückt. Eigenes Work Item — und der einzige
+Weg, das Störquoten-Gate zu erreichen.
 
 ### 4.4 Spannung zur Security-Baseline — offen benannt
 
@@ -393,12 +429,19 @@ Guardrail **nicht** still ohne Liste weiterlaufen — das wäre eine unbemerkte
 Verhaltensänderung. Richtig ist ein Startfehler; im laufenden Betrieb existiert
 die Datei entweder oder der Dienst startet gar nicht erst. Die Fehlerbehandlung
 kann `test/corpus-benchmark.py::load_stopwords` übernehmen, die genau diese
-Prüfungen bereits implementiert (Mapping vorhanden, `allow_list_match == regex`,
-`entries` nicht leer, jedes `pattern` ein String).
+Prüfungen bereits implementiert: Mapping vorhanden, `allow_list_match == regex`,
+`regex_flags` vorhanden und ganzzahlig, `entries` nicht leer, jedes `pattern`
+ein String — und das **gejointe** Muster kompiliert. Der letzte Punkt ist kein
+Detail: einzeln kompilierbare Muster können gejoint scheitern.
 
 ### Abnahme
 
 Nach der Umsetzung ist die Wirkung end-to-end zu belegen, nicht nur im
-Analyzer: Ein Tool-Call mit `args["bestellnummer"]` muss den Guardrail mit
-**unverändertem Schlüssel** verlassen, während ein Wert wie `Herr Mueller` im
-selben Aufruf weiterhin maskiert wird.
+Analyzer:
+
+1. Ein Tool-Call mit `args["bestellnummer"]` muss den Guardrail mit
+   **unverändertem Schlüssel** verlassen, während ein Wert wie `Herr Mueller`
+   im selben Aufruf weiterhin maskiert wird.
+2. Ein zweizeiliges Label-Wert-Paar (`"Zahlungsart\nLoewenstein"`) muss den
+   Nachnamen weiterhin maskieren. Das ist der Regressionsnachweis für F1.
+3. `"Menge, Andreas"` muss beide Namen maskieren — Regressionsnachweis für F2.

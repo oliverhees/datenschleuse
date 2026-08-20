@@ -105,11 +105,21 @@ Benchmark 100 % Precision, während DATENSCHLE-70 und -71 in Produktion sichtbar
 falsch lagen. Jeder Fall der zweiten Gruppe ist ein **gemessener** Treffer des
 laufenden Analyzers, kein vermuteter.
 
+### Warum `regex_flags` mitgeschickt werden
+
+Ohne den Parameter defaultet der Analyzer auf `DOTALL|MULTILINE|IGNORECASE`.
+Unter `MULTILINE` sind `^`/`$` Zeilen-Anker statt Vollspan-Anker — ein Span wie
+`"Zahlungsart\nLoewenstein"` würde dann komplett unterdrückt, samt echtem
+Nachnamen. Der Benchmark sendet die Flags deshalb explizit aus
+`de-stopwords.yml` und verweigert den Lauf, wenn sie dort fehlen.
+
 ### Positiv-Kontrollen als Anti-Kriterium
 
-`person-004..011` enthalten echte Nachnamen in ASCII-Umschrift (`Mueller`,
+`person-004..014` enthalten echte Nachnamen in ASCII-Umschrift (`Mueller`,
 `Schroeder`, `Weiss`, `Kraemer`, `Baecker`) — also genau die Schreibweise, die
-in den Negativ-Fällen Fehlalarme auslöst. Sie sind die Gegenprobe: Jede
+in den Negativ-Fällen Fehlalarme auslöst. `person-012..014` kamen aus dem
+Security-Audit dazu: zweizeilige Label-Wert-Paare und „Nachname, Vorname", an
+denen die erste Fassung der Stoppwortliste echte Namen verloren hat. Sie sind die Gegenprobe: Jede
 Maßnahme gegen ASCII-Fehlalarme MUSS diese Namen weiterhin erkennen. Fällt hier
 einer aus, ist die Maßnahme falsch — unabhängig davon, wie gut die
 Precision-Zahl danach aussieht.
@@ -149,7 +159,7 @@ Der Runner druckt einen Report auf stdout und schreibt zusätzlich
 | `--output` | `test/corpus/benchmark-results.json` | Alternativer Report-Pfad. |
 | `--timeout` / `PRESIDIO_TIMEOUT_SECONDS` | `30` | Netzwerk-Timeout pro Request (s). |
 | `--overlap-ratio` / `OVERLAP_MIN_RATIO` | `0.5` | Mindest-Overlap-Anteil für einen Treffer. |
-| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt — exakt wie in Produktion. |
+| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei — exakt wie in Produktion. |
 | `--no-stopwords` | _(Default)_ | Explizit ohne Liste messen; markiert den Vorher-Lauf in Skripten sichtbar. |
 
 ## Exit-Codes

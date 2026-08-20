@@ -1,5 +1,9 @@
 # ADR-0002: Nicht-PII-Wortliste zur Unterdrückung von NER-Fehlalarmen
 
+> Revidiert nach Security-Audit gegen `32e648c` (zwei High). Die Begründung
+> der Ausnahme wurde dabei korrigiert — siehe „Korrektur nach dem
+> Security-Audit" weiter unten.
+
 - Status: akzeptiert
 - Datum: 2026-08-20
 - Work Item: [DATENSCHLE-5] (Defekte: DATENSCHLE-70, DATENSCHLE-71)
@@ -51,10 +55,33 @@ Erkennungsseite. Dort ist eine Lücke gefährlich: ein nicht gelistetes Muster
 bedeutet ungeschützte Daten beim Modell. Fail-closed ist dort richtig.
 
 Diese Liste bestimmt, **was kein Name ist** — sie unterdrückt Fehltreffer.
-Eine Lücke bedeutet hier: ein Fehlalarm bleibt bestehen. Der Fehlermodus zeigt
-nach außen in Richtung Überschutz, nicht Unterschutz. Eine unvollständige
-Nicht-PII-Liste kann per Konstruktion kein PII durchlassen — sie kann nur
-Fehlalarme erzeugen. Und genau die werden gemessen.
+Eine Lücke bedeutet hier: ein Fehlalarm bleibt bestehen.
+
+### Korrektur nach dem Security-Audit: Lücke ist nicht das Risiko, Übermaß ist es
+
+Die erste Fassung dieses ADR argumentierte, eine unvollständige Nicht-PII-Liste
+könne „per Konstruktion kein PII durchlassen". Das stimmt für
+**Unvollständigkeit** — und ging genau deshalb am eigentlichen Risiko vorbei.
+
+Das Risiko dieser Listenart ist nicht die Lücke, sondern das **Übermaß**: ein
+Eintrag, der mehr trifft als gemeint. Dort kehrt sich die Richtung des
+Fehlermodus um — die Maßnahme entfernt dann **echte** Treffer, und der
+Fehlermodus zeigt nach innen in Richtung Unterschutz.
+
+Genau das ist passiert (F1/F2, gegen `32e648c` gemessen): Vier von acht
+Recall-Kontrollnamen gingen im Klartext durch, weil `^...$` unter dem
+Analyzer-Default `MULTILINE` ein Zeilen-Anker ist und nicht der Vollspan-Anker,
+für den er gehalten wurde.
+
+**Daraus folgt die eigentliche Begründung der Ausnahme:** Sie trägt nicht, weil
+Lücken harmlos sind — sie trägt nur, solange das **Übermaß** mechanisch
+begrenzt ist. Die Verankerung ist deshalb nicht eine Kontrolle unter vieren,
+sondern **die** Kontrolle, die die Ausnahme überhaupt rechtfertigt. Fällt sie,
+fällt die Ausnahme.
+
+Konsequenz für jede künftige Erweiterung: Ein neuer Eintrag ist erst dann
+zulässig, wenn maschinell belegt ist, dass er **nichts außer sich selbst**
+trifft — nicht, wenn plausibel erscheint, dass er kein Name ist.
 
 Zur Abgrenzung: `recognizers-config.yml` enthält bereits `deny_list`-Recognizer
 (DE_GENDER, DE_BERUF). Die sind das **Gegenteil** dieser Liste — sie fügen
@@ -66,20 +93,27 @@ verwechselt werden.
 Alle erzwungen von `test/test_de_stopwords.py` — nicht dokumentiert, sondern
 maschinell.
 
-### 1. Verankerung (`^...$`) — die tragende Kontrolle
+### 1. Absolute Verankerung (`\A...\z`) — die tragende Kontrolle
 
-`allow_list` vergleicht gegen den **vollständigen** erkannten Span, nicht gegen
-einzelne Tokens darin. Ein verankertes Muster unterdrückt deshalb nur, wenn der
-ganze Span exakt das Stoppwort ist. Sobald das Modell den Span auf
-Namenskontext verbreitert, greift die Unterdrückung nicht mehr:
+`allow_list` vergleicht gegen den **vollständigen** erkannten Span. Ein
+verankertes Muster darf deshalb nur greifen, wenn der ganze Span exakt das
+Stoppwort ist.
+
+**Entscheidend ist die Wahl der Anker.** `^` und `$` leisten das *nicht*: Der
+Analyzer defaultet `regex_flags` auf `DOTALL|MULTILINE|IGNORECASE`, und unter
+`MULTILINE` matchen `^`/`$` an jedem Zeilenumbruch **innerhalb** des Spans.
+`\A` und `\z` verankern dagegen immer am String-Anfang bzw. -Ende, unabhängig
+von den Flags.
 
 ```
-"Frau Menge und Herr Mueller melden sich."     ('menge' steht auf der Liste)
-  ohne Liste : PERSON 'Frau Menge', PERSON 'Herr Mueller'
-  mit  Liste : PERSON 'Frau Menge', PERSON 'Herr Mueller'   (unverändert)
+Span "Zahlungsart\nLoewenstein"   ('zahlungsart' steht auf der Liste)
+  mit ^zahlungsart$ : Treffer -> ganzer Span unterdrückt, Nachname verloren
+  mit \Azahlungsart\z : kein Treffer -> PERSON 'Loewenstein' bleibt
 ```
 
-Ein unverankerter Eintrag lässt den Test fehlschlagen.
+Zusätzlich wird `regex_flags: 0` **explizit gesendet**, statt den Server-Default
+zu erben. Der Test erzwingt beides und lässt jeden Eintrag mit `^`/`$` oder
+ohne explizite Flags fehlschlagen.
 
 ### 2. Messbeleg-Pflicht
 
@@ -93,12 +127,20 @@ fehl. Die Liste kann so nicht „auf Verdacht" wachsen.
 Kein Muster darf einen der elf Kontroll-Namensspans vollständig matchen —
 geprüft ohne laufenden Container, zusätzlich integrativ gegen den Analyzer.
 
-### 4. Aufnahmekriterium
+### 4. Aufnahmekriterium — maschinell statt geschätzt
 
-Nur Terme ohne plausible Eigennamen-Lesart: flektierte Verbformen (`aendere`,
-`pruefe`) und Fachkomposita (`bestellnummer`, `rechnungsbetrag`). Der einzige
-Grenzfall `menge` ist bewusst **nur kleingeschrieben** aufgenommen, weil
-Schema-Schlüssel klein und Nachnamen groß geschrieben sind.
+Die erste Fassung verlangte „keine plausible Eigennamen-Lesart". Das war eine
+Einschätzung, keine Kontrolle — und sie hat `menge` und `fuege` durchgelassen,
+beides reale deutsche Familiennamen (Menge, Füge).
+
+Jetzt gilt eine prüfbare Regel: Ein Term darf nur auf die Liste, wenn er ein
+Kompositum mit einem Kopf-Morphem aus dieser Menge ist —
+`nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster`. Keines
+davon kommt als barer deutscher Familienname vor. Der Test erzwingt es.
+
+Die Regel ist bewusst eng. Sie schließt Terme aus, die sehr wahrscheinlich
+harmlos wären (`aendere`, `pruefe`) — aber „sehr wahrscheinlich" ist genau die
+Kategorie, die das Audit ausgehebelt hat.
 
 ## Alternativen
 
@@ -128,16 +170,26 @@ eigenen Datei.
 ## Konsequenzen
 
 **Leichter:** Präzision ist jetzt messbar und wird durchgesetzt. Gemessen über
-79 Korpus-Fälle:
+82 Korpus-Fälle:
 
-| | vorher | nachher |
+| | ohne Liste | mit Liste |
 |---|---|---|
-| Recall (`must_detect`) | 100,0 % (TP=51 FN=0) | **100,0 % (TP=51 FN=0)** |
-| Precision | 66,2 % | **96,2 %** |
-| False Positives | 26 | **2** |
-| Störquote | 81,2 % (26/32) | **6,2 % (2/32)** |
+| Recall (`must_detect`) | 100,0 % (TP=54 FN=0) | **100,0 % (TP=54 FN=0)** |
+| Precision | 66,2 % | **81,8 %** |
+| False Positives | 26 | **12** |
+| Störquote | 81,2 % (26/32) | **37,5 % (12/32)** |
 
-Kein Recall-Verlust; alle 20 Entity-Typen bleiben bei 100 % Recall.
+Kein Recall-Verlust; alle Entity-Typen bleiben bei 100 % Recall — inklusive der
+drei Layouts aus dem Audit (zweizeiliges Label-Wert-Paar, „Nachname, Vorname").
+
+**Das Gate ist damit rot** (Precision < 90 %, Störquote > 10 %). Das Ziel wird
+nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
+
+> Historische Einordnung: Eine frühere Fassung dieser Liste meldete 96,2 %
+> Precision und 6,2 % Störquote. Diese Zahlen waren **unbrauchbar** — sie
+> wurden durch Einträge erkauft, die echte Namen unterdrückten (F1/F2). Der
+> Rückbau kostet 15 Prozentpunkte Precision und gewinnt die Korrektheit
+> zurück.
 
 **Schwerer / zu beachten für künftige Work Items:**
 
@@ -148,14 +200,22 @@ Kein Recall-Verlust; alle 20 Entity-Typen bleiben bei 100 % Recall.
    Verifikationsdurchlauf fail-closed **jeden** Request, der einen
    Stoppwort-Term enthält.
 
-2. **Zwei Fehlalarme bleiben bewusst stehen.** `spaeter` und `fasse` sind
-   zugleich mögliche Nachnamen; `allow_list` sieht nur den Span-Text, keinen
-   Kontext. Gemessen: mit ihnen auf der Liste verschwindet auch
-   `"Herr Spaeter"` / `"Herr Fasse"`. Braucht einen kontextsensitiven
-   Recognizer im Analyzer-Image — eigenes Work Item.
+2. **DATENSCHLE-70 bleibt offen und ist über diesen Mechanismus nicht
+   lösbar.** `allow_list` sieht ausschließlich den Span-Text, keinen Kontext —
+   Fehlalarm und echter Name erzeugen denselben Span:
+   `"Aendere keinen einzigen Wert."` → `PERSON 'Aendere'` und
+   `"Herr Aendere ruft an."` → `PERSON 'Aendere'`. Jede Unterdrückung trifft
+   beide. Das betrifft alle ASCII-Verbformen sowie `spaeter`, `fasse`,
+   `fuege`, `menge`, `rueckruf`. Braucht einen kontextsensitiven Recognizer
+   im Analyzer-Image — eigenes Work Item.
 
 3. **Jede Erweiterung ist eine Einzelentscheidung.** Neue Einträge nur mit
-   Messbeleg, Verankerung und Vorher/Nachher-Lauf beider Seiten.
+   Messbeleg, absoluter Verankerung, erlaubtem Kopf-Morphem und Vorher/
+   Nachher-Lauf beider Seiten.
+
+5. **Der Aufrufer muss `regex_flags` senden.** Wer sie wegläßt, erbt
+   `DOTALL|MULTILINE|IGNORECASE` und schaltet F1 und F2 wieder scharf. Das gilt
+   für den Guardrail genauso wie für den Benchmark.
 
 4. **Der Korpus ist zu leicht.** Er meldet 100 % PERSON-Recall, während das
    Modell selbst 92,0 % angibt. Die 100 % sind kein Qualitätsbeleg, sondern
