@@ -387,9 +387,13 @@ Behauptungs-Kultur, gegen die dieses Dokument gerichtet ist.
 # Rohzustand des Analyzers
 python3 test/corpus-benchmark.py
 
-# Mit Stoppwortliste — der ERREICHBARE Zustand (nicht der ausgelieferte:
-# der Guardrail sendet die Liste noch nicht, siehe "Offen" unten und §7)
+# Mit Stoppwortliste — seit DATENSCHLE-82 zugleich der AUSGELIEFERTE Zustand:
+# der Guardrail sendet dieselbe Liste an jeden /analyze-Aufruf (§7)
 python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
+
+# Gegenprobe durch den ausgelieferten Pfad selbst
+# (async_pre_call_hook -> _analyze -> echter Analyzer), gleiche Auswertung:
+PYTHONPATH=litellm python3 test/guardrail-benchmark.py
 ```
 
 **Gate maschinell prüfen** (Exit-Code 1 bei Verfehlung):
@@ -411,29 +415,55 @@ gelaufen, 2 = technischer Fehler); der bisherige Vertrag bleibt unverändert.
 nachher, beide Seiten vergleichen. Eine Precision-Verbesserung ohne
 Recall-Nachweis ist kein Ergebnis, sondern eine unbelegte Behauptung.
 
-**Offen:** Der Guardrail sendet die `allow_list` noch nicht. Solange das nicht
-umgesetzt ist, wirkt die Liste im Benchmark, aber nicht in Produktion. Die
-Zahlen dieses Dokuments beschreiben insoweit den erreichbaren, nicht den
-ausgelieferten Zustand.
+**Erledigt (DATENSCHLE-82):** Der Guardrail sendet die `allow_list`. Die Zahlen
+dieses Dokuments beschreiben damit den ausgelieferten Zustand — und das ist
+gemessen, nicht gefolgert:
+
+| Lauf (gleicher Analyzer, gleicher Korpus, gleiche Auswertung) | Störquote | Precision | Recall |
+|---|---|---|---|
+| Benchmark **ohne** Liste | 81,2 % (26/32) | 67,5 % | 100 % |
+| Benchmark **mit** Liste | 37,5 % (12/32) | 81,8 % | 100 % |
+| **Guardrail-Pfad** (`async_pre_call_hook`) | **37,5 % (12/32)** | **81,8 %** | **100 %** |
+
+Der Guardrail-Lauf ist mit dem Benchmark-Lauf mit Liste bis auf die
+Zeitstempel-Felder deckungsgleich — die Verbesserung kommt vollständig im
+laufenden Dienst an, und sie kostet keinen Recall.
+
+Abgesichert durch
+`test/test_de_stopwords.py::WirkungImAusgelieferbenPfad`, das beide Seiten im
+selben Lauf misst und vergleicht, statt eine Zahl fest zu verdrahten. Bei
+entfernter Verdrahtung fällt der Guardrail-Pfad nachweislich auf 81,2 %
+zurück, und der Test wird rot.
 
 ---
 
-## 7. Erforderliche Guardrail-Änderung (Spezifikation, nicht umgesetzt)
+## 7. Guardrail-Anschluss (umgesetzt, DATENSCHLE-82)
 
-`litellm/datenschleuse_guardrail.py` lag außerhalb des Scopes dieses Work Items
-(parallele Lanes). Die nötige Änderung ist klein und an genau einer Stelle:
+Dieser Abschnitt war die Spezifikation der Änderung und ist jetzt ihre
+Beschreibung. Er bleibt in dieser Ausführlichkeit stehen, weil die Begründungen
+darunter — Konsistenz beider Durchläufe, fail-closed, Betreiber-Vorrang — die
+Bedingungen sind, unter denen die Verdrahtung richtig bleibt.
 
-**Ort:** `DatenschleuseGuardrail._analyze()` — die einzige Stelle, an der
-`POST /analyze` aufgerufen wird.
+**Ort:** `DatenschleuseGuardrail._presidio_analyze()` — die einzige Stelle, an
+der `POST /analyze` aufgerufen wird; sie liegt unter `_analyze()`, das beide
+Durchläufe bedient.
 
-**Änderung:** Die Muster aus `presidio/de-stopwords.yml` einmalig im
-Konstruktor laden und in `_analyze` an das Payload hängen:
+**Umsetzung:** `litellm/de_stopwords.py` lädt die Muster aus
+`presidio/de-stopwords.yml` einmalig im Konstruktor; `_presidio_analyze` hängt
+sie an jedes Payload:
 
 ```python
-if self.allow_list:                       # aus de-stopwords.yml, entries[].pattern
-    payload["allow_list"] = self.allow_list
-    payload["allow_list_match"] = "regex"
+if len(self.allow_list):
+    payload.update(self.allow_list.as_payload())
+# -> allow_list, allow_list_match="regex", regex_flags
 ```
+
+`regex_flags` gehört untrennbar dazu und wird **explizit** gesendet: Ohne den
+Wert defaultet die REST-Schicht auf `DOTALL|MULTILINE|IGNORECASE`, und unter
+`MULTILINE` werden aus den `\A...\z`-Vollspan-Ankern Zeilen-Anker — genau
+daran ist die erste Fassung der Liste gescheitert (Security-Finding F1).
+Nachgewiesen am tatsächlich gebauten Payload, nicht am Kommentar:
+`allow_list_match="regex"`, `regex_flags=0`, 14 Muster.
 
 ### Der kritische Punkt: Konsistenz mit dem Verifikationsdurchlauf
 
@@ -486,20 +516,32 @@ ausdrückliche Anweisung nicht still überstimmen — sonst nimmt ein
 Datenschleuse-Update lautlos Schutz weg, den der Betreiber selbst konfiguriert
 hat, und niemand erfährt davon.
 
-Heute ist das folgenlos: die Liste ist nicht verdrahtet, und es gibt keine
-Überschneidung. Beides ist ein Zustand, kein Mechanismus. Deshalb gilt:
+Seit die Liste verdrahtet ist, ist das nicht mehr folgenlos. Dass es heute
+keine Überschneidung gibt, ist ein Zustand, kein Mechanismus — und Betreiber
+pflegen ihre `recognizers-config.yml` selbst. Deshalb gilt, beides umgesetzt:
 
-1. **Datenebene, ab sofort erzwungen.** Kein Muster aus `de-stopwords.yml` darf
-   einen `deny_list`-Term aus `recognizers-config.yml` matchen —
+1. **Datenebene, erzwungen.** Kein Muster aus `de-stopwords.yml` darf einen
+   `deny_list`-Term aus `recognizers-config.yml` matchen —
    `test/test_de_stopwords.py::BetreiberVorrang`, ohne laufenden Container und
    ohne Guardrail-Anschluss.
-2. **Laufzeit, Bedingung für diese Änderung.** Der Guardrail muss die
-   Überschneidung beim Laden prüfen und bei einem Treffer **fail-closed
-   starten** — analog zur fehlerhaften Datei unten. Ausdrücklich **nicht**
-   zulässig: den kollidierenden Eintrag still überspringen oder ihn wirken
-   lassen. Ein Betreiber, der beides konfiguriert hat, hat einen Konflikt, den
-   nur er auflösen kann; der Dienst darf ihn nicht für ihn entscheiden.
+2. **Laufzeit, erzwungen.** `de_stopwords.load()` prüft die Überschneidung beim
+   Laden und wirft bei einem Treffer `StopwordConfigError`; der Guardrail fängt
+   sie nicht, der Dienst startet also nicht. Die Meldung nennt den
+   kollidierenden Term — auflösen kann den Konflikt nur der Betreiber.
+   Ausdrücklich **nicht** zulässig und bewusst nicht implementiert: den
+   kollidierenden Eintrag still überspringen oder ihn wirken lassen.
+   Nachgewiesen von `test/test_de_stopwords.py::BetreiberVorrangZurLaufzeit`.
+   Ist die Betreiber-Config nicht lesbar, ist der Vorrang nicht prüfbar — und
+   „nicht prüfbar" heißt nicht „dann eben nicht prüfen": auch das ist ein
+   Startfehler.
 3. Der zugehörige Test ist Teil der Änderung, nicht ein Nachtrag.
+
+`BetreiberVorrangZurLaufzeit` hängt an **keinem** Schalter mehr. Vorher schaltete
+sich die Klasse über einen Substring-Test auf den Quelltext des Guardrails
+selbst scharf; das war in beide Richtungen falsch — ein Rückbau der Verdrahtung
+hätte den Test nicht rot gemacht, sondern stillschweigend abgeschaltet, und ein
+bloßer Kommentar mit dem Wort hätte ihn scharf geschaltet. Geprüft wird jetzt
+das tatsächlich gebaute `/analyze`-Payload.
 
 ### Abnahme
 
