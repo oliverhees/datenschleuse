@@ -722,6 +722,56 @@ class TestBlockDiagnostics(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(eins, drei, "anderer Feldname -> anderer Fingerprint")
 
 
+class TestFingerprintIstNichtZurueckrechenbar(unittest.TestCase):
+    """Der Fingerprint darf den Feldnamen nicht wieder preisgeben.
+
+    Ein FELDNAME ist Client-Inhalt -- genau deshalb gibt es den Fingerprint.
+    Er war aber ein ungesalzenes SHA-256 ueber ``repr(name)``, gekuerzt auf
+    8 Hex-Zeichen. Feldnamen sind extrem entropiearm ("Max Mustermann", eine
+    IBAN, eine E-Mail-Adresse): wer einen Fingerprint aus einem Log sieht,
+    rechnet ihn per Woerterbuch-/Brute-Force zurueck. Damit gab der Schutz
+    genau das preis, wovor er schuetzen sollte.
+
+    Gegenmittel: ein prozesslokaler Zufalls-Salt. Die zugesagte Eigenschaft
+    bleibt -- derselbe Name ergibt im selben Prozess denselben Wert, ein
+    blockendes Feld laesst sich also weiter eingrenzen.
+    """
+
+    def test_fingerprint_ist_nicht_das_nackte_sha256(self):
+        """DER Befund: ohne Salt kann jeder den Wert nachrechnen."""
+        import hashlib
+
+        name = "Max Mustermann"
+        ungesalzen = hashlib.sha256(repr(name).encode("utf-8")).hexdigest()[:8]
+        self.assertNotEqual(
+            dg._field_fingerprint(name),
+            ungesalzen,
+            "Der Fingerprint ist ohne Geheimnis nachrechenbar -- ein "
+            "Woerterbuchangriff holt den Feldnamen zurueck.",
+        )
+
+    def test_stabil_innerhalb_des_prozesses(self):
+        """Die zugesagte Eigenschaft darf der Salt nicht kaputtmachen."""
+        self.assertEqual(
+            dg._field_fingerprint("kunde"), dg._field_fingerprint("kunde")
+        )
+        self.assertNotEqual(
+            dg._field_fingerprint("kunde"), dg._field_fingerprint("konto")
+        )
+
+    def test_form_bleibt_kurz_und_loggbar(self):
+        wert = dg._field_fingerprint("kunde")
+        self.assertEqual(len(wert), 8)
+        self.assertTrue(all(c in "0123456789abcdef" for c in wert))
+
+    def test_nicht_string_namen_funktionieren_weiterhin(self):
+        """Ein Feldname muss kein String sein -- der Fingerprint darf daran
+        nicht scheitern, sonst waere der Fehlerpfad selbst ein Absturz."""
+        for name in (42, None, ("a", "b")):
+            with self.subTest(name=name):
+                self.assertEqual(len(dg._field_fingerprint(name)), 8)
+
+
 # ===========================================================================
 # 8. Streaming: reasoning_content (QA-Audit zu fb3ae87)
 # ===========================================================================

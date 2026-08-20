@@ -1483,6 +1483,14 @@ def reidentify_full(text: str, mapping: Dict[str, str]) -> str:
     return text
 
 
+#: Prozesslokaler Salt fuer den Feldnamen-Fingerprint.
+#:
+#: Einmal beim Start erzeugt, verlaesst den Prozess nie. Bewusst NICHT
+#: konfigurierbar: ein Salt, den man setzen kann, wird irgendwo eingecheckt
+#: -- und ein bekannter Salt ist kein Salt.
+_FIELD_FINGERPRINT_SALT = os.urandom(16)
+
+
 def _field_fingerprint(name: Any) -> str:
     """Stabiler, wertfreier Kurz-Fingerprint eines Feldnamens.
 
@@ -1492,8 +1500,19 @@ def _field_fingerprint(name: Any) -> str:
     zurueckgegeben. Der Fingerprint gibt dem Betreiber trotzdem eine
     Handhabe: derselbe Feldname ergibt denselben Wert, damit laesst sich ein
     blockendes Feld eingrenzen, ohne dass sein Inhalt das System verlaesst.
+
+    GESALZEN, und das ist nicht kosmetisch: ohne Salt war dies ein nacktes
+    SHA-256 ueber ``repr(name)``, gekuerzt auf 8 Hex-Zeichen. Feldnamen sind
+    extrem entropiearm -- ein Name, eine IBAN, eine E-Mail-Adresse. Wer
+    einen Fingerprint aus einem Log sieht, rechnet ihn per Woerterbuch
+    zurueck. Der Schutz gab damit genau das preis, wovor er schuetzen
+    sollte. Mit prozesslokalem Salt bleibt die zugesagte Eigenschaft
+    (gleicher Name -> gleicher Wert innerhalb eines Prozesses) erhalten,
+    die Rueckrechnung nicht.
     """
-    return hashlib.sha256(repr(name).encode("utf-8")).hexdigest()[:8]
+    return hashlib.blake2s(
+        repr(name).encode("utf-8"), key=_FIELD_FINGERPRINT_SALT, digest_size=4
+    ).hexdigest()
 
 
 class _UnsafeJson(Exception):
