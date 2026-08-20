@@ -283,12 +283,18 @@ verlorengehen (Gesetz 7). In Schwere-Reihenfolge:
    mit Opt-in, oder eine Env-Schranke als erste Hook-Zeile.
    `settings.json` mitzuliefern bleibt funktional richtig — sonst hätte
    ein Klon Skripte ohne Auslöser.
-2. **`client-liaison.md` beschreibt das Beschönigen von Security-Befunden**
-   („nicht *5 Critical Findings*, sondern *Härtungsbedarf*"). In einem
-   öffentlichen Repo für ein DSGVO-/PII-Produkt ist das die denkbar
-   ungünstigste Selbstbeschreibung. Rollendefinitionen zu ändern ist eine
-   Prozessänderung nach Gesetz 13 — entscheidet Oliver, nicht der
-   versionierende Commit.
+2. **`client-liaison.md` beschrieb das Beschönigen von Security-Befunden**
+   — ✅ **behoben, bevor irgendetwas öffentlich wurde.** Die Rolle wies an,
+   „nicht *5 Critical Findings*" zu sagen, sondern *Härtungsbedarf*. In
+   einem öffentlichen Repo für ein DSGVO-/PII-Produkt wäre das die denkbar
+   ungünstigste Selbstbeschreibung gewesen. Rollendefinitionen zu ändern
+   ist eine Prozessänderung nach Gesetz 13, also hat **Oliver entschieden**:
+   Die Sprachregelung ist ersatzlos gestrichen. An ihrer Stelle steht jetzt
+   eine Zeile — „Nichts wird beschönigt: Befunde beim Namen nennen, Zahlen
+   mit Beleg, offene Punkte offen." Bewusst keine neue Sprachregelung mit
+   umgekehrtem Vorzeichen: Das Zwei-Kanal-Prinzip bleibt richtig, Kunden
+   brauchen keine Rohdaten. Was wegfällt, ist die Anweisung, die
+   **Größenordnung** zu verschleiern.
 3. **Ohne `jq` fallen `guard.sh`, `track.sh` und `stop-gate.sh` lautlos
    OFFEN** (im Review mit leerem PATH nachgestellt: ein Force-Push auf
    `main` wird durchgelassen). `jq` ist nirgends als Voraussetzung
