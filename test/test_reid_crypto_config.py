@@ -94,8 +94,14 @@ class TestSchluesselWirdAmStartGeprueft(_Basis):
         scheinbar zufaelliges Fehlschlagen der Re-Identifikation."""
         umgebung = {k: v for k, v in os.environ.items() if k != dg.REID_KEY_ENV}
         with mock.patch.dict(os.environ, umgebung, clear=True):
+            # force=True, weil configure_reid_crypto() seit Runde 4 (F6)
+            # IDEMPOTENT ist: ein bereits erzeugter Prozess-Schluessel bleibt
+            # stehen, und dann gibt es auch nichts zu warnen. Gemessen werden
+            # soll hier der Moment der ERZEUGUNG -- und genau den erzwingt
+            # force. Ohne ihn haenge der Test davon ab, ob vorher schon ein
+            # anderer Test einen Schluessel angelegt hat.
             with self.assertLogs(dg._LOG, level="WARNING") as protokoll:
-                dg.configure_reid_crypto()
+                dg.configure_reid_crypto(force=True)
             self.assertTrue(
                 any(dg.REID_KEY_ENV in z for z in protokoll.output),
                 f"Warnung nennt die Variable nicht: {protokoll.output}",

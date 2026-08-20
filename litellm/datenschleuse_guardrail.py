@@ -194,7 +194,7 @@ _REID_FERNET = None
 _REID_TTL = None
 
 
-def configure_reid_crypto():
+def configure_reid_crypto(force: bool = False):
     """Prueft und uebernimmt die Re-Id-Krypto-Konfiguration. Beim START.
 
     Wird vom Konstruktor der Guardrail aufgerufen -- ein fehlerhafter
@@ -248,6 +248,9 @@ def configure_reid_crypto():
 
     roh_key = os.getenv(REID_KEY_ENV)
     if roh_key:
+        # Ein KONFIGURIERTER Schluessel wird bei jedem Aufruf uebernommen.
+        # Hier ist die Umgebung die Quelle der Wahrheit, nicht der
+        # Prozesszustand -- ein geaenderter Key SOLL wirken.
         try:
             _REID_FERNET = Fernet(
                 roh_key.encode() if isinstance(roh_key, str) else roh_key
@@ -259,6 +262,22 @@ def configure_reid_crypto():
                 '"from cryptography.fernet import Fernet; '
                 'print(Fernet.generate_key().decode())"'
             ) from exc
+    elif _REID_FERNET is not None and not force:
+        # IDEMPOTENZ (Runde 4, F6). Hier stand ein bedingungsloses
+        # Neu-Erzeugen -- und die Funktion laeuft im KONSTRUKTOR. Jede
+        # weitere Instanziierung warf damit den bisherigen Schluessel weg.
+        #
+        # Gemessen: nach der zweiten Instanz oeffnet ein Siegel der ersten
+        # nicht mehr. Im Betrieb heisst das: wird zwischen pre_call und
+        # post_call eine zweite Guardrail gebaut (Config-Reload, ein
+        # zweiter Guardrail-Eintrag, ein Health-Check-Pfad), schlaegt die
+        # Re-Identifikation fehl -- der Nutzer bekommt Platzhalter statt
+        # Klartext, und NIEMAND sieht einen Fehler.
+        #
+        # ``force=True`` ist der ausdrueckliche Weg zu einer frischen
+        # Krypto-Umgebung; ohne ihn koennte man den Prozess-Schluessel in
+        # Tests nie zuruecksetzen.
+        return
     else:
         _REID_FERNET = Fernet(Fernet.generate_key())
         _LOG.warning(
@@ -342,9 +361,27 @@ def open_reid_map(value: Any, ttl_seconds: Optional[int] = None) -> Dict[str, st
         roh = _reid_fernet().decrypt(value.encode("ascii"), ttl=ttl)
         geoeffnet = json.loads(roh.decode("utf-8"))
     except Exception:
-        # Bewusst ohne Wert im Log (Gesetz 5) und ohne Grund-Detail: die
+        # Die TATSACHE wird geloggt, der GRUND nicht (Runde 4, Anschlussfrage
+        # zu F6). Der Unterschied ist der ganze Punkt:
+        #
+        # Die Fehlerrichtung ist sicher -- ohne Mapping behaelt die Antwort
+        # ihre Platzhalter. Aber "sicher" ist nicht dasselbe wie "bemerkt":
+        # der Kunde sieht <PERSON_0> statt seines Namens, und der Betreiber
+        # sah bisher GAR NICHTS. Ein Ausfall, den niemand bemerkt, wird
+        # nicht behoben -- er wird zur Eigenschaft.
+        #
+        # Weiterhin NICHT geloggt: der Wert (Gesetz 5) und die Ursache. Die
         # Unterscheidung "abgelaufen" vs. "gefaelscht" hilft nur einem
-        # Angreifer.
+        # Angreifer -- dem Betreiber genuegt zu wissen, DASS es passiert,
+        # und wie oft.
+        _LOG.warning(
+            "Ein versiegeltes Re-Id-Mapping liess sich nicht oeffnen -- die "
+            "Antwort behaelt ihre Platzhalter (sichere Fehlerrichtung). "
+            "Haeufige Ursachen: TTL abgelaufen (%s), mehrere Worker ohne "
+            "gemeinsamen %s, oder ein Neustart zwischen Anfrage und Antwort. "
+            "Grund und Wert werden bewusst nicht genannt.",
+            REID_TTL_ENV, REID_KEY_ENV,
+        )
         return {}
     if not isinstance(geoeffnet, dict):
         return {}
