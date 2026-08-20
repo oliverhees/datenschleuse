@@ -655,6 +655,20 @@ PAYLOAD_MAX_LIST_ITEMS = 32
 #: -- 400 Eintraege waren gemessen 9,7 s. Das ist kein Speicher-, sondern
 #: ein Verfuegbarkeitsproblem: so lange steht der Worker fuer niemanden
 #: sonst zur Verfuegung.
+#:
+#: DIE ZAHL 64 IST GESETZT, NICHT GEMESSEN -- und dieser Satz steht hier,
+#: weil die Zeilen darueber das Gegenteil nahelegen. GEMESSEN ist der
+#: EFFEKT (400 Eintraege = 9,7 s Worker-Zeit), NICHT die Grenze. Die 64 ist
+#: eine Annahme darueber, was ein realer Prompt-Batch braucht.
+#:
+#: Eine Zahl ohne Beleg erkennt man als Setzung. Eine Zahl direkt NEBEN
+#: einer echten Messung liest sich, als sei sie daraus gefolgt -- und
+#: niemand prueft nach, weil ja offensichtlich gemessen wurde. Genau davor
+#: warnt dieser Absatz.
+#:
+#: Wer die Zahl aendern will, braucht Betriebsdaten: der erste Betreiber,
+#: der an die Grenze stoesst, liefert sie. Bis dahin bewusst konservativ
+#: und bewusst aenderbar.
 PAYLOAD_MAX_PROMPT_ITEMS = 64
 
 #: Obergrenze fuer die Anzahl Messages eines Chat-Requests.
@@ -668,7 +682,18 @@ PAYLOAD_MAX_PROMPT_ITEMS = 64
 #:
 #: Deutlich hoeher als das prompt-Limit, weil die Wertform eine andere ist:
 #: ein Prompt-Batch von 64 ist gross, ein Gespraechsverlauf von 64 Turns ist
-#: normal. 256 Turns sind auch fuer lange Agenten-Sitzungen reichlich.
+#: normal.
+#:
+#: DIE ZAHL 256 IST GESETZT, NICHT GEMESSEN -- und sie ist sogar noch
+#: schwaecher belegt als die 64: sie ist aus dem FORMUNTERSCHIED zum
+#: prompt-Limit abgeleitet ("ein Gespraech darf laenger sein als ein
+#: Batch"), nicht aus einer Messung. Es gibt keinen Datenpunkt, der sagt,
+#: dass 256 die richtige Stelle ist -- nur das Argument, dass sie ueber 64
+#: liegen muss.
+#:
+#: Wer sie aendern will, braucht Betriebsdaten: der erste Betreiber, der an
+#: die Grenze stoesst, liefert sie. Bis dahin bewusst konservativ und
+#: bewusst aenderbar.
 PAYLOAD_MAX_MESSAGES = 256
 
 # --- 1) Gemeinsame Steuerparameter beider Routen ---------------------------
