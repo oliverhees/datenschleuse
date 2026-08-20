@@ -59,12 +59,19 @@ services:
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
-      # Bild-Parts: mit gesetztem Redactor schwaerzt die Guardrail sie, ohne
-      # lehnt sie sie ab. Nie stillschweigend durchlassen -- 'pass' waere ein
-      # bewusster Verzicht und muss ueber DATENSCHLEUSE_IMAGE_POLICY gesetzt
-      # werden (siehe Guardrail-Konstruktor).
+      # Bild-Parts: Standard ist seit DATENSCHLE-83 'block' -- der
+      # Image-Redactor ist nicht mehr Teil des Standard-Stacks (ADR-0003:
+      # er trug 42 der 61 kritischen CVE-Befunde). Wer Bilder verarbeiten
+      # will, startet ihn bewusst mit `--profile images` und setzt
+      # DATENSCHLEUSE_IMAGE_POLICY=redact.
+      #
+      # Die URL bleibt gesetzt: sie ist nur eine Adresse, kein Startzwang.
+      # Damit funktioniert `--profile images` + POLICY=redact ohne weitere
+      # Aenderung, und der Konstruktor-Guard ("redact ohne URL = Blindflug")
+      # greift weiterhin. Nie stillschweigend durchlassen -- 'pass' ist eine
+      # bewusste Luecke und muss explizit gesetzt werden.
       - PRESIDIO_IMAGE_REDACTOR_API_BASE=http://presidio-image-redactor:3000
-      - DATENSCHLEUSE_IMAGE_POLICY=${DATENSCHLEUSE_IMAGE_POLICY:-redact}
+      - DATENSCHLEUSE_IMAGE_POLICY=${DATENSCHLEUSE_IMAGE_POLICY:-block}
       # Fernet-Schluessel fuer den verschluesselten Quasi-Identifier-State.
       # PFLICHT sobald der QI-Layer aktiv ist (qi_risk_preset in config.yaml
       # gesetzt) -- der :?-Guard bricht `docker compose up` hart ab, wenn die
@@ -88,8 +95,13 @@ services:
         condition: service_started
       presidio-anonymizer:
         condition: service_started
-      presidio-image-redactor:
-        condition: service_started
+      # KEIN depends_on auf presidio-image-redactor (DATENSCHLE-83): der Dienst
+      # liegt hinter dem Profil `images` und existiert im Standardstart gar
+      # nicht. Ein depends_on auf einen Dienst ausserhalb des aktiven Profils
+      # laesst `docker compose up` mit einem Fehler abbrechen -- der ganze
+      # Stack kaeme nicht hoch. Die Reihenfolge ist hier ohnehin unkritisch:
+      # der Guardrail spricht den Redactor erst zur Request-Zeit an (HTTP),
+      # nicht beim Start, und faellt bei Nichterreichbarkeit fail-closed.
       datenschleuse-db:
         condition: service_healthy
     networks:
@@ -167,14 +179,29 @@ services:
   # ``type == "text"``-Parts. Ohne diesen Dienst lehnt die Guardrail Bilder ab
   # (image_policy-Default 'block'), statt sie still durchzulassen.
   #
-  # OPTIONAL: Wer keine Bilder schickt, kann den Dienst weglassen; dann bleibt
-  # es beim Block. 'pass' (altes Durchlassen) muss man bewusst konfigurieren.
+  # NICHT IM STANDARDSTART (DATENSCHLE-83, ADR-0003): Der Dienst liegt hinter
+  # dem Compose-Profil `images` und kommt bei `docker compose up` NICHT hoch.
+  # Grund ist gemessen, nicht geschaetzt -- er allein trug 42 der 61
+  # kritischen und 3847 der rund 4344 Gesamtbefunde des ausgelieferten Stacks
+  # (CI-Run 32253275837). Ein Proxy fuer LLM-TEXTanfragen soll dieses
+  # CVE-Profil nicht ungefragt mitliefern.
+  #
+  # EINSCHALTEN (bewusste Entscheidung, uebernimmt das CVE-Profil):
+  #   docker compose --profile images up -d
+  #   # zusaetzlich in der .env: DATENSCHLEUSE_IMAGE_POLICY=redact
+  # Ohne beides bleibt es beim Block -- die Guardrail-Meldung nennt diesen
+  # Befehl ausdruecklich, damit niemand in einer Sackgasse steht.
   #
   # GRENZE: Der Dienst bringt seine eigene Presidio-Instanz samt Tesseract-OCR
   # mit und kennt die deutschen Custom-Recognizer aus
   # presidio/recognizers-config.yml NICHT -- im Bild greifen nur die
-  # eingebauten Typen. Siehe _redact_image() im Guardrail.
+  # eingebauten Typen. Siehe _redact_image() im Guardrail. Er laeuft zudem
+  # ueber einen EIGENEN Codepfad, den unser Fuzz-Test nicht erfasst; die
+  # Schutzaussagen des Projekts gelten dort also nur eingeschraenkt.
   presidio-image-redactor:
+    # Optionaler Dienst -- siehe Block oben. Ein Service mit `profiles` startet
+    # ausschliesslich, wenn das Profil explizit angefordert wird.
+    profiles: ["images"]
     # Versions-Tag PLUS Digest (DATENSCHLE-59), siehe datenschleuse-db.
     # Achtung: der Image-Redactor hat eine EIGENE Versionsreihe (0.0.x), nicht
     # die 2.2.x der uebrigen Presidio-Dienste. `latest` == `0.0.58` am

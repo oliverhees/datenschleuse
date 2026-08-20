@@ -348,5 +348,101 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
         )
 
 
+# ===========================================================================
+# 4. DATENSCHLE-83: Block-Meldung muss den Betreiber handlungsfaehig machen
+# ===========================================================================
+class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
+    """Seit DATENSCHLE-83 ist der Image-Redactor NICHT mehr Teil des
+    Standard-Stacks: er bringt allein 42 der 61 kritischen und 3847 der rund
+    4344 Gesamtbefunde mit (CI-Run 32253275837). Er liegt jetzt hinter dem
+    Compose-Profil ``images``, und die Standard-Policy ist ``block``.
+
+    Damit veraendert sich, wer die Block-Meldung liest: vorher war ein Block
+    die Ausnahme fuer bewusst reduzierte Setups, jetzt ist er der Normalfall
+    fuer jeden, der ``docker compose up`` tippt und ein Bild schickt. Die
+    Meldung muss deshalb nicht nur sagen DASS blockiert wurde, sondern WIE der
+    Betreiber den Dienst einschaltet -- sonst steht er vor einer Sackgasse.
+
+    Bewusst NICHT getestet: der genaue Wortlaut. Verankert ist der Befehl, den
+    der Betreiber abtippen koennen muss."""
+
+    ACTIVATION_HINT = "docker compose --profile images up"
+
+    async def test_block_message_names_the_activation_command(self):
+        """Die Meldung muss den konkreten Befehl enthalten, mit dem der
+        Image-Redactor nachgestartet wird."""
+        guard = dg.DatenschleuseGuardrail(image_policy="block")
+        data = {"messages": [image_message()]}
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        message = str(ctx.exception)
+        self.assertIn(
+            self.ACTIVATION_HINT, message,
+            "Block-Meldung muss den Aktivierungsbefehl nennen, sonst ist der "
+            "Betreiber in einer Sackgasse",
+        )
+
+    async def test_block_message_names_the_policy_switch(self):
+        """Neben dem Profil muss auch die Stellschraube auftauchen, sonst
+        sucht der Betreiber den Schalter im Compose-File statt in der .env."""
+        guard = dg.DatenschleuseGuardrail(image_policy="block")
+        data = {"messages": [image_message()]}
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        message = str(ctx.exception)
+        self.assertIn("DATENSCHLEUSE_IMAGE_POLICY", message)
+
+    async def test_block_message_leaks_no_image_content(self):
+        """Fail-closed heisst auch: die Meldung selbst darf nie Bilddaten
+        transportieren. Sie geht an den Client zurueck und potenziell ins Log."""
+        guard = dg.DatenschleuseGuardrail(image_policy="block")
+        secret = b"streng-geheimes-bild-mit-pii"
+        data = {"messages": [image_message(url=data_url(raw=secret))]}
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        message = str(ctx.exception)
+        self.assertNotIn("streng-geheimes", message)
+        self.assertNotIn(
+            base64.b64encode(secret).decode("ascii"), message,
+            "Base64-Payload darf nie in der Fehlermeldung landen",
+        )
+
+    async def test_block_stays_fail_closed_not_a_crash(self):
+        """Blocken heisst kontrolliert ablehnen. Ein anderer Fehlertyp (z.B.
+        AttributeError/ValueError) waere ein Absturz und wuerde je nach
+        LiteLLM-Version zu einer 500 statt einer sauberen Ablehnung fuehren."""
+        guard = dg.DatenschleuseGuardrail(image_policy="block")
+        data = {"messages": [image_message()]}
+        try:
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        except dg.DatenschleuseBlocked:
+            pass
+        except Exception as exc:  # pragma: no cover - Diagnose bei Regression
+            self.fail(f"Block muss DatenschleuseBlocked sein, war {type(exc).__name__}: {exc}")
+        else:
+            self.fail("Bild-Part bei image_policy='block' muss abgelehnt werden")
+
+    async def test_block_is_the_default_without_redactor_service(self):
+        """Regressionsanker fuer die Compose-Aenderung: ohne konfigurierten
+        Redactor-Dienst -- also im neuen Standard-Stack -- ist 'block' die
+        Policy, und sie fuehrt zu einer handlungsleitenden Meldung."""
+        guard = dg.DatenschleuseGuardrail()
+        self.assertEqual(guard.image_policy, "block")
+        data = {"messages": [image_message()]}
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        self.assertIn(self.ACTIVATION_HINT, str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
