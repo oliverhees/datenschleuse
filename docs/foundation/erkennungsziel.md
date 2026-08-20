@@ -260,3 +260,56 @@ Recall-Nachweis ist kein Ergebnis, sondern eine unbelegte Behauptung.
 umgesetzt ist, wirkt die Liste im Benchmark, aber nicht in Produktion. Die
 Zahlen dieses Dokuments beschreiben insoweit den erreichbaren, nicht den
 ausgelieferten Zustand.
+
+---
+
+## 7. Erforderliche Guardrail-Änderung (Spezifikation, nicht umgesetzt)
+
+`litellm/datenschleuse_guardrail.py` lag außerhalb des Scopes dieses Work Items
+(parallele Lanes). Die nötige Änderung ist klein und an genau einer Stelle:
+
+**Ort:** `DatenschleuseGuardrail._analyze()` — die einzige Stelle, an der
+`POST /analyze` aufgerufen wird.
+
+**Änderung:** Die Muster aus `presidio/de-stopwords.yml` einmalig im
+Konstruktor laden und in `_analyze` an das Payload hängen:
+
+```python
+if self.allow_list:                       # aus de-stopwords.yml, entries[].pattern
+    payload["allow_list"] = self.allow_list
+    payload["allow_list_match"] = "regex"
+```
+
+### Der kritische Punkt: Konsistenz mit dem Verifikationsdurchlauf
+
+`_analyze` bedient **beide** Durchläufe — die Maskierung *und* den
+Verifikationsdurchlauf, der das fertig maskierte Ergebnis erneut prüft und bei
+Restbefund fail-closed blockiert.
+
+Genau deshalb muss die `allow_list` **in `_analyze` selbst** gesetzt werden und
+nicht an den einzelnen Aufrufstellen. Würde sie nur im Maskierungspfad wirken,
+entstünde ein garantierter Selbstblock: Die Maskierung überspringt
+`bestellnummer`, der Verifikationsdurchlauf findet es im maskierten Ergebnis
+weiterhin als `LOCATION` — und blockt jeden Request, der einen der
+Stoppwort-Terme enthält. Aus einem Precision-Fix würde eine Verfügbarkeits-
+Störung.
+
+Beide Durchläufe müssen dieselbe Erkennungskonfiguration sehen. Ein Test, der
+das absichert, gehört zur Änderung.
+
+### Fail-closed-Verhalten beim Laden
+
+Ist `de-stopwords.yml` nicht lesbar oder strukturell fehlerhaft, darf der
+Guardrail **nicht** still ohne Liste weiterlaufen — das wäre eine unbemerkte
+Verhaltensänderung. Richtig ist ein Startfehler; im laufenden Betrieb existiert
+die Datei entweder oder der Dienst startet gar nicht erst. Die Fehlerbehandlung
+kann `test/corpus-benchmark.py::load_stopwords` übernehmen, die genau diese
+Prüfungen bereits implementiert (Mapping vorhanden, `allow_list_match == regex`,
+`entries` nicht leer, jedes `pattern` ein String).
+
+### Abnahme
+
+Nach der Umsetzung ist die Wirkung end-to-end zu belegen, nicht nur im
+Analyzer: Ein Tool-Call mit `args["bestellnummer"]` muss den Guardrail mit
+**unverändertem Schlüssel** verlassen, während ein Wert wie `Herr Mueller` im
+selben Aufruf weiterhin maskiert wird.
