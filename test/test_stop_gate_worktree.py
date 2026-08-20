@@ -29,6 +29,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -66,21 +67,67 @@ IN_CI = os.environ.get("CI", "").strip().lower() not in ("", "0", "false", "no")
 
 
 def hook_verfuegbarkeit(vorhanden, in_ci):
-    """laufen | ueberspringen | fehlschlagen
+    """laufen | ueberspringen | warnen
 
     Die Hooks liegen ausserhalb von Git (.claude/ steht in .gitignore).
     Lokal ist ein Ueberspringen ehrlich: wer die Hooks nicht installiert
-    hat, kann sie nicht pruefen. In CI ist es das Gegenteil von ehrlich --
-    dort faellt die Suite IMMER aus und meldete trotzdem gruen. Ein Test,
-    der gruen meldet, ohne etwas zu pruefen, ist schlimmer als kein Test:
-    er erzeugt Vertrauen ohne Deckung. Genau daran ist schon DATENSCHLE-62
-    haengengeblieben.
+    hat, kann sie nicht pruefen. In CI ist ein wortloses Ueberspringen das
+    Gegenteil von ehrlich -- dort fehlen die Hooks IMMER und die Suite
+    meldete trotzdem gruen. Ein Test, der gruen meldet, ohne etwas zu
+    pruefen, ist schlimmer als kein Test: er erzeugt Vertrauen ohne
+    Deckung. Daran ist schon DATENSCHLE-62 haengengeblieben.
 
-    Deshalb: in CI ohne Hooks wird laut gescheitert, nicht uebersprungen.
+    Warum trotzdem nicht rot? Weil `test` ein erforderlicher Check ist.
+    Ein dauerhaft roter Job blockiert JEDEN PR -- wegen einer Luecke, die
+    laengst bekannt ist. Ein Gate, das an einer bekannten, noch nicht
+    behobenen Luecke scheitert, wird abgeschaltet; dann faengt es auch den
+    Fall nicht mehr, fuer den es da ist. Erst die Voraussetzung schaffen
+    (Hooks versionieren), dann scharf schalten.
+
+    Also: laut warnen, nicht blockieren. Die Faelle in
+    HookVerfuegbarkeitTest bleiben davon unberuehrt -- sie laufen immer.
     """
     if vorhanden:
         return "laufen"
-    return "fehlschlagen" if in_ci else "ueberspringen"
+    return "warnen" if in_ci else "ueberspringen"
+
+
+def warnung_text():
+    """Der Wortlaut der Warnung. Muss Ursache UND Abhilfe nennen."""
+    return (
+        "Die Stop-Gate-Tests haben hier KEINE Deckung: .claude/hooks/ fehlt, "
+        "es wurde nichts geprueft. "
+        "Ursache: .claude/ steht in der .gitignore, die Hooks sind nicht "
+        "versioniert. "
+        "Abhilfe: Hooks an einen getrackten Ort legen, dann laufen diese "
+        "Tests in CI wirklich mit."
+    )
+
+
+_gewarnt = False
+
+
+def warnung_ausgeben():
+    """Einmal pro Lauf, unuebersehbar, auf stderr.
+
+    Ein einzelnes 's' in der Punktzeile uebersieht jeder. Deshalb ein
+    Kasten -- und in GitHub Actions zusaetzlich eine Annotation, die im
+    PR sichtbar wird, ohne den Job rot zu faerben.
+    """
+    global _gewarnt
+    if _gewarnt:
+        return
+    _gewarnt = True
+    rand = "!" * 78
+    print("\n" + rand, file=sys.stderr)
+    print("!! WARNUNG: TESTS OHNE DECKUNG", file=sys.stderr)
+    for zeile in warnung_text().split(". "):
+        if zeile.strip():
+            print("!! " + zeile.strip().rstrip(".") + ".", file=sys.stderr)
+    print(rand + "\n", file=sys.stderr)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print("::warning title=Stop-Gate-Tests ohne Deckung::" + warnung_text(),
+              file=sys.stderr)
 
 
 class HookVerfuegbarkeitTest(unittest.TestCase):
@@ -97,11 +144,19 @@ class HookVerfuegbarkeitTest(unittest.TestCase):
     def test_ohne_hooks_lokal_wird_uebersprungen(self):
         self.assertEqual(hook_verfuegbarkeit(False, False), "ueberspringen")
 
-    def test_ohne_hooks_in_ci_wird_laut_gescheitert(self):
+    def test_ohne_hooks_in_ci_wird_laut_gewarnt(self):
         self.assertEqual(
-            hook_verfuegbarkeit(False, True), "fehlschlagen",
-            "In CI darf die Suite sich nicht stumm ueberspringen und gruen "
-            "melden -- dann prueft sie nichts und niemand merkt es.")
+            hook_verfuegbarkeit(False, True), "warnen",
+            "In CI darf die Suite sich nicht STUMM ueberspringen -- dann "
+            "prueft sie nichts und niemand merkt es.")
+
+    def test_die_warnung_nennt_ursache_und_abhilfe(self):
+        """Eine Warnung ohne Abhilfe wird zur Tapete und dann weggeklickt."""
+        text = warnung_text()
+        self.assertIn("gitignore", text, "Die Ursache fehlt: " + text)
+        self.assertIn("Abhilfe", text, "Die Abhilfe fehlt: " + text)
+        self.assertIn("nichts geprueft", text,
+                      "Die Warnung sagt nicht, dass nichts geprueft wurde: " + text)
 
 # Wortlaut eines echten roten unittest-Laufs aus dieser Codebase. Durch
 # "| tail -40" endet die Pipeline mit Exit 0 — der Kommandostring allein
@@ -235,12 +290,9 @@ class Schmiede:
 class StopGateWorktreeTest(unittest.TestCase):
     def setUp(self):
         lage = hook_verfuegbarkeit(HOOKS_VORHANDEN, IN_CI)
-        if lage == "fehlschlagen":
-            self.fail(
-                ".claude/hooks/ fehlt in CI — diese Suite prueft damit NICHTS. "
-                "Sie darf hier nicht gruen melden. Ursache: .claude/ steht in "
-                "der .gitignore, die Hooks sind nicht versioniert. Abhilfe: "
-                "Hooks an einen getrackten Ort legen.")
+        if lage == "warnen":
+            warnung_ausgeben()
+            self.skipTest(warnung_text())
         if lage == "ueberspringen":
             self.skipTest(".claude/hooks/ nicht vorhanden (nicht im Repo)")
         self.tmp = tempfile.mkdtemp(prefix="stopgate-")
