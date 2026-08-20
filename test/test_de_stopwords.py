@@ -912,5 +912,128 @@ class GuardrailAbnahmeGegenAnalyzer(unittest.IsolatedAsyncioTestCase):
         )
 
 
+@unittest.skipUnless(
+    _ANALYZER_DA,
+    "Presidio-Analyzer nicht erreichbar auf %s." % _ANALYZER_URL,
+)
+class WirkungImAusgelieferbenPfad(unittest.IsolatedAsyncioTestCase):
+    """Die Zahl, wegen der DATENSCHLE-82 ueberhaupt existiert.
+
+    Die Stoerquote 81,2%% -> 37,5%% war bis hierher eine Aussage ueber das
+    MESSWERKZEUG: ``test/corpus-benchmark.py`` haengt die Liste selbst an
+    ``/analyze``, der Proxy tat es nicht. Gemessen wurde damit der erreichbare,
+    nicht der ausgelieferte Zustand.
+
+    Diese Klasse misst beide Seiten im selben Lauf gegen denselben Analyzer und
+    haelt sie aneinander. Sie ist der Grund, warum ein Rueckbau der Verdrahtung
+    nicht mehr unbemerkt bleiben kann: Ohne gesendete Liste faellt der
+    Guardrail auf die Zahl OHNE Liste zurueck, und dann ist hier rot.
+
+    Bewusst nur die Negativ-Faelle: Sie tragen die Stoerquote, und der Lauf
+    bleibt kurz genug fuer die normale Suite.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "corpus_benchmark", os.path.join(_HERE, "corpus-benchmark.py")
+        )
+        modul = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = modul
+        spec.loader.exec_module(modul)
+        cls.cb = modul
+        alle = cls.cb.load_corpus(cls.cb.DEFAULT_CORPUS_PATH)
+        cls.negativ = [c for c in alle if c.is_negative]
+
+    def _stoerquote(self, matches):
+        return self.cb.aggregate(matches, 0.5).stoerquote
+
+    def _direkt(self, allow_list, regex_flags):
+        """Der Benchmark-Weg: Text direkt an ``/analyze``."""
+        import requests
+
+        with requests.Session() as s:
+            return [
+                self.cb.match_case(
+                    c,
+                    self.cb.analyze_text(
+                        s, _ANALYZER_URL, c.text, 30.0, allow_list, regex_flags
+                    ),
+                    0.5,
+                )
+                for c in self.negativ
+            ]
+
+    async def _durch_den_guardrail(self):
+        """Der ausgelieferte Weg: ``async_pre_call_hook`` -> ``_analyze``.
+
+        Abgegriffen wird die ECHTE Rueckgabe von ``_presidio_analyze`` -- kein
+        nachgebautes Payload, sonst pruefte der Test seinen eigenen Nachbau
+        statt den Dienst.
+        """
+        guard = dg.DatenschleuseGuardrail(
+            presidio_analyzer_url=_ANALYZER_URL, image_policy="block"
+        )
+        original = guard._presidio_analyze
+        matches = []
+        for case in self.negativ:
+            gesehen = []
+
+            async def _wrap(text, *a, _c=case, _g=gesehen, **k):
+                res = await original(text, *a, **k)
+                if text == _c.text:
+                    _g.append(list(res))
+                return res
+
+            guard._presidio_analyze = _wrap
+            try:
+                await guard.async_pre_call_hook(
+                    user_api_key_dict=None,
+                    cache=None,
+                    data={"messages": [{"role": "user", "content": case.text}]},
+                    call_type="completion",
+                )
+            finally:
+                guard._presidio_analyze = original
+            self.assertTrue(
+                gesehen,
+                "Der Guardrail hat den Text %r nie unveraendert analysiert -- "
+                "der Test misst dann nicht den ausgelieferten Pfad." % case.text[:40],
+            )
+            matches.append(
+                self.cb.match_case(
+                    c := case,
+                    self.cb.parse_presidio_entities(gesehen[0], context=c.case_id),
+                    0.5,
+                )
+            )
+        return matches
+
+    async def test_die_liste_wirkt_im_ausgelieferten_pfad(self):
+        """Der Kern: der Guardrail erreicht die Zahl MIT Liste, nicht die ohne.
+
+        Beide Vergleichswerte werden im selben Lauf gemessen. Ein fest
+        verdrahtetes 0.375 waere wertlos -- es wuerde bei jeder Korpus- oder
+        Analyzer-Aenderung rot, ohne dass die Verdrahtung etwas dafuer kann.
+        """
+        doc = _load_stopwords()
+        ohne = self._stoerquote(self._direkt(None, 0))
+        mit = self._stoerquote(self._direkt(_patterns(doc), doc.get("regex_flags", 0)))
+        guardrail = self._stoerquote(await self._durch_den_guardrail())
+
+        self.assertLess(
+            mit, ohne, "Die Liste senkt die Stoerquote nicht mehr -- Vorannahme hinfaellig."
+        )
+        self.assertEqual(
+            guardrail,
+            mit,
+            "Der Guardrail erreicht NICHT die Stoerquote mit Liste (%.1f%% statt "
+            "%.1f%%). Genau das war der Zustand vor DATENSCHLE-82: die Liste "
+            "wirkte im Benchmark, der Proxy sendete sie nie. Die veroeffentlichte "
+            "Zahl beschriebe dann wieder den erreichbaren statt den "
+            "ausgelieferten Zustand." % (guardrail * 100, mit * 100),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
