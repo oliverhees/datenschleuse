@@ -139,9 +139,16 @@ pip install -r test/requirements.txt
 # 3. Benchmark laufen lassen — Rohzustand des Analyzers
 python3 test/corpus-benchmark.py
 
-# 4. ... und mit der Nicht-PII-Wortliste, also so wie ausgeliefert wird
+# 4. ... und mit der Nicht-PII-Wortliste: der ERREICHBARE Zustand.
+#    Nicht der ausgelieferte — der Guardrail sendet die Liste noch nicht.
 python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
 ```
+
+> **Welche Zahl beschreibt den heutigen Betrieb?** Die aus Lauf 3 (ohne Liste):
+> Störquote **81,2 %**. Der Lauf mit Liste (37,5 %) beschreibt den Zustand
+> **nach** der in `docs/foundation/erkennungsziel.md` §7 spezifizierten
+> Guardrail-Änderung, die noch nicht umgesetzt ist. Wer die 37,5 % als
+> Betriebszustand liest, liest sie falsch.
 
 **Pflicht bei jeder Recognizer- oder Listen-Änderung:** beide Läufe vorher und
 nachher, beide Seiten vergleichen. Eine Precision-Verbesserung ohne
@@ -159,7 +166,7 @@ Der Runner druckt einen Report auf stdout und schreibt zusätzlich
 | `--output` | `test/corpus/benchmark-results.json` | Alternativer Report-Pfad. |
 | `--timeout` / `PRESIDIO_TIMEOUT_SECONDS` | `30` | Netzwerk-Timeout pro Request (s). |
 | `--overlap-ratio` / `OVERLAP_MIN_RATIO` | `0.5` | Mindest-Overlap-Anteil für einen Treffer. |
-| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei — exakt wie in Produktion. |
+| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei. Misst den **erreichbaren** Zustand — der Guardrail sendet die Liste noch nicht (§7). |
 | `--no-stopwords` | _(Default)_ | Explizit ohne Liste messen; markiert den Vorher-Lauf in Skripten sichtbar. |
 
 ## Exit-Codes

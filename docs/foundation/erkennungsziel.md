@@ -259,22 +259,43 @@ Schutz.
 Das ist eine bewusste, begründete Ausnahme, keine Übersehung. Die Baseline-Regel
 adressiert die Frage, *welche Eingaben überhaupt geprüft werden* — dort ist
 fail-closed richtig, weil eine Lücke ungeprüfte Daten durchlässt. Hier geht es
-um die Frage, *welche geprüften Treffer verworfen werden*. Eine Lücke in dieser
-Liste bedeutet: ein Fehlalarm bleibt bestehen. Der Fehlermodus zeigt also nach
-außen in Richtung Überschutz, nicht Unterschutz.
+um die Frage, *welche geprüften Treffer verworfen werden*. Eine **Lücke** in
+dieser Liste bedeutet nur: ein Fehlalarm bleibt bestehen.
+
+**Das Risiko ist aber nicht die Lücke, sondern das Übermaß** — ein Eintrag, der
+mehr trifft als gemeint. Dort kehrt sich die Richtung um: die Liste entfernt
+dann **echte** Treffer, und der Fehlermodus zeigt nach innen in Richtung
+Unterschutz. Genau das ist im Security-Audit gegen `32e648c` passiert. Die
+Ausnahme trägt deshalb nicht, weil Lücken harmlos sind, sondern nur solange das
+Übermaß mechanisch begrenzt ist. Die ausführliche Begründung steht in
+[ADR-0002](../adr/0002-nicht-pii-wortliste.md), Abschnitt „Korrektur nach dem
+Security-Audit".
 
 Kompensierende Kontrollen, alle testgeprüft:
 
 1. **Messbeleg-Pflicht.** Kein Eintrag ohne `probe`-Text, der den Fehlalarm am
    laufenden Analyzer nachweislich erzeugt. Der Test prüft die Gegenprobe und
    schlägt fehl, wenn ein Eintrag seinen Anlass verloren hat.
-2. **Verankerungs-Pflicht.** `^...$` maschinell erzwungen (siehe 4.2).
+2. **Verankerungs-Pflicht.** `\A...\z` maschinell erzwungen (siehe 4.2); jeder
+   Eintrag mit `^` oder `$` lässt den Test fehlschlagen. Das ist die tragende
+   Kontrolle, nicht eine unter vieren — fällt sie, fällt die Ausnahme.
 3. **Kollisionsprüfung.** Kein Muster darf einen der Kontroll-Namen
    vollständig matchen.
-4. **Aufnahmekriterium.** Nur Terme ohne plausible Eigennamen-Lesart.
-   Der einzige Grenzfall (`menge`) ist bewusst nur kleingeschrieben
-   aufgenommen, weil Schema-Schlüssel klein und Nachnamen groß geschrieben
-   sind.
+4. **Aufnahmekriterium — maschinell, nicht geschätzt.** Ein Term muss ein
+   echtes Kompositum mit einem Kopf-Morphem aus
+   `nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster` sein
+   (der bare Kopf ist gesperrt) **und** die Kontrollen 1 und 3 bestehen.
+   Ausdrücklich **nicht** behauptet: dass diese Köpfe namensfrei wären —
+   `Preis` und `Grund` sind reale deutsche Familiennamen. Die schützende
+   Eigenschaft liegt im zusammengesetzten Term, der einzeln geprüft ist, nicht
+   im Kopf. Details und die Begründung stehen in
+   [ADR-0002](../adr/0002-nicht-pii-wortliste.md).
+
+   `menge` steht **nicht** mehr auf der Liste. Ein früherer Wortlaut hier
+   nannte es einen „bewusst nur kleingeschrieben aufgenommenen" Grenzfall —
+   das ist überholt: `menge` (wie `fuege`) wurde als realer deutscher Nachname
+   **vollständig entfernt**, nachdem der Eintrag messbar echte Namen
+   unterdrückt hatte.
 
 Jede Erweiterung der Liste ist damit eine dokumentierte, gemessene und
 gegengeprüfte Einzelentscheidung — nicht das stille Wachsen einer Denylist.
@@ -358,7 +379,8 @@ Behauptungs-Kultur, gegen die dieses Dokument gerichtet ist.
 # Rohzustand des Analyzers
 python3 test/corpus-benchmark.py
 
-# Mit Stoppwortliste — der Zustand, der ausgeliefert wird
+# Mit Stoppwortliste — der ERREICHBARE Zustand (nicht der ausgelieferte:
+# der Guardrail sendet die Liste noch nicht, siehe "Offen" unten und §7)
 python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
 ```
 
@@ -434,6 +456,43 @@ Prüfungen bereits implementiert: Mapping vorhanden, `allow_list_match == regex`
 ein String — und das **gejointe** Muster kompiliert. Der letzte Punkt ist kein
 Detail: einzeln kompilierbare Muster können gejoint scheitern.
 
+### Bedingung: Vorrang der Betreiber-Konfiguration
+
+**Bindend für die Umsetzung.** Presidios `allow_list` wirkt **nach** der
+Erkennung: Sie entfernt jeden Treffer, dessen Span sie matcht — unabhängig
+davon, welcher Recognizer ihn erzeugt hat. Damit trifft sie auch Treffer aus
+den `deny_list`-Recognizern in `presidio/recognizers-config.yml` (DE_GENDER,
+DE_BERUF).
+
+Live belegt:
+
+```
+"Der Bürgermeister kommt morgen vorbei."
+  ohne allow_list                        -> DE_BERUF 'Bürgermeister'
+  mit allow_list, die 'Bürgermeister' enthält -> kein Treffer, keine Warnung
+```
+
+Eine `deny_list` ist eine **ausdrückliche Schutzanweisung des Betreibers**; die
+Stoppwortliste ist eine mitgelieferte Vorgabe. Eine Vorgabe darf eine
+ausdrückliche Anweisung nicht still überstimmen — sonst nimmt ein
+Datenschleuse-Update lautlos Schutz weg, den der Betreiber selbst konfiguriert
+hat, und niemand erfährt davon.
+
+Heute ist das folgenlos: die Liste ist nicht verdrahtet, und es gibt keine
+Überschneidung. Beides ist ein Zustand, kein Mechanismus. Deshalb gilt:
+
+1. **Datenebene, ab sofort erzwungen.** Kein Muster aus `de-stopwords.yml` darf
+   einen `deny_list`-Term aus `recognizers-config.yml` matchen —
+   `test/test_de_stopwords.py::BetreiberVorrang`, ohne laufenden Container und
+   ohne Guardrail-Anschluss.
+2. **Laufzeit, Bedingung für diese Änderung.** Der Guardrail muss die
+   Überschneidung beim Laden prüfen und bei einem Treffer **fail-closed
+   starten** — analog zur fehlerhaften Datei unten. Ausdrücklich **nicht**
+   zulässig: den kollidierenden Eintrag still überspringen oder ihn wirken
+   lassen. Ein Betreiber, der beides konfiguriert hat, hat einen Konflikt, den
+   nur er auflösen kann; der Dienst darf ihn nicht für ihn entscheiden.
+3. Der zugehörige Test ist Teil der Änderung, nicht ein Nachtrag.
+
 ### Abnahme
 
 Nach der Umsetzung ist die Wirkung end-to-end zu belegen, nicht nur im
@@ -445,3 +504,8 @@ Analyzer:
 2. Ein zweizeiliges Label-Wert-Paar (`"Zahlungsart\nLoewenstein"`) muss den
    Nachnamen weiterhin maskieren. Das ist der Regressionsnachweis für F1.
 3. `"Menge, Andreas"` muss beide Namen maskieren — Regressionsnachweis für F2.
+4. Ein Text mit einem `deny_list`-Term des Betreibers (z. B. `"Der
+   Bürgermeister kommt morgen vorbei."`) muss den Treffer weiterhin liefern —
+   und eine Konfiguration, in der sich Stoppwortliste und `deny_list`
+   überschneiden, muss den Dienst am Start scheitern lassen statt still zu
+   entschärfen (Betreiber-Vorrang).

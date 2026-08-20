@@ -47,13 +47,28 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _STOPWORD_PATH = os.path.normpath(
     os.path.join(_HERE, "..", "presidio", "de-stopwords.yml")
 )
+_RECOGNIZER_PATH = os.path.normpath(
+    os.path.join(_HERE, "..", "presidio", "recognizers-config.yml")
+)
+_GUARDRAIL_PATH = os.path.normpath(
+    os.path.join(_HERE, "..", "litellm", "datenschleuse_guardrail.py")
+)
 _ANALYZER_URL = os.environ.get("PRESIDIO_ANALYZER_URL", "http://localhost:5001")
 
-# Kopf-Morpheme, die als bare deutsche Familiennamen nicht vorkommen. Nur
-# Komposita mit diesen Koepfen duerfen auf die Liste (Aufnahmekriterium 2).
-# Die Regel ist maschinell prüfbar -- anders als "hat keine Namenslesart",
-# das vorher eine Schaetzung war und genau deshalb 'menge' und 'fuege'
-# durchgelassen hat (beides reale Nachnamen).
+# Erlaubte Kopf-Morpheme fuer Schema-Schluessel-Komposita (Aufnahmekriterium 2).
+#
+# ACHTUNG, das ist der Punkt, an dem die Regel schon einmal falsch war: Diese
+# Koepfe sind NICHT namensfrei. 'Preis' und 'Grund' sind reale deutsche
+# Familiennamen. Ein frueherer Kommentar behauptete hier das Gegenteil und
+# wiederholte damit exakt den Fehlertyp, gegen den die Regel eingefuehrt wurde
+# (eine plausible Behauptung statt einer Kontrolle -- so kamen 'menge' und
+# 'fuege' auf die Liste, beides reale Nachnamen).
+#
+# Der Kopf-Filter leistet deshalb nur die VERENGUNG auf Komposita. Die
+# Namensfreiheit belegen die Einzelkontrollen: Kollisionspruefung gegen die
+# Kontrollnamen und Messbeleg am laufenden Analyzer. Weil der bare Kopf selbst
+# ein Nachname sein kann, ist er als Eintrag gesperrt -- erzwungen von
+# test_kein_eintrag_ist_ein_barer_kopf.
 _ERLAUBTE_KOPF_MORPHEME = (
     "nummer", "datum", "art", "status", "betrag",
     "preis", "gebuehr", "grund", "fenster",
@@ -113,6 +128,36 @@ def _joined_matcher(doc):
     """Baut den Matcher EXAKT so, wie der Analyzer es tut."""
     flags = doc.get("regex_flags", 0)
     return regex.compile("|".join(_patterns(doc)), flags=flags)
+
+
+def _deny_list_terme():
+    """Alle Terme aus den ``deny_list``-Recognizern des Betreibers.
+
+    Liefert [(recognizer_name, term), ...] aus presidio/recognizers-config.yml
+    (heute DE_GENDER und DE_BERUF).
+    """
+    with open(_RECOGNIZER_PATH, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    treffer = []
+    for rec in doc.get("recognizers", []) or []:
+        for term in rec.get("deny_list", []) or []:
+            treffer.append((rec.get("name"), term))
+    return treffer
+
+
+def _guardrail_sendet_allow_list():
+    """Sendet der Guardrail die allow_list inzwischen? (Schalter fuer §7)
+
+    Bewusst als Quelltext-Pruefung: Es ist dieselbe Frage, die das Audit per
+    grep beantwortet hat -- nur maschinell und dauerhaft. Sobald jemand die
+    Liste in _analyze verdrahtet, aktiviert sich der Laufzeit-Test unten von
+    selbst und kann nicht vergessen werden.
+    """
+    try:
+        with open(_GUARDRAIL_PATH, encoding="utf-8") as fh:
+            return "allow_list" in fh.read()
+    except OSError:
+        return False
 
 
 def _analyzer_erreichbar():
@@ -220,12 +265,15 @@ class StopwordListeStruktur(unittest.TestCase):
                 self.assertTrue(e.get("measured_fp"))
 
     def test_aufnahmekriterium_kopfmorphem(self):
-        """Aufnahmekriterium 2 maschinell statt geschaetzt.
+        """Aufnahmekriterium 2, Teil 1: Verengung auf Schema-Schluessel-Komposita.
 
         Vorher war das Kriterium "keine plausible Eigennamen-Lesart" -- eine
         Einschaetzung, die 'menge' und 'fuege' durchgelassen hat, beides reale
-        deutsche Nachnamen. Jetzt: nur Komposita mit einem Kopf-Morphem, das
-        als barer Familienname nicht vorkommt.
+        deutsche Nachnamen. Jetzt muss der Term auf einem erlaubten Kopf enden.
+
+        Diese Bedingung allein belegt KEINE Namensfreiheit (siehe Kommentar an
+        _ERLAUBTE_KOPF_MORPHEME); sie wirkt nur zusammen mit der
+        Kollisionspruefung, dem Messbeleg und test_kein_eintrag_ist_ein_barer_kopf.
         """
         for e in _entries(self.doc):
             with self.subTest(term=e.get("term")):
@@ -236,6 +284,34 @@ class StopwordListeStruktur(unittest.TestCase):
                     "Terme ohne maschinell pruefbare Namens-Ausschlussregel "
                     "gehoeren nicht auf die Liste." % (term, _ERLAUBTE_KOPF_MORPHEME),
                 )
+
+    def test_kein_eintrag_ist_ein_barer_kopf(self):
+        """Aufnahmekriterium 2, Teil 2: der Kopf allein darf nicht auf die Liste.
+
+        `term.endswith(kopf)` ist auch fuer den baren Kopf wahr -- 'preis'
+        besteht den Kompositum-Test also formal, ist aber ein realer deutscher
+        Familienname (ebenso 'grund'). Der Term muss deshalb ECHT laenger sein
+        als sein Kopf.
+        """
+        for e in _entries(self.doc):
+            with self.subTest(term=e.get("term")):
+                term = e["term"]
+                self.assertNotIn(
+                    term.lower(), _ERLAUBTE_KOPF_MORPHEME,
+                    "Term %r IST ein bares Kopf-Morphem. Die Koepfe sind nicht "
+                    "namensfrei (Preis, Grund sind deutsche Nachnamen) -- nur "
+                    "das Kompositum ist geprueft." % term,
+                )
+
+    def test_barer_kopf_wuerde_auffallen(self):
+        """Beleg, dass die Regel oben Zaehne hat -- konstruierter Gegenfall."""
+        for kopf in ("preis", "grund"):
+            self.assertIn(kopf, _ERLAUBTE_KOPF_MORPHEME)
+            self.assertTrue(
+                kopf.endswith(_ERLAUBTE_KOPF_MORPHEME),
+                "Der bare Kopf %r besteht den Kompositum-Test -- genau deshalb "
+                "braucht es die zusaetzliche Sperre." % kopf,
+            )
 
     def test_gejointe_liste_trifft_keinen_verbotenen_span(self):
         """Der Kerntest gegen F1 und F2 -- gejoint, search, echte Flags."""
@@ -264,6 +340,114 @@ class StopwordListeStruktur(unittest.TestCase):
                     "Die gejointe Liste trifft den gemessenen Span %r nicht."
                     % span,
                 )
+
+
+class BetreiberVorrang(unittest.TestCase):
+    """Die Stoppwortliste darf die deny_list des Betreibers nicht ueberstimmen.
+
+    Presidios ``allow_list`` wirkt NACH der Erkennung: sie entfernt jeden
+    Treffer, dessen Span sie matcht -- unabhaengig davon, welcher Recognizer
+    ihn erzeugt hat. Sie trifft damit auch die ``deny_list``-Recognizer aus
+    presidio/recognizers-config.yml (DE_GENDER, DE_BERUF).
+
+    Live belegt:
+
+        "Der Buergermeister kommt morgen vorbei."
+          ohne allow_list                            -> DE_BERUF
+          mit allow_list, die das Wort enthaelt      -> kein Treffer, keine Warnung
+
+    Eine ``deny_list`` ist eine ausdrueckliche Schutzanweisung des Betreibers,
+    die Stoppwortliste eine mitgelieferte Vorgabe. Eine Vorgabe darf eine
+    ausdrueckliche Anweisung nicht still ueberstimmen -- sonst nimmt ein Update
+    lautlos Schutz weg, den der Betreiber selbst konfiguriert hat.
+
+    Heute gibt es keine Ueberschneidung. Das ist ein Zustand, kein Mechanismus.
+    Dieser Test macht daraus einen Mechanismus -- ohne laufenden Container und
+    ohne den Guardrail-Anschluss abzuwarten.
+
+    Bindend festgehalten in ADR-0002 (Konsequenz 2) und
+    docs/foundation/erkennungsziel.md §7 ("Vorrang der Betreiber-Konfiguration").
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _load_stopwords()
+        cls.matcher = _joined_matcher(cls.doc)
+        cls.deny = _deny_list_terme()
+
+    def test_deny_list_terme_werden_ueberhaupt_gefunden(self):
+        """Ohne diesen Test waere die Kollisionspruefung nach einer Umstellung
+        von recognizers-config.yml still leer -- und damit immer gruen."""
+        self.assertTrue(
+            self.deny,
+            "Keine deny_list-Terme in %s gefunden. Entweder wurde die Datei "
+            "umstrukturiert oder die Recognizer sind weg -- in beiden Faellen "
+            "prueft der Vorrangs-Test nichts mehr." % _RECOGNIZER_PATH,
+        )
+        namen = {n for n, _ in self.deny}
+        self.assertIn("DE_BERUF", namen)
+        self.assertIn("DE_GENDER", namen)
+
+    def test_kein_muster_trifft_einen_deny_list_term(self):
+        """Der eigentliche Vorrang: der Betreiber gewinnt."""
+        for name, term in self.deny:
+            with self.subTest(recognizer=name, term=term):
+                self.assertIsNone(
+                    self.matcher.search(term),
+                    "Die Stoppwortliste unterdrueckt den deny_list-Term %r "
+                    "(%s). Damit haette eine mitgelieferte Vorgabeliste eine "
+                    "ausdrueckliche Anweisung des Betreibers still "
+                    "ueberstimmt." % (term, name),
+                )
+
+    def test_die_kollisionspruefung_hat_zaehne(self):
+        """Beleg, dass der Test oben nicht nur zufaellig gruen ist.
+
+        Dieselbe Pruefung gegen eine konstruiert kollidierende Liste MUSS
+        anschlagen -- sonst waere die Kontrolle wertlos.
+        """
+        kollidierend = _patterns(self.doc) + ["(?i:\\ABürgermeister\\z)"]
+        matcher = regex.compile("|".join(kollidierend), flags=self.doc.get("regex_flags", 0))
+        self.assertIsNotNone(
+            matcher.search("Bürgermeister"),
+            "Eine Liste, die einen deny_list-Term enthaelt, muss von der "
+            "Kollisionspruefung erkannt werden.",
+        )
+
+
+@unittest.skipUnless(
+    _guardrail_sendet_allow_list(),
+    "Guardrail sendet die allow_list noch nicht (docs/foundation/"
+    "erkennungsziel.md §7). Der Test aktiviert sich automatisch, sobald "
+    "'allow_list' in litellm/datenschleuse_guardrail.py auftaucht.",
+)
+class BetreiberVorrangZurLaufzeit(unittest.TestCase):
+    """Anforderung an die noch nicht umgesetzte Guardrail-Aenderung (§7).
+
+    Sobald der Guardrail die Liste sendet, reicht die Datenebene nicht mehr:
+    Betreiber pflegen ihre eigene recognizers-config.yml, und die kann mit der
+    mitgelieferten Stoppwortliste kollidieren, ohne dass jemand aus diesem
+    Repo es merkt.
+
+    Verlangt wird FAIL-CLOSED beim Laden -- nicht "kollidierenden Eintrag still
+    ueberspringen", nicht "wirken lassen". Wer beides konfiguriert hat, hat
+    einen Konflikt, den nur er aufloesen kann; der Dienst darf ihn nicht fuer
+    ihn entscheiden.
+
+    Der Test ist bewusst jetzt schon da und uebersprungen: Die Anforderung
+    steht damit im Code und nicht nur in der Doku, und sie meldet sich von
+    selbst, sobald jemand §7 umsetzt.
+    """
+
+    def test_kollision_beim_laden_fuehrt_zu_startfehler(self):
+        self.fail(
+            "§7 ist umgesetzt (allow_list im Guardrail). Damit ist der "
+            "Betreiber-Vorrang zur Laufzeit faellig: Der Guardrail MUSS beim "
+            "Laden pruefen, ob ein Muster aus de-stopwords.yml einen "
+            "deny_list-Term aus recognizers-config.yml matcht, und in diesem "
+            "Fall fail-closed starten. Diesen Test durch die echte "
+            "Verhaltenspruefung ersetzen (siehe ADR-0002, Konsequenz 2)."
+        )
 
 
 @unittest.skipUnless(

@@ -82,11 +82,53 @@ class ZielSchwellen(unittest.TestCase):
 
 
 class GateAuswertung(unittest.TestCase):
-    def test_aktueller_projektstand_besteht(self):
-        """Der gemessene Stand (Recall 100%, Precision 96.2%, Stoerquote 6.2%)."""
+    def test_zielerfuellender_stand_besteht(self):
+        """Ein KONSTRUIERTER Ergebnissatz, der alle Schwellen einhaelt.
+
+        Bewusst kein Projektstand: Der gemessene Stand ist Recall 100 %,
+        Precision 81,8 %, Stoerquote 37,5 % -- und damit ROT (zwei Gates
+        verfehlt, siehe docs/foundation/erkennungsziel.md Abschnitt 3).
+
+        Eine frueherer Docstring nannte hier "Recall 100%, Precision 96.2%,
+        Stoerquote 6.2%" den gemessenen Stand. Diese Zahlen stammen aus der
+        ersten Listenfassung und wurden vom Security-Audit als unbrauchbar
+        verworfen -- sie waren durch Eintraege erkauft, die echte Namen
+        unterdrueckt haben. Sie duerfen nirgends mehr als Projektstand
+        auftauchen.
+
+        Was dieser Test prueft, ist die Auswertungs-LOGIK: Ein Satz Zahlen
+        oberhalb aller Schwellen darf keine Verstoesse melden. Die Gegenrichtung
+        pruefen die drei Tests darunter.
+        """
         res = _result(tp=51, fn=0, fp=2, neg_cases=32, neg_with_fp=2)
         verstoesse = cb.evaluate_targets(res)
-        self.assertEqual(verstoesse, [], "Aktueller Stand sollte alle Gates erfuellen.")
+        self.assertEqual(
+            verstoesse, [],
+            "Ein Ergebnissatz oberhalb aller Schwellen darf keine Verstoesse melden.",
+        )
+
+    def test_gemessener_projektstand_ist_rot(self):
+        """Der ECHTE Stand faellt durch -- und das Gate sagt das auch.
+
+        Recall 100 % (TP=54, FN=0), 12 False Positives auf 32 PII-freien
+        Faellen: Precision 81,8 %, Stoerquote 37,5 %. Beide Schwellen verfehlt.
+        Der Test haelt fest, dass das Gate diesen Stand tatsaechlich blockiert
+        -- und nicht nur behauptet wird, es taete es.
+        """
+        res = _result(tp=54, fn=0, fp=12, neg_cases=32, neg_with_fp=12)
+        verstoesse = cb.evaluate_targets(res)
+        self.assertTrue(
+            any("Precision" in v for v in verstoesse),
+            "Precision 81,8 %% muss das Gate reissen. Verstoesse: %r" % verstoesse,
+        )
+        self.assertTrue(
+            any("Stoerquote" in v for v in verstoesse),
+            "Stoerquote 37,5 %% muss das Gate reissen. Verstoesse: %r" % verstoesse,
+        )
+        self.assertFalse(
+            [v for v in verstoesse if "Recall" in v],
+            "Recall ist bei 100 %% -- hier darf kein Verstoss stehen. %r" % verstoesse,
+        )
 
     def test_recall_unter_ziel_faellt_auf(self):
         res = _result(tp=90, fn=10, fp=0, neg_cases=10, neg_with_fp=0)  # 90% Recall

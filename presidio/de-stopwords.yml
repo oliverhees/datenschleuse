@@ -40,11 +40,23 @@
 # Einschaetzung — und sie hat `menge` und `fuege` durchgelassen, beides reale
 # deutsche Familiennamen (Menge, Füge). Eine Einschaetzung ist keine Kontrolle.
 #
-# Neu, pruefbar von test_de_stopwords.py:
-#   Ein Term darf nur auf die Liste, wenn er ein Kompositum mit einem
-#   Kopf-Morphem aus dieser Menge ist:
-#       nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster
-#   Keines davon kommt als barer deutscher Familienname vor.
+# Neu, pruefbar von test_de_stopwords.py — ZWEI Bedingungen, beide noetig:
+#   1. Der Term ist ein Kompositum mit einem Kopf-Morphem aus dieser Menge:
+#         nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster
+#      und ist ECHT laenger als dieser Kopf (der bare Kopf ist gesperrt).
+#   2. Der Term matcht keinen Kontroll-Namensspan und weist seinen Fehlalarm
+#      am laufenden Analyzer nach.
+#
+# ACHTUNG — hier stand schon einmal eine falsche Behauptung: "Keines davon
+# kommt als barer deutscher Familienname vor." Das stimmt nicht. `Preis` und
+# `Grund` SIND reale deutsche Familiennamen. Damit wiederholte der Kommentar
+# genau den Fehlertyp, gegen den das Kriterium eingefuehrt wurde.
+#
+# Die schuetzende Eigenschaft ist deshalb nicht der Kopf, sondern der
+# ZUSAMMENGESETZTE Term: die konkreten Eintraege unten sind einzeln gegen den
+# Analyzer und gegen die Kontrollnamen geprueft. Bedingung 1 verengt nur auf
+# Schema-Schluessel-Komposita — sie ersetzt Bedingung 2 nicht, und der bare
+# Kopf darf genau deshalb nicht auf die Liste.
 #
 # Zusaetzlich weiterhin: jeder Eintrag braucht einen `probe`-Text, der den
 # Fehlalarm am laufenden Analyzer nachweislich erzeugt (Gegenprobe im Test).
@@ -93,8 +105,10 @@ entries:
   # stillschweigend Funktionalitaet.
   #
   # (?i: ...) gekapselt: JSON-Schluessel kommen klein, in Prosa gross vor.
-  # Da keiner dieser Terme ein Familienname sein kann, ist Case-Insensitivitaet
-  # hier ohne Namensrisiko.
+  # Fuer die konkreten Terme unten ist gemessen belegt, dass sie keinen
+  # Kontroll-Namensspan treffen (Gegenkontrolle 3) — deshalb ist
+  # Case-Insensitivitaet hier ohne Namensrisiko. Das ist eine Aussage ueber
+  # DIESE Terme, nicht ueber ihre Kopf-Morpheme (Preis, Grund sind Nachnamen).
   # =========================================================================
   - term: bestellnummer
     pattern: "(?i:\\Abestellnummer\\z)"

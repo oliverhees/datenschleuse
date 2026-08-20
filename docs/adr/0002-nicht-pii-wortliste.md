@@ -40,7 +40,9 @@ den Recall verschlechtern. Echte Nachnamen in ASCII-Umschrift (`Mueller`,
 
 Gemessene Nicht-PII-Wörter werden in `presidio/de-stopwords.yml` gepflegt und
 über Presidios eigenen `allow_list`-Mechanismus (`allow_list_match: regex`) an
-`/analyze` übergeben. **Jedes Muster ist mit `^...$` verankert.**
+`/analyze` übergeben. **Jedes Muster ist mit `\A...\z` verankert**, und
+`regex_flags: 0` wird explizit mitgesendet. `^...$` ist ausdrücklich verboten
+— warum, steht unter „Absolute Verankerung" weiter unten.
 
 ## Die Kollision mit der Security-Baseline — und warum die Ausnahme trägt
 
@@ -124,8 +126,12 @@ fehl. Die Liste kann so nicht „auf Verdacht" wachsen.
 
 ### 3. Kollisionsprüfung gegen Kontrollnamen
 
-Kein Muster darf einen der elf Kontroll-Namensspans vollständig matchen —
-geprüft ohne laufenden Container, zusätzlich integrativ gegen den Analyzer.
+Kein Muster darf einen Kontroll-Namensspan vollständig matchen — geprüft ohne
+laufenden Container, zusätzlich integrativ gegen den Analyzer. Maßgeblich ist
+die Konstante `_RECALL_KONTROLLEN` in `test/test_de_stopwords.py` (derzeit 15
+Fälle, inklusive der Layouts aus F1/F2); eine Zahl hier im Text wäre schon
+zweimal veraltet gewesen. Seit der Vorrangs-Regel kommen die `deny_list`-Terme
+des Betreibers als zweite Kollisionsmenge dazu (Konsequenz 2).
 
 ### 4. Aufnahmekriterium — maschinell statt geschätzt
 
@@ -133,10 +139,31 @@ Die erste Fassung verlangte „keine plausible Eigennamen-Lesart". Das war eine
 Einschätzung, keine Kontrolle — und sie hat `menge` und `fuege` durchgelassen,
 beides reale deutsche Familiennamen (Menge, Füge).
 
-Jetzt gilt eine prüfbare Regel: Ein Term darf nur auf die Liste, wenn er ein
-Kompositum mit einem Kopf-Morphem aus dieser Menge ist —
-`nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster`. Keines
-davon kommt als barer deutscher Familienname vor. Der Test erzwingt es.
+Jetzt gilt eine prüfbare Regel mit zwei Bedingungen, die beide erfüllt sein
+müssen:
+
+1. **Kompositum mit erlaubtem Kopf-Morphem.** Der Term endet auf einem Kopf aus
+   `nummer, datum, art, status, betrag, preis, gebuehr, grund, fenster` und ist
+   **echt länger** als dieser Kopf. Der bare Kopf selbst ist nicht zulässig.
+2. **Kein Namensspan — maschinell belegt.** Der konkrete Term darf keinen der
+   Kontroll-Namensspans matchen und muss seinen Fehlalarm am laufenden Analyzer
+   nachweisen (Gegenkontrollen 2 und 3).
+
+**Wichtig, weil die erste Fassung dieser Regel genau hier wieder falsch war:**
+Die Kopf-Menge ist *nicht* namensfrei. `Preis` und `Grund` sind reale deutsche
+Familiennamen; ein früherer Wortlaut behauptete das Gegenteil („Keines davon
+kommt als barer deutscher Familienname vor") und wiederholte damit denselben
+Fehlertyp, gegen den die Regel eingeführt wurde — eine plausible Behauptung
+anstelle einer Kontrolle.
+
+Die schützende Eigenschaft ist deshalb nicht der Kopf, sondern der
+**zusammengesetzte** Term: Die konkreten vierzehn Einträge sind einzeln gegen
+den laufenden Analyzer und gegen die Kontrollnamen geprüft und sind keine
+deutschen Nachnamen. Der Kopf-Filter leistet nur die Verengung auf
+Schema-Schlüssel-Komposita — er ersetzt die Einzelprüfung nicht. Deshalb ist
+Bedingung 1 ohne Bedingung 2 wertlos, und deshalb ist der bare Kopf gesperrt.
+
+Beides erzwingt `test/test_de_stopwords.py`.
 
 Die Regel ist bewusst eng. Sie schließt Terme aus, die sehr wahrscheinlich
 harmlos wären (`aendere`, `pruefe`) — aber „sehr wahrscheinlich" ist genau die
@@ -200,7 +227,39 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
    Verifikationsdurchlauf fail-closed **jeden** Request, der einen
    Stoppwort-Term enthält.
 
-2. **DATENSCHLE-70 bleibt offen und ist über diesen Mechanismus nicht
+2. **Bekannte Grenze — der Betreiber-Vorrang ist nicht durchgesetzt.**
+   Presidios `allow_list` wirkt **nach** der Erkennung und entfernt jeden
+   Treffer, dessen Span sie matcht — auch einen, der aus einer `deny_list` in
+   `presidio/recognizers-config.yml` stammt. Live belegt: `"Der Bürgermeister
+   kommt morgen vorbei."` liefert ohne Liste korrekt `DE_BERUF`; mit einer
+   `allow_list`, die dasselbe Wort enthält, verschwindet der Treffer
+   **vollständig und ohne Warnung**.
+
+   Das ist die falsche Richtung: `deny_list`-Einträge sind eine ausdrückliche
+   Schutzanweisung des Betreibers, die Stoppwortliste ist eine mitgelieferte
+   Vorgabe. Eine Vorgabe darf eine ausdrückliche Anweisung nicht still
+   überstimmen — sonst entfernt ein Datenschleuse-Update lautlos Schutz, den
+   der Betreiber selbst konfiguriert hat.
+
+   **Heute folgenlos**, aus zwei Gründen: die Liste ist nicht verdrahtet, und
+   es gibt keine Überschneidung. Beides ist ein Zustand, kein Mechanismus —
+   deshalb gilt ab jetzt als bindende Anforderung:
+
+   - **Datenebene:** Kein Muster aus `de-stopwords.yml` darf einen Term einer
+     `deny_list` aus `recognizers-config.yml` matchen. Erzwungen von
+     `test/test_de_stopwords.py::BetreiberVorrang` — ab sofort, ohne
+     Guardrail-Anschluss.
+   - **Laufzeit:** Sobald der Guardrail die Liste sendet (§7), muss er die
+     Überschneidung beim Laden prüfen und bei einem Treffer **fail-closed**
+     starten — nicht die Liste stillschweigend beschneiden und nicht still
+     weiterlaufen. Ein Betreiber, der beides konfiguriert, hat einen
+     Konflikt, den nur er auflösen kann.
+
+   Die vier Gegenkontrollen decken diese Frage nicht ab: sie schützen die
+   Erkennung des Modells vor der Liste, nicht die Konfiguration des
+   Betreibers vor der Liste.
+
+3. **DATENSCHLE-70 bleibt offen und ist über diesen Mechanismus nicht
    lösbar.** `allow_list` sieht ausschließlich den Span-Text, keinen Kontext —
    Fehlalarm und echter Name erzeugen denselben Span:
    `"Aendere keinen einzigen Wert."` → `PERSON 'Aendere'` und
@@ -209,15 +268,17 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
    `fuege`, `menge`, `rueckruf`. Braucht einen kontextsensitiven Recognizer
    im Analyzer-Image — eigenes Work Item.
 
-3. **Jede Erweiterung ist eine Einzelentscheidung.** Neue Einträge nur mit
-   Messbeleg, absoluter Verankerung, erlaubtem Kopf-Morphem und Vorher/
+4. **Jede Erweiterung ist eine Einzelentscheidung.** Neue Einträge nur mit
+   Messbeleg, absoluter Verankerung, erlaubtem Kopf-Morphem (als echtes
+   Kompositum, nicht als barer Kopf), Kollisionsfreiheit gegen Kontrollnamen
+   **und** gegen die `deny_list`-Terme des Betreibers sowie Vorher/
    Nachher-Lauf beider Seiten.
 
 5. **Der Aufrufer muss `regex_flags` senden.** Wer sie wegläßt, erbt
    `DOTALL|MULTILINE|IGNORECASE` und schaltet F1 und F2 wieder scharf. Das gilt
    für den Guardrail genauso wie für den Benchmark.
 
-4. **Der Korpus ist zu leicht.** Er meldet 100 % PERSON-Recall, während das
+6. **Der Korpus ist zu leicht.** Er meldet 100 % PERSON-Recall, während das
    Modell selbst 92,0 % angibt. Die 100 % sind kein Qualitätsbeleg, sondern
    eine Aussage über den Schwierigkeitsgrad des Korpus. Härtung ist ein eigenes
    Work Item; bis dahin darf die Zahl nicht nach außen kommuniziert werden.

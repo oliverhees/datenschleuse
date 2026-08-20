@@ -399,10 +399,15 @@ def load_stopwords(path: Path) -> tuple[list[str], int]:
     """Lädt die Nicht-PII-Wortliste und gibt die Presidio-``allow_list`` zurück.
 
     Die Liste ist eine reine Datendatei (``presidio/de-stopwords.yml``); der
-    Benchmark nutzt exakt denselben Mechanismus wie der Guardrail in
-    Produktion — ``allow_list`` + ``allow_list_match`` + ``regex_flags`` am
-    /analyze-Request. Damit misst der Benchmark die Konfiguration, die
-    tatsächlich ausgeliefert wird, und nicht eine Benchmark-Sonderlogik.
+    Benchmark nutzt den Presidio-Mechanismus direkt — ``allow_list`` +
+    ``allow_list_match`` + ``regex_flags`` am /analyze-Request, keine
+    Benchmark-Sonderlogik.
+
+    NICHT verwechseln mit dem ausgelieferten Zustand: Der Guardrail sendet die
+    ``allow_list`` derzeit NICHT (kein Aufrufer ausserhalb von test/ setzt sie).
+    Ein Lauf MIT dieser Liste misst also, was nach der in
+    ``docs/foundation/erkennungsziel.md`` §7 spezifizierten Guardrail-Aenderung
+    erreichbar waere; den heutigen Betriebszustand misst der Lauf OHNE Liste.
 
     ``regex_flags`` ist PFLICHT und wird bewusst nicht defaultet: der Analyzer
     setzt sonst DOTALL|MULTILINE|IGNORECASE. Unter MULTILINE sind ``^``/``$``
@@ -1119,9 +1124,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Pfad zu presidio/de-stopwords.yml. Wird die Datei angegeben, "
-        "schickt der Benchmark ihre Muster als Presidio-'allow_list' mit — "
-        "also exakt so, wie der Guardrail es in Produktion tut. Ohne das "
-        "Flag misst der Lauf den Rohzustand des Analyzers.",
+        "schickt der Benchmark ihre Muster als Presidio-'allow_list' mit. "
+        "ACHTUNG: Das misst den ERREICHBAREN, nicht den ausgelieferten "
+        "Zustand — der Guardrail sendet die Liste derzeit NICHT "
+        "(Spezifikation: docs/foundation/erkennungsziel.md §7). Ohne das "
+        "Flag misst der Lauf den Rohzustand des Analyzers, und das ist "
+        "der Zustand, den ein Betreiber heute erlebt.",
     )
     parser.add_argument(
         "--no-stopwords",
