@@ -199,5 +199,114 @@ class TestContentPartAllowlist(unittest.IsolatedAsyncioTestCase):
             await _run_pre_call(guard, content)
 
 
+class TestKnownUnsupportedPartTypesAreNamed(unittest.IsolatedAsyncioTestCase):
+    """Die Meldung fuer BEKANNTE, bewusst nicht unterstuetzte Part-Typen
+    (QA-Audit zu ``2165cf2``, neues MEDIUM).
+
+    Der reale Multi-Turn-Fall mit Anthropics nativem Web-Search-Tool schickt
+    ``server_tool_use`` und ``web_search_tool_result`` zurueck -- ein
+    spec-konformer Client MUSS das laut Anthropic-Doku tun. Was der Betreiber
+    davon zu sehen bekam, war die generische Part-Typ-Meldung: kein Wort zu
+    Web-Search, kein Wort zu Zitaten, kein Doku-Verweis und ununterscheidbar
+    von jedem anderen unbekannten Part-Typ. Er konnte nicht erkennen, ob er
+    eine bekannte, akzeptierte Einschraenkung trifft oder einen echten Bug.
+
+    Am VERHALTEN aendert sich nichts: beide Typen blocken weiterhin
+    fail-closed. Nur die Meldung sagt jetzt, was los ist und wo es steht --
+    nach demselben Muster wie ``KNOWN_UNSUPPORTED_CITATION_TYPES``.
+    """
+
+    async def test_server_tool_use_is_named_with_reason_and_doc(self):
+        guard = _guard()
+        content = [{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertIn("server_tool_use", meldung)
+            self.assertIn("Web-Search", meldung)
+            self.assertIn("docs/foundation/security-baseline.md", meldung)
+
+    async def test_web_search_tool_result_is_named_with_reason_and_doc(self):
+        guard = _guard()
+        content = [{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1"}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertIn("web_search_tool_result", meldung)
+            self.assertIn("Web-Search", meldung)
+            self.assertIn("docs/foundation/security-baseline.md", meldung)
+
+    async def test_named_type_message_carries_no_client_values(self):
+        """LEITPLANKE (Gesetz 5). In diesem Projekt war zweimal PII in einer
+        Blockmeldung ein Sicherheitsbefund (DATENSCHLE-64, DATENSCHLE-57).
+        Genannt werden darf ausschliesslich der Typname AUS DER KONSTANTE --
+        kein Feldname, kein Feldinhalt, kein Textausschnitt des Parts.
+
+        Der Test ist ab dem ersten Lauf gruen. Er steht hier trotzdem: er
+        haelt fest, dass diese Meldung ein Konstanten-Kanal ist, damit der
+        Naechste sie nicht 'zur besseren Diagnose' mit Client-Werten
+        anreichert."""
+        guard = _guard()
+        content = [
+            {
+                "type": "server_tool_use",
+                "id": "Max Mustermann",
+                "name": "mustermann@example.org",
+                "input": {"query": "DE02120300000000202051 Diagnose F32.1"},
+                "Patientenakte": "Weimar, 1983, Ingenieur",
+            }
+        ]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            for verboten in (
+                "Mustermann",
+                "example.org",
+                "DE02120300000000202051",
+                "F32.1",
+                "Patientenakte",
+                "Weimar",
+                "Ingenieur",
+                "query",
+            ):
+                self.assertNotIn(verboten, meldung)
+
+    async def test_named_type_message_is_length_bounded(self):
+        """Der Typname stammt aus der Konstante, nicht aus dem Request --
+        die Meldung ist deshalb unabhaengig von der Eingabelaenge. Ein
+        Flooding-Versuch mit riesigen Nachbarfeldern darf sie nicht
+        aufblaehen."""
+        guard = _guard()
+        content = [{"type": "server_tool_use", "id": "A" * 5000}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            self.assertLess(len(str(exc)), 600)
+            self.assertNotIn("A" * 100, str(exc))
+
+    async def test_unknown_type_keeps_generic_message(self):
+        """Regression: ein wirklich unbekannter Typ darf NICHT faelschlich
+        als bekannte Einschraenkung ausgewiesen werden -- sonst wuerde die
+        Meldung genau die Unterscheidung wieder einebnen, die dieser Fix
+        herstellt."""
+        guard = _guard()
+        content = [{"type": "irgendein_kuenftiger_typ"}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertNotIn("Web-Search", meldung)
+            self.assertNotIn("irgendein_kuenftiger_typ", meldung)
+            self.assertIn("nicht erlaubtem Typ", meldung)
+
+
 if __name__ == "__main__":
     unittest.main()
