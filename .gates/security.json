@@ -1,7 +1,7 @@
 {
   "gate": "security",
   "verdict": "pass",
-  "commit": "b906e1fd0693eb808bc3b804c814b24b947bcf51",
-  "branch": "feature/DATENSCHLE-67-roundtrip-e2e-rebased",
-  "timestamp": "2026-08-19T14:09:08Z"
+  "commit": "3cb92215b4df4b045271ab7b02e0a113aba76c8b",
+  "branch": "HEAD",
+  "timestamp": "2026-08-20T12:10:54Z"
 }
