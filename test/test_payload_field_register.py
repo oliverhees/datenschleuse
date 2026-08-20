@@ -747,6 +747,140 @@ class TestF4KnownUnsupportedCallTypes(unittest.TestCase):
 
 
 # ===========================================================================
+# F1 (Security-Gate 2) -- der Transport-Umschlag
+# ===========================================================================
+class TestTransportEnvelope(_HookCase):
+    """Die siebte Ebene derselben Fehlerklasse:
+
+      Content-Part-Typen -> content-Container -> Message-Felder ->
+      Part-Felder -> Routen -> Top-Level-Payload -> TRANSPORT-UMSCHLAG
+
+    Das erste Kriterium der Infrastruktur-Liste lautete: "steht in
+    all_litellm_params, erreicht den Provider also nicht". Das ist ZU ENG --
+    es prueft nur den BODY. ``headers`` und ``provider_specific_header``
+    stehen in all_litellm_params und gehen trotzdem hinaus: als HTTP-Header
+    auf der Leitung (main.py:5029 bzw. ProviderSpecificHeaderUtils).
+
+    Die Ironie belegt, dass es unbeabsichtigt war: ``extra_headers`` wurde
+    mit exakt der richtigen Begruendung geblockt -- ``headers`` ist derselbe
+    Kanal, nur der aeltere Name, und stand auf der Passier-Liste.
+
+    Gemessen wurde nicht geschlossen: ein mitschneidender Provider-Server
+    gegen echtes litellm 1.97.0. Von 37 Infrastruktur-Keys erreichen genau
+    drei den Provider -- die beiden Header-Keys und ``model_list``, dessen
+    Deployment-Eintraege eigene ``extra_headers`` tragen koennen.
+    """
+
+    async def test_headers_mit_pii_blockt_auf_der_chat_route(self):
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "headers": {"x-notiz": f"Patient {_NAME}, IBAN {_IBAN}"},
+        }
+        exc = await self.assert_blocked(data, "acompletion")
+        self.assertIn("headers", str(exc))
+
+    async def test_headers_mit_pii_blockt_auf_der_text_route(self):
+        data = {
+            "model": "gpt-3.5-turbo-instruct",
+            "prompt": "Hallo.",
+            "headers": {"x-notiz": f"IBAN {_IBAN}"},
+        }
+        await self.assert_blocked(data, "atext_completion")
+
+    async def test_provider_specific_header_mit_pii_blockt(self):
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "provider_specific_header": {
+                "custom_llm_provider": "openai",
+                "extra_headers": {"x-notiz": f"IBAN {_IBAN}"},
+            },
+        }
+        exc = await self.assert_blocked(data, "acompletion")
+        self.assertIn("provider_specific_header", str(exc))
+
+    async def test_model_list_mit_pii_in_extra_headers_blockt(self):
+        # Eigener Fund beim Nachmessen: model_list stand auf der Passier-Liste,
+        # seine Deployment-Eintraege tragen aber eigene extra_headers -- und
+        # die landen auf der Leitung.
+        data = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hallo."}],
+            "model_list": [{
+                "model_name": "gpt-4o",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "extra_headers": {"x-notiz": f"IBAN {_IBAN}"},
+                },
+            }],
+        }
+        exc = await self.assert_blocked(data, "acompletion")
+        self.assertIn("model_list", str(exc))
+
+    def test_transportkanaele_stehen_auf_keiner_passier_liste(self):
+        """Das eigentliche Kriterium, geschaerft: 'erreicht den Provider auf
+        KEINEM Weg' -- Body, HTTP-Header oder Verbindungs-Konfiguration."""
+        for feld in dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS:
+            with self.subTest(feld=feld):
+                self.assertNotIn(feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE)
+                self.assertIn(feld, dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS)
+
+    def test_extra_headers_und_headers_werden_gleich_behandelt(self):
+        """Derselbe Kanal, zwei Namen -- sie duerfen nie auseinanderlaufen."""
+        for feld in ("extra_headers", "headers"):
+            self.assertIn(feld, dg.KNOWN_UNSUPPORTED_PAYLOAD_FIELDS)
+            self.assertNotIn(feld, dg.PAYLOAD_FIELDS_INFRASTRUCTURE)
+
+
+# ===========================================================================
+# F3 (Security-Gate 2) -- der Beleg darf nicht an einer Version haengen
+# ===========================================================================
+class TestInfrastructureClaimHoldsAtRuntime(unittest.TestCase):
+    """Die Rechtfertigung der Infrastruktur-Liste ist versionsspezifisch.
+    Verlaesst ein Key in einer neueren litellm-Version all_litellm_params,
+    wird er STILL zum Provider-Kanal -- ohne diesen Test schlaegt nichts an.
+
+    Der Test laeuft nur, wenn litellm installiert ist (die uebrige Suite
+    braucht es bewusst nicht), und ist damit in CI/Image scharf und lokal
+    unaufdringlich.
+    """
+
+    def setUp(self):
+        try:
+            from litellm.types.utils import all_litellm_params  # noqa: F401
+        except Exception:  # noqa: BLE001
+            self.skipTest("litellm nicht installiert -- Laufzeitpruefung entfaellt")
+
+    def test_infrastruktur_keys_sind_weiterhin_litellm_intern(self):
+        from litellm.types.utils import all_litellm_params
+
+        entwichen = sorted(
+            dg.PAYLOAD_FIELDS_INFRASTRUCTURE - set(all_litellm_params)
+        )
+        self.assertEqual(
+            entwichen, [],
+            "Diese Keys stehen nicht mehr in all_litellm_params und gehen "
+            f"damit als Provider-Parameter hinaus: {entwichen}. Entweder ins "
+            "Register aufnehmen (maskiert/validiert) oder blocken.",
+        )
+
+    def test_kriterium_allein_genuegt_nicht(self):
+        """Bewusst als Test formuliert, weil genau diese Annahme der Defekt
+        war: 'steht in all_litellm_params' ist NOTWENDIG, nicht HINREICHEND.
+        Die bekannten Transportkanaele stehen dort und gehen trotzdem raus."""
+        from litellm.types.utils import all_litellm_params
+
+        for feld in dg.PAYLOAD_FIELDS_TRANSPORT_CHANNELS:
+            with self.subTest(feld=feld):
+                self.assertIn(
+                    feld, all_litellm_params,
+                    f"{feld} erfuellt das alte Kriterium -- und ist trotzdem "
+                    "ein Ausgangskanal. Deshalb blockt es.",
+                )
+
+
+# ===========================================================================
 # Register-Invarianten
 # ===========================================================================
 class TestRegisterInvariants(unittest.TestCase):
