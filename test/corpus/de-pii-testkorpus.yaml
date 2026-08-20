@@ -488,3 +488,215 @@ cases:
     text: >-
       Wir haben die Agentur beauftragt und danach alles in Ruhe besprochen.
     entities: []
+
+  # ---------------------------------------------------------------------
+  # NEGATIV — spaCy-NER-Fehlzuendungen auf deutschen Alltagswoertern
+  #
+  # Herkunft: alle Faelle unten sind GEMESSENE Treffer des laufenden
+  # Analyzers (de_core_news_lg, Score 0.85), nicht vermutete. Sie decken die
+  # Luecke, die negativ-001..006 offen liessen: jene sechs Koeder zielen
+  # ausschliesslich auf die Regex-Recognizer (IBAN-, Telefon-, KFZ-,
+  # Aktenzeichen-, Firmen-Muster). Die statistische NER-Seite war komplett
+  # unbeprobt -- deshalb meldete der Benchmark 100% Precision, waehrend
+  # DATENSCHLE-70 und -71 in Produktion sichtbar falsch lagen.
+  # ---------------------------------------------------------------------
+
+  # --- DATENSCHLE-70: ASCII-Umschrift (ae/oe/ue/ss) ---
+  #
+  # Warum das zaehlt: ASCII-Umschrift ist in Formularen, CLIs, Altsystemen
+  # und Exportdateien verbreitet -- also genau in den Datenbestaenden, die
+  # durch die Datenschleuse laufen. Das spaCy-Modell hat diese Schreibweise
+  # kaum gesehen und deutet unbekannte grossgeschriebene Tokens als Name.
+
+  - id: negativ-007-ascii-imperativ-aendere
+    text: "Aendere keinen einzigen Wert."
+    entities: []
+
+  - id: negativ-008-ascii-imperativ-pruefe
+    text: "Pruefe die Eingabe auf Fehler."
+    entities: []
+
+  - id: negativ-009-ascii-imperativ-uebersetze
+    text: "Uebersetze den Absatz ins Englische."
+    entities: []
+
+  - id: negativ-010-ascii-imperativ-fuege
+    text: "Fuege eine Fussnote hinzu."
+    entities: []
+
+  - id: negativ-011-ascii-imperativ-beruecksichtige
+    text: "Beruecksichtige alle offenen Posten."
+    entities: []
+
+  - id: negativ-012-ascii-imperativ-erlaeutere
+    text: "Erlaeutere den Sachverhalt ausfuehrlich."
+    entities: []
+
+  - id: negativ-013-ascii-adverb-spaeter
+    text: >-
+      Spaeter wurde der Vorgang an die Fachabteilung uebergeben.
+    entities: []
+
+  - id: negativ-014-ascii-nomen-rueckruf
+    text: "Der Rueckruf ist fuer morgen vorgesehen."
+    entities: []
+
+  - id: negativ-015-ascii-nomen-bearbeitungsgebuehr
+    text: "Die Bearbeitungsgebuehr betraegt zehn Euro."
+    entities: []
+
+  # --- Umlaut-Schreibweise: dieselbe Fehlerklasse, seltener ---
+  #
+  # Belegt, dass die Ursache nicht die Umschrift allein ist, sondern das
+  # satzinitiale grossgeschriebene Verb. Fixes duerfen sich also nicht auf
+  # ASCII-Tokens beschraenken.
+
+  - id: negativ-016-umlaut-imperativ-fasse
+    text: "Fasse den Text zusammen."
+    entities: []
+
+  - id: negativ-017-umlaut-imperativ-uebersetze
+    text: "Übersetze den Absatz ins Englische."
+    entities: []
+
+  # --- DATENSCHLE-71: deutsche Schema-Schluessel ---
+  #
+  # Warum das zaehlt: der Guardrail maskiert auch JSON-Schluessel. Wird der
+  # Parametername ersetzt, bekommt der Empfaenger args["<LOCATION_0>"] statt
+  # args["bestellnummer"] -- der Tool-Call geht DURCH und ist unbrauchbar.
+  # Kein Fehler, kein Log. Deshalb sind die Faelle hier so geschnitten wie
+  # sie in Produktion auftreten: der blanke Schluessel als eigener String.
+
+  - id: negativ-018-schema-bestellnummer
+    text: "bestellnummer"
+    entities: []
+
+  - id: negativ-019-schema-kundennummer
+    text: "kundennummer"
+    entities: []
+
+  - id: negativ-020-schema-rechnungsnummer
+    text: "rechnungsnummer"
+    entities: []
+
+  - id: negativ-021-schema-vertragsnummer
+    text: "vertragsnummer"
+    entities: []
+
+  - id: negativ-022-schema-lieferdatum
+    text: "lieferdatum"
+    entities: []
+
+  - id: negativ-023-schema-zahlungsart
+    text: "zahlungsart"
+    entities: []
+
+  - id: negativ-024-schema-sendungsnummer
+    text: "sendungsnummer"
+    entities: []
+
+  - id: negativ-025-schema-buchungsnummer
+    text: "buchungsnummer"
+    entities: []
+
+  - id: negativ-026-schema-rueckruf
+    text: "Rueckruf"
+    entities: []
+
+  - id: negativ-027-schema-rueckrufgrund
+    text: "rueckrufgrund"
+    entities: []
+
+  - id: negativ-028-schema-bearbeitungsstatus
+    text: "bearbeitungsstatus"
+    entities: []
+
+  - id: negativ-029-schema-rechnungsbetrag
+    text: "rechnungsbetrag"
+    entities: []
+
+  - id: negativ-030-schema-menge
+    text: "menge"
+    entities: []
+
+  - id: negativ-031-schema-einzelpreis
+    text: "einzelpreis"
+    entities: []
+
+  # --- Fachbegriff, der wie ein Eigenname aussieht ---
+
+  - id: negativ-032-fachbegriff-wartungsfenster
+    text: >-
+      Neuerungen werden im Wartungsfenster ausgerollt.
+    entities: []
+
+  # ---------------------------------------------------------------------
+  # POSITIV — ASCII-Umschrift bei ECHTEN Namen (Anti-Kriterium zu -70)
+  #
+  # Diese Faelle sind die Gegenprobe zu negativ-007..017: jede Massnahme
+  # gegen ASCII-Fehlzuendungen MUSS diese Namen weiterhin erkennen. Faellt
+  # hier auch nur einer aus, ist die Massnahme falsch -- egal wie gut die
+  # Precision-Zahl danach aussieht.
+  # ---------------------------------------------------------------------
+
+  - id: person-004-ascii-nachname-mueller
+    text: "Herr Mueller hat den Vertrag unterschrieben."
+    entities:
+      - type: PERSON
+        value: "Mueller"
+        expected_recall: must_detect
+
+  - id: person-005-ascii-nachname-schroeder
+    text: "Frau Schroeder ruft morgen zurueck."
+    entities:
+      - type: PERSON
+        value: "Schroeder"
+        expected_recall: must_detect
+
+  - id: person-006-ascii-nachname-weiss
+    text: "Der Antrag von Herrn Weiss liegt vor."
+    entities:
+      - type: PERSON
+        value: "Weiss"
+        expected_recall: must_detect
+
+  - id: person-007-ascii-nachname-kraemer
+    text: "Bitte kontaktieren Sie Frau Kraemer."
+    entities:
+      - type: PERSON
+        value: "Kraemer"
+        expected_recall: must_detect
+
+  - id: person-008-ascii-nachname-baecker
+    text: "Sachbearbeiter ist Herr Baecker."
+    entities:
+      - type: PERSON
+        value: "Baecker"
+        expected_recall: must_detect
+
+  - id: person-009-ascii-vorname-nachname-stoecker
+    text: >-
+      Die Beschwerde von Frau Aenne Stoecker ist eingegangen.
+    entities:
+      - type: PERSON
+        value: "Aenne Stoecker"
+        expected_recall: must_detect
+
+  - id: person-010-ascii-vorname-nachname-loewenstein
+    text: >-
+      Der Gutachter Herr Dr. Ruediger Loewenstein bestaetigt das.
+    entities:
+      - type: PERSON
+        value: "Ruediger Loewenstein"
+        expected_recall: must_detect
+
+  # Haerteste Kombination: echter Name UND FP-Koeder im selben Satz.
+  # Eine Massnahme, die 'Spaeter' unterdrueckt, darf 'Maria Meier' nicht
+  # mitnehmen.
+  - id: person-011-ascii-name-neben-fp-koeder
+    text: >-
+      Spaeter hat Maria Meier den Vorgang uebernommen.
+    entities:
+      - type: PERSON
+        value: "Maria Meier"
+        expected_recall: must_detect

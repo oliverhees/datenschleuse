@@ -1,18 +1,18 @@
 {
-  "timestamp_utc": "2026-08-04T12:52:11.363528+00:00",
+  "timestamp_utc": "2026-08-20T07:29:05.693775+00:00",
   "presidio_url": "http://localhost:5001",
-  "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/test/corpus/de-pii-testkorpus.yaml",
-  "case_count": 45,
+  "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/.claude/worktrees/agent-a901483c0dfeae0df/test/corpus/de-pii-testkorpus.yaml",
+  "case_count": 79,
   "overlap_min_ratio": 0.5,
   "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
   "must_detect": {
     "overall": {
-      "tp": 43,
+      "tp": 51,
       "fn": 0,
-      "fp": 0,
-      "support": 43,
+      "fp": 26,
+      "support": 51,
       "recall": 1.0,
-      "precision": 1.0
+      "precision": 0.6623
     },
     "by_type": {
       "CREDIT_CARD": {
@@ -154,18 +154,26 @@
       "LOCATION": {
         "tp": 4,
         "fn": 0,
-        "fp": 0,
+        "fp": 8,
         "support": 4,
         "recall": 1.0,
-        "precision": 1.0
+        "precision": 0.3333
+      },
+      "ORGANIZATION": {
+        "tp": 0,
+        "fn": 0,
+        "fp": 3,
+        "support": 0,
+        "recall": null,
+        "precision": 0.0
       },
       "PERSON": {
-        "tp": 5,
+        "tp": 13,
         "fn": 0,
-        "fp": 0,
-        "support": 5,
+        "fp": 15,
+        "support": 13,
         "recall": 1.0,
-        "precision": 1.0
+        "precision": 0.4643
       },
       "PHONE_NUMBER": {
         "tp": 2,
@@ -214,8 +222,12 @@
     ]
   },
   "negative_cases": {
-    "false_positives_total": 0,
-    "false_positives_by_type": {}
+    "false_positives_total": 26,
+    "false_positives_by_type": {
+      "LOCATION": 8,
+      "ORGANIZATION": 3,
+      "PERSON": 15
+    }
   },
   "positive_case_unmatched_detections": [
     {
@@ -447,6 +459,13 @@
       "entity_type": "LOCATION",
       "start": 125,
       "end": 132,
+      "score": 0.85
+    },
+    {
+      "case_id": "person-011-ascii-name-neben-fp-koeder",
+      "entity_type": "PERSON",
+      "start": 0,
+      "end": 7,
       "score": 0.85
     }
   ],
