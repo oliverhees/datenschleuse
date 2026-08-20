@@ -1039,8 +1039,21 @@ class TestVerificationPassInteraction(_RuleFileTestCase,
         await guard._verify_no_pii_left(maskiert, masker)  # darf NICHT werfen
 
     async def test_fall2_regel_die_ueber_den_filler_hinweg_greift(self):
-        """Fall 2: Verkleben. Das Leerzeichen trennt zwar, aber ein Muster mit
-        \\s* ueberspannt es trotzdem."""
+        r"""Fall 2: Verkleben. Das Leerzeichen trennt zwar, aber ein Muster
+        mit \s* ueberspannt es trotzdem.
+
+        NEUBEWERTET IM RE-AUDIT (S1-R), Entscheidung des Leads: Dieser Fall
+        blockt jetzt -- und das ist gewollt. Ein Muster, das ueber einen
+        Platzhalter hinweggreift, ist nicht von der Konstruktion zu
+        unterscheiden, mit der man die Maskierung umgeht (Telefonnummer mit
+        eingeklebtem Platzhalter). Ein SICHTBARER Fehlalarm ist billiger als
+        ein stilles Leck.
+
+        Betroffen ist nur ein enger Fall: eine eigene REGEX-Regel, deren
+        Muster sowohl MIT als auch OHNE den Trenner passt. Deny-Listen (der
+        Standardtyp) koennen das prinzipiell nicht. Gemessen am
+        Presidio-Testkorpus: 0 von 45 Faellen betroffen.
+        """
         self.write_rules([rule(
             "verklebt", entity="Firmenname", kind="regex", value=r"Nord\s*wind",
             examples=["Die Nord wind Gruppe"],
@@ -1051,10 +1064,8 @@ class TestVerificationPassInteraction(_RuleFileTestCase,
         masker.reid_map["<PERSON_0>"] = "Max"
         maskiert = "Nord<PERSON_0>wind"
 
-        try:
+        with self.assertRaises(dg.DatenschleuseBlocked):
             await guard._verify_no_pii_left(maskiert, masker)
-        except dg.DatenschleuseBlocked as exc:
-            self.fail(f"grundloser Block durch Filler-Verklebung: {exc}")
 
     async def test_fall3_regel_die_den_filler_selbst_erfasst(self):
         """Fall 3: aneinandergrenzende Platzhalter werden zu einer
@@ -1177,15 +1188,23 @@ class TestVerificationNetStaysSharpForCustom(_RuleFileTestCase,
         with self.assertRaises(dg.DatenschleuseBlocked):
             await guard._verify_no_pii_left(maskiert, masker)
 
-    async def test_filler_artifact_still_does_not_block(self):
-        """Gegenprobe 1: der dokumentierte Fehlalarm bleibt weg."""
+    async def test_verklebtes_muster_blockt_nach_s1r(self):
+        r"""Frueher Gegenprobe 1 ("der Fehlalarm bleibt weg"), im Re-Audit
+        umgedreht: ein Muster, das MIT und OHNE Trenner passt, blockt jetzt.
+        Siehe die ausfuehrliche Begruendung an
+        test_fall2_regel_die_ueber_den_filler_hinweg_greift.
+
+        Der Fehlalarm-Raum, den F9 urspruenglich schliessen sollte, bleibt
+        fuer den haeufigen Fall geschlossen -- siehe die naechste
+        Gegenprobe (Fuellerkette)."""
         self.write_rules([rule("verklebt", entity="Firmenname", kind="regex",
                                value=r"Nord\s*wind",
                                examples=["Die Nord wind Gruppe"])])
         guard = await self._guard()
         masker = dg.Masker()
         masker.reid_map["<PERSON_0>"] = "Max"
-        await guard._verify_no_pii_left("Nord<PERSON_0>wind", masker)
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("Nord<PERSON_0>wind", masker)
 
     async def test_filler_chain_artifact_still_does_not_block(self):
         """Gegenprobe 2: Leerzeichenkette aus angrenzenden Platzhaltern."""
@@ -1380,22 +1399,37 @@ class TestFillerFilterKeepsRealFindings(_RuleFileTestCase,
             await guard._verify_no_pii_left(
                 "Kontakt <PERSON_0>. Anna<PERSON_0>Mueller", masker)
 
-    async def test_artefakt_bleibt_artefakt_wenn_segmente_leer_ausgehen(self):
-        """Gegenprobe zur Aufteilung: 'Nord' und 'wind' sind EINZELN kein
-        Fund -- das Muster greift nur ueber den Fueller hinweg. Der Treffer
-        muss weiterhin verworfen werden, sonst blockt der Fehlalarm wieder."""
-        self.write_rules([rule("verklebt", entity="Firmenname", kind="regex",
-                               value=r"Nord\s*wind",
-                               examples=["Die Nord wind Gruppe"])])
+    async def test_artefakt_ohne_klartext_im_kern_bleibt_artefakt(self):
+        """Gegenprobe zur Aufteilung, im Re-Audit praezisiert.
+
+        Verworfen wird ein Treffer nur noch, wenn sein Kern KEINEN Klartext
+        traegt -- dann gibt es weder Segmente noch einen verklebten Kern, den
+        man pruefen koennte. Das ist der haeufige Artefaktfall: benachbarte
+        Platzhalter werden zu einer Leerzeichenkette, ein Whitespace-Muster
+        greift darauf. Er kostet keinen einzigen Analyzer-Aufruf.
+
+        Der frueher hier gepruefte Fall (Nord\\s*wind ueber einem Fueller)
+        blockt nach S1-R bewusst -- siehe
+        test_fall2_regel_die_ueber_den_filler_hinweg_greift."""
+        self.write_rules([rule("ws", entity="Formatierung", kind="regex",
+                               value=r"\s{3,}", examples=["a   b"])])
         guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
 
+        aufrufe = []
+
         async def keine(text, payload=None):
+            aufrufe.append(text)
             return []
 
         guard._presidio_analyze = keine
         masker = dg.Masker()
-        masker.reid_map["<PERSON_0>"] = "Max"
-        await guard._verify_no_pii_left("Nord<PERSON_0>wind", masker)
+        for i, name in enumerate(("Max", "Erika", "Anna")):
+            masker.reid_map[f"<PERSON_{i}>"] = name
+        await guard._verify_no_pii_left("<PERSON_0><PERSON_1><PERSON_2>",
+                                        masker)
+        self.assertEqual(len(aufrufe), 1,
+                         "reiner Fuellertreffer darf keine Nachpruefung "
+                         "kosten")
 
 
 # ===========================================================================
@@ -1815,6 +1849,12 @@ class TestStatKeyOnlyAdvancesAfterSuccess(_RuleFileTestCase):
     def test_nach_ausnahme_wird_erneut_geladen(self):
         self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug")])
         rs = cr.RuleSet(self.path)
+        rs.active_rules  # Erstladung abschliessen
+
+        # Datei aendern, damit ueberhaupt ein Reload ansteht.
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug"),
+                          rule("zweiter", entity="Projektname",
+                               value="Seewind")])
 
         versuche = []
         echtes_load = rs._load

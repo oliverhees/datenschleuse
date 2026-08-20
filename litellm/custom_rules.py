@@ -467,8 +467,18 @@ class RuleSet:
         stderr statt stdout, weil das hier Stoerungsmeldungen sind und nicht
         Programmausgabe -- und weil ein stiller Ausfall der Maskierungsschicht
         genau der Defekt war, den Security-Finding F3 beschrieben hat.
+
+        Der Schreibvorgang ist gekapselt: ist der Log-Kanal weg (Collector
+        beendet, Pipe geschlossen -> BrokenPipeError), darf das nicht in den
+        Maskierungspfad zurueckschlagen. Eine Meldung zu verlieren ist
+        aergerlich; einen Regelsatz dauerhaft nicht mehr zu laden oder einen
+        Request an einer kaputten Pipe scheitern zu lassen, ist schlimmer.
         """
-        print(f"[datenschleuse] {level}: {text}", file=sys.stderr, flush=True)
+        try:
+            print(f"[datenschleuse] {level}: {text}", file=sys.stderr,
+                  flush=True)
+        except Exception:
+            pass
 
     def _set_load_error(self, text: str) -> None:
         """Setzt den Fehler und meldet ihn EINMAL pro Auftreten."""
@@ -554,9 +564,15 @@ class RuleSet:
 
         if key == self._stat_key:
             return
-        self._stat_key = key
         self._seen_file = True
         self._load(key)
+        # Security-Finding (Re-Audit, LOW): ERST nach erfolgreichem Laden
+        # vorruecken. Stand die Zuweisung davor, blieb der Regelsatz nach
+        # einer entkommenen Ausnahme in _load DAUERHAFT stehen -- der
+        # naechste Aufruf sah key == _stat_key und lud nie wieder. Ein
+        # stiller, permanenter Ausfall der Hot-Reload-Zusage, ausgeloest
+        # schon von einem BrokenPipeError beim Loggen.
+        self._stat_key = key
 
     def _load(self, key: Tuple[int, int]) -> None:
         try:

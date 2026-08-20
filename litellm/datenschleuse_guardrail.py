@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -328,6 +329,22 @@ ANONYMIZATION_NOTICE = (
 )
 
 
+@functools.lru_cache(maxsize=32)
+def _placeholder_pattern(keys: Tuple[str, ...]) -> "re.Pattern[str]":
+    """Alternation ueber alle Platzhalter, laengste zuerst.
+
+    Python probiert Alternativen von links nach rechts; die Sortierung des
+    Aufrufers uebernimmt damit dieselbe Rolle wie die frueher explizite
+    "laengster Treffer gewinnt"-Schleife.
+
+    Gecacht, weil derselbe ``reid_map`` innerhalb einer Nachricht mehrfach
+    geprueft wird (ein Aufruf pro ``arguments``-String). Im Cache liegen nur
+    die PLATZHALTER -- unsere eigenen, generierten Token, nie ein Klartext
+    (Gesetz 5).
+    """
+    return re.compile("|".join(re.escape(k) for k in keys))
+
+
 def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, int]]]:
     """Baut den Probe-String und merkt sich, WO die Fueller stehen.
 
@@ -338,45 +355,44 @@ def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[i
     greift. Um solche Artefakte spaeter erkennen zu koennen, reicht der
     fertige String nicht: man braucht die Positionen der Fueller.
 
-    Deshalb wird hier einmal linear durchgelaufen statt mehrfach ``replace``
-    aufzurufen -- nur so sind die Positionen im ERGEBNIS bekannt. Laengste
-    Platzhalter zuerst, damit ``<PERSON_1>`` nicht innerhalb von
-    ``<PERSON_10>`` matcht.
+    Ersetzt wird deshalb NICHT mit mehrfachem ``replace`` -- nur ein einziger
+    Durchlauf kennt die Positionen im ERGEBNIS. Laengste Platzhalter zuerst,
+    damit ``<PERSON_1>`` nicht innerhalb von ``<PERSON_10>`` matcht; bei einer
+    Regex-Alternation gilt dafuer die Reihenfolge der Alternativen.
+
+    Security-Finding DoS-1: Der Durchlauf lief frueher zeichenweise in Python
+    und pruefte an jedem Vorkommen des Anfangszeichens ALLE Schluessel durch.
+    Das ist quadratisch, sobald das Anfangszeichen haeufig ist -- und beides
+    bestimmt der Absender: die Textform und (ueber die Menge erkannter
+    Entitaeten) die Groesse des ``reid_map``. Gemessen: 200 KB Text mit 1000
+    Schluesseln brauchten 6,5 s statt 0,07 s. Das ist synchrone CPU-Arbeit im
+    Event-Loop, blockiert also alle parallelen Requests mit -- dieselbe
+    Defektklasse, die Finding F2 in der Regel-Schicht behoben hat. Die
+    Positionssuche laeuft deshalb jetzt in der Regex-Maschine (C) statt in
+    Python.
     """
     if not reid_map:
         return text, []
-    # Security-Finding S4: ein LEERER Schluessel ist kein Platzhalter, aber
-    # ``text.startswith("", i)`` ist immer wahr. Der Index rueckte dann nie
-    # vor -- die Schleife lief endlos und fuellte dabei den Speicher. Solche
-    # Schluessel hier einmal aussortieren statt in der heissen Schleife.
-    keys = [k for k in sorted(reid_map, key=len, reverse=True) if k]
+    # Security-Finding S4: ein LEERER Schluessel ist kein Platzhalter, wuerde
+    # aber ueberall matchen. Einmal aussortieren.
+    keys = tuple(k for k in sorted(reid_map, key=len, reverse=True) if k)
     if not keys:
         return text, []
-    # Alle Platzhalter beginnen mit demselben Zeichen; die Vorpruefung darauf
-    # macht den Durchlauf linear statt quadratisch.
-    starts = {k[0] for k in keys}
 
     teile: List[str] = []
     fueller: List[Tuple[int, int]] = []
     laenge = 0
-    i = 0
-    n = len(text)
-    while i < n:
-        treffer = None
-        if text[i] in starts:
-            for k in keys:
-                if text.startswith(k, i):
-                    treffer = k
-                    break
-        if treffer is not None:
-            teile.append(_PLACEHOLDER_PROBE_FILLER)
-            fueller.append((laenge, laenge + len(_PLACEHOLDER_PROBE_FILLER)))
-            laenge += len(_PLACEHOLDER_PROBE_FILLER)
-            i += len(treffer)
-        else:
-            teile.append(text[i])
-            laenge += 1
-            i += 1
+    ende = 0
+    for treffer in _placeholder_pattern(keys).finditer(text):
+        zwischen = text[ende:treffer.start()]
+        if zwischen:
+            teile.append(zwischen)
+            laenge += len(zwischen)
+        teile.append(_PLACEHOLDER_PROBE_FILLER)
+        fueller.append((laenge, laenge + len(_PLACEHOLDER_PROBE_FILLER)))
+        laenge += len(_PLACEHOLDER_PROBE_FILLER)
+        ende = treffer.end()
+    teile.append(text[ende:])
     return "".join(teile), fueller
 
 
@@ -384,6 +400,37 @@ def _build_probe(text: str, reid_map: Dict[str, str]) -> Tuple[str, List[Tuple[i
 # _filler_segments). Wird sie gerissen, gilt der Treffer als echt und blockt.
 # Fail-closed: lieber ein Fehlalarm als ein unbemerkter Durchlass.
 _MAX_FILLER_SEGMENTS = 16
+
+# Obergrenze fuer die Analyzer-Aufrufe EINES Verifikationsdurchlaufs
+# (Security-Finding DoS-2). Der Deckel oben begrenzt einen einzelnen Treffer,
+# dieser den gesamten Text. Ist er erschoepft, gilt jeder weitere Treffer als
+# echt und der Request blockt -- fail-closed.
+_MAX_VERIFY_ANALYZE_CALLS = 32
+
+
+class _AnalyzeBudget:
+    """Zaehlt die Analyzer-Aufrufe eines Verifikationsdurchlaufs.
+
+    Security-Finding DoS-2: ``_verify_no_pii_left`` machte frueher EINEN
+    ``_analyze``-Aufruf. Mit der Segmentpruefung sind es
+    ``1 + Summe(Segmente)`` -- und jeder davon setzt in der Regel-Schicht
+    eine FRISCHE Frist. Das Zeitbudget, dessen Sinn laut Finding F2
+    ausdruecklich ist, "fuer den GESAMTEN Aufruf" zu gelten, vervielfachte
+    sich damit still. Der Deckel pro Treffer half nicht: er begrenzt nicht,
+    wie viele Treffer ein Text hat.
+    """
+
+    __slots__ = ("rest",)
+
+    def __init__(self, rest: int) -> None:
+        self.rest = rest
+
+    def nimm(self) -> bool:
+        """Einen Aufruf abbuchen. ``False`` heisst: Budget erschoepft."""
+        if self.rest <= 0:
+            return False
+        self.rest -= 1
+        return True
 
 
 def _filler_segments(probe: str, entity: Dict[str, Any],
@@ -402,17 +449,21 @@ def _filler_segments(probe: str, entity: Dict[str, Any],
         Neutralisierung haette es diesen Treffer nicht gegeben: verwerfen.
     ``[...]``
         Die Klartext-Segmente zwischen den Fuellern, getrimmt und ohne
-        Duplikate. Der Aufrufer prueft sie EINZELN nach.
+        Duplikate. Der Aufrufer prueft sie EINZELN und VERKLEBT nach.
 
     Security-Finding S1 (HIGH): Vorher lieferte diese Stelle ein blankes
     "Artefakt: ja/nein" -- und verwarf den GESAMTEN Treffer, sobald
     irgendein Fueller in seinem Kern lag. Damit ging ``Anna <PERSON_0>
     Mueller`` im Klartext hinaus: der Analyzer findet den Namen ueber den
-    Fueller hinweg, und genau dieser Fund wurde als Artefakt abgetan. Die
-    Zerlegung trennt die beiden Faelle sauber: ``Nord`` und ``wind`` sind
-    einzeln kein Fund (Artefakt), ``Anna`` und ``Mueller`` sind es sehr wohl.
+    Fueller hinweg, und genau dieser Fund wurde als Artefakt abgetan.
     """
     if not filler_spans:
+        # Ohne Fueller haben WIR nichts in den Text eingefuegt. Dann kann
+        # dieser Treffer auch nicht durch unsere Ersetzung entstanden sein --
+        # egal wie er aussieht, er gehoert dem Analyzer und wird nicht
+        # angetastet. Das ist bewusst NICHT symmetrisch zum
+        # Whitespace-Zweig weiter unten: dort ist die Herkunft belegt, hier
+        # ist sie ausgeschlossen.
         return None
     try:
         start = int(entity["start"])
@@ -1696,9 +1747,11 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if not isinstance(text, str) or not text.strip():
             return
         probe, filler_spans = _build_probe(text, masker.reid_map)
+        budget = _AnalyzeBudget(_MAX_VERIFY_ANALYZE_CALLS)
         leftovers = []
         for e in await self._analyze(probe):
-            if not await self._is_filler_artifact(probe, e, filler_spans):
+            if not await self._is_filler_artifact(probe, e, filler_spans,
+                                                  budget):
                 leftovers.append(e)
         if leftovers:
             types = sorted({str(e.get("entity_type")) for e in leftovers})
@@ -1724,7 +1777,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
     async def _is_filler_artifact(
         self, probe: str, entity: Dict[str, Any],
-        filler_spans: List[Tuple[int, int]]
+        filler_spans: List[Tuple[int, int]], budget: "_AnalyzeBudget"
     ) -> bool:
         r"""Ist dieser Treffer erst durch die Neutralisierung entstanden?
 
@@ -1747,21 +1800,58 @@ class DatenschleuseGuardrail(_GuardrailBase):
           sind einzeln kein Fund -> Artefakt, verwerfen.
         - ``Anna``/``Mueller``: beide einzeln PERSON -> echter Fund, blocken.
 
+        Security-Finding S1-R (HIGH): Die Segmentpruefung ALLEIN traegt nur,
+        solange die Erkennung kontextfrei ist. Presidio erkennt Namens-Token
+        einzeln, deshalb funktioniert sie fuer ``Anna``/``Mueller``.
+        MUSTERBASIERTE Recognizer koennen ihre Bruchstuecke prinzipbedingt
+        nicht erkennen -- eine halbe Telefonnummer ist keine Telefonnummer:
+
+            "Nummer: +49 30<PERSON_0>901820" -> Probe "Nummer: +49 30 901820"
+              _analyze(probe)     -> PHONE_NUMBER
+              _analyze("+49 30")  -> []
+              _analyze("901820")  -> []
+
+        Alle Segmente leer, der Fund waere verworfen worden -- elf Ziffern im
+        Klartext. Deshalb wird zusaetzlich der VERKLEBTE KERN geprueft: die
+        Segmente ohne den eingefuegten Whitespace aneinandergehaengt
+        (``+49 30901820``). Artefakt ist der Treffer nur, wenn BEIDE
+        Pruefungen leer bleiben.
+
+        BEWUSSTE FOLGE (Entscheidung des Leads, gemessen im Testkorpus): ein
+        Muster wie ``Nord\s*wind`` matcht auch ``Nordwind`` und blockt damit
+        auf ``Nord<PERSON_0>wind`` wieder. Das ist ein sichtbarer Fehlalarm
+        statt eines stillen Lecks -- und ein Muster, das ueber einen
+        Platzhalter hinweggreift, ist genau die Konstruktion, mit der man die
+        Maskierung umgeht. Der reine Fuellerfall (Kern ohne jeden Klartext,
+        etwa ``\s{3,}`` ueber benachbarte Platzhalter) bleibt unberuehrt: er
+        wird ohne einen einzigen Analyzer-Aufruf verworfen.
+
         Bewusst ueber ``_analyze`` und nicht ueber ``_presidio_analyze``: das
         ist dieselbe Naht, die auch der erste Durchlauf nutzt (die eigenen
         Regeln haengen dort mit drin) und an der die Tests dieses Moduls die
-        Erkennung ersetzen. Die Segmente enthalten keine Platzhalter mehr,
+        Erkennung ersetzen. Die Kandidaten enthalten keine Platzhalter mehr,
         eine Rekursion in den Verifikationsdurchlauf gibt es also nicht.
 
         Kosten: zusaetzliche Analyzer-Aufrufe NUR fuer Treffer, deren Kern
-        tatsaechlich einen Fueller enthaelt -- im Normalbetrieb keiner.
+        tatsaechlich einen Fueller enthaelt -- im Normalbetrieb keiner. Ueber
+        den gesamten Durchlauf deckelt sie ``budget`` (Finding DoS-2).
         """
         segmente = _filler_segments(probe, entity, filler_spans)
         if segmente is None:
             return False
-        for stueck in segmente:
+
+        kandidaten = list(segmente)
+        verklebt = "".join(segmente)
+        if verklebt and verklebt not in kandidaten:
+            kandidaten.append(verklebt)
+
+        for stueck in kandidaten:
+            if not budget.nimm():
+                # Budget erschoepft. Ungeprueft ist nicht dasselbe wie
+                # sauber: der Treffer gilt als echt und blockt.
+                return False
             if await self._analyze(stueck):
-                # Ein Segment traegt fuer sich PII -> kein Artefakt.
+                # Ein Kandidat traegt fuer sich PII -> kein Artefakt.
                 return False
         return True
 
