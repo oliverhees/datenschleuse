@@ -13,7 +13,25 @@
 # Gegen die konkret verwendete LiteLLM-Version verifizieren:
 #   - Arbeitsverzeichnis/Config-Pfad des Stock-Images (aktuell /app)
 #   - dass /app auf dem PYTHONPATH liegt (unten explizit gesetzt)
-FROM ghcr.io/berriai/litellm:main-latest
+#
+# BASIS-IMAGE: Release-Tag PLUS Digest (DATENSCHLE-59).
+# Vorher stand hier `main-latest` -- ein rollender Tag auf den JEWEILS letzten
+# main-Merge von BerriAI. Nachgemessen am 2026-08-19: `main-latest` trug das
+# Label org.opencontainers.image.revision=007bd43c, ein Commit von *demselben
+# Tag* (03:31 UTC). Zwei Builds am selben Tag konnten also unterschiedliche
+# Software enthalten, und nachtraeglich war nicht feststellbar, welche
+# ausgeliefert wurde. Fuer ein Sicherheitsprodukt ist das nicht haltbar.
+#
+# Jetzt: das veroeffentlichte Release v1.97.0 (2026-08-16), zusaetzlich per
+# Digest festgenagelt. Der Tag ist die menschenlesbare Absicht, der Digest die
+# Garantie -- Tags sind verschiebbar, Digests nicht. Docker zieht bei dieser
+# Schreibweise ausschliesslich nach Digest.
+#
+# UPDATE-VERFAHREN: docs/foundation/supply-chain.md ("Digest-Update").
+# Kurz: nie von Hand raten, sondern
+#   docker buildx imagetools inspect ghcr.io/berriai/litellm:<neuer-tag>
+# und den Digest daraus uebernehmen -- als eigenes Work Item mit gruenem CI.
+FROM ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
 
 WORKDIR /app
 

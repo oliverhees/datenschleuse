@@ -1,7 +1,7 @@
 services:
   # 1. LiteLLM Proxy = die eigentliche Datenschleuse-Schnittstelle (OpenAI-kompatibel)
   datenschleuse:
-    # Eigenes Image (statt Stock ghcr.io/berriai/litellm:main-latest), weil die
+    # Eigenes Image (statt Stock ghcr.io/berriai/litellm), weil die
     # Custom-Guardrail-Klasse (litellm/datenschleuse_guardrail.py) importierbar
     # sein muss und ggf. Extra-Deps braucht -- siehe litellm/Dockerfile.
     build:
@@ -98,7 +98,12 @@ services:
   # 1b. Postgres fuer das LiteLLM Admin-UI (Spend-Logs, Guardrail-Metadaten,
   # NIE Message-Content -- siehe turn_off_message_logging in config.yaml).
   datenschleuse-db:
-    image: postgres:16-alpine
+    # Versions-Tag PLUS Digest (DATENSCHLE-59). `16-alpine` allein ist ein
+    # rollender Tag: er zeigte am 2026-08-19 auf PG 16.15, zeigt beim naechsten
+    # Patch-Release aber auf etwas anderes. Der Digest macht den Stand
+    # reproduzierbar; der Tag sagt einem Menschen, was drin ist.
+    # Update-Verfahren: docs/foundation/supply-chain.md ("Digest-Update").
+    image: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: datenschleuse-db
     restart: unless-stopped
     environment:
@@ -147,7 +152,9 @@ services:
 
   # 3. Presidio Anonymizer = ersetzt erkannte PII durch Platzhalter
   presidio-anonymizer:
-    image: mcr.microsoft.com/presidio-anonymizer:latest
+    # Versions-Tag PLUS Digest (DATENSCHLE-59), siehe datenschleuse-db.
+    # `latest` und `2.2.362` zeigten am 2026-08-19 auf denselben Digest.
+    image: mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483
     container_name: datenschleuse-anonymizer
     restart: unless-stopped
     networks:
@@ -168,7 +175,11 @@ services:
   # presidio/recognizers-config.yml NICHT -- im Bild greifen nur die
   # eingebauten Typen. Siehe _redact_image() im Guardrail.
   presidio-image-redactor:
-    image: mcr.microsoft.com/presidio-image-redactor:latest
+    # Versions-Tag PLUS Digest (DATENSCHLE-59), siehe datenschleuse-db.
+    # Achtung: der Image-Redactor hat eine EIGENE Versionsreihe (0.0.x), nicht
+    # die 2.2.x der uebrigen Presidio-Dienste. `latest` == `0.0.58` am
+    # 2026-08-19.
+    image: mcr.microsoft.com/presidio-image-redactor:0.0.58@sha256:e49fd47bfc38d834f0856063b9f00cfb3c19866e8d61b061849baf6275139612
     container_name: datenschleuse-image-redactor
     restart: unless-stopped
     networks:
