@@ -22,6 +22,8 @@ Python-Stdlib-Paket "test" und schlaegt dort fehl, siehe DATENSCHLE-62):
 import contextlib
 import io
 import os
+import re
+import signal
 import sys
 import tempfile
 import time
@@ -1298,3 +1300,252 @@ class TestBudgetMessageIsHonest(_RuleFileTestCase):
                           f"Meldung nennt die konkrete Textgroesse nicht: {exc}")
         else:
             self.fail("kein fail-closed ausgeloest")
+
+
+# ===========================================================================
+# 20. S1 (Security-Audit, HIGH) — der Fueller-Filter darf keine ECHTEN Funde
+#     fressen
+#
+# Der F10-Fix verwirft einen Treffer, sobald IRGENDEIN Fueller in seinem
+# getrimmten Kern liegt -- ohne je zu pruefen, ob die Nicht-Fueller-Anteile
+# fuer sich genommen PII sind. Das ist eine REGRESSION gegenueber dem
+# Praefix-Filter: der behielt PERSON und blockte. Der blinde Fleck war
+# vorher auf CUSTOM_* begrenzt, mit dem Span-Filter gilt er fuer JEDEN Typ.
+#
+#   "Anna <PERSON_0> Mueller"  ->  Probe "Anna   Mueller"  ->  KEIN BLOCK
+#   "Anna<PERSON_0>Mueller"    ->  Probe "Anna Mueller"    ->  KEIN BLOCK
+#
+# Der bestehende Gegenprobe-Test trifft den Fall NICHT: dort steht " und "
+# zwischen Platzhalter und Restnamen, der Span schneidet den Fueller also
+# gerade nicht. Hier ueberspannt er ihn wirklich.
+#
+# Richtig ist: den Treffer an den Fuellergrenzen aufteilen und die Segmente
+# erneut durch _analyze schicken. Bleibt ein Segment fuer sich ein Fund, ist
+# es kein Artefakt. "Nord" und "wind" einzeln sind kein Fund -> verwerfen.
+# "Anna" und "Mueller" einzeln sind PERSON -> blocken.
+# ===========================================================================
+# Mini-Analyzer, der sich wie Presidio verhaelt: er findet den Namen auch
+# ueber mehrere Leerzeichen hinweg, weil die Tokenisierung Whitespace
+# zusammenfasst. Genau daraus entsteht der ueberspannende Treffer.
+_NAME_RE = re.compile(r"\bAnna(?:\s+Mueller)?\b|\bMueller\b|\bLisa\s+Weber\b")
+
+
+class TestFillerFilterKeepsRealFindings(_RuleFileTestCase,
+                                        unittest.IsolatedAsyncioTestCase):
+    async def _guard(self):
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def presidio(text, payload=None):
+            return [{"entity_type": "PERSON", "start": m.start(),
+                     "end": m.end(), "score": 0.9}
+                    for m in _NAME_RE.finditer(text)]
+
+        guard._presidio_analyze = presidio
+        return guard
+
+    async def test_fund_der_einen_fueller_ueberspannt_blockt(self):
+        """Der Kern von S1: der Treffer UEBERSPANNT den Fueller. Links und
+        rechts davon steht echter Klartext -- der Fund ist real."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard()
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("Anna <PERSON_0> Mueller", masker)
+
+    async def test_eingeklebter_platzhalter_blockt(self):
+        """Ohne trennende Leerzeichen: der Platzhalter macht den Namen im
+        ROHTEXT fuer die Tokenisierung unlesbar (erster Durchlauf greift
+        nicht), im Probe-String wird er zum Leerzeichen und der Name wird
+        sichtbar. Genau dieser Fund darf nicht als Artefakt gelten."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard()
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("Anna<PERSON_0>Mueller", masker)
+
+    async def test_decoy_erzwungener_platzhalter_blockt(self):
+        """Das Angriffsszenario des Auditors: ein Decoy erzwingt die Erzeugung
+        von <PERSON_0> (Nummerierung ab 0, deterministisch vorhersagbar), der
+        eingeklebte Platzhalter schmuggelt den echten Namen vorbei."""
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard()
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Lisa Weber"
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left(
+                "Kontakt <PERSON_0>. Anna<PERSON_0>Mueller", masker)
+
+    async def test_artefakt_bleibt_artefakt_wenn_segmente_leer_ausgehen(self):
+        """Gegenprobe zur Aufteilung: 'Nord' und 'wind' sind EINZELN kein
+        Fund -- das Muster greift nur ueber den Fueller hinweg. Der Treffer
+        muss weiterhin verworfen werden, sonst blockt der Fehlalarm wieder."""
+        self.write_rules([rule("verklebt", entity="Firmenname", kind="regex",
+                               value=r"Nord\s*wind",
+                               examples=["Die Nord wind Gruppe"])])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine(text, payload=None):
+            return []
+
+        guard._presidio_analyze = keine
+        masker = dg.Masker()
+        masker.reid_map["<PERSON_0>"] = "Max"
+        await guard._verify_no_pii_left("Nord<PERSON_0>wind", masker)
+
+
+# ===========================================================================
+# 21. S3 (Security-Audit, LOW) — degenerierte Spans sind kein Artefakt
+#
+# Nach dem Clamping fielen verdrehte (start > end) und ausserhalb des Textes
+# liegende Spans in denselben Zweig wie ein reiner Whitespace-Treffer und
+# galten damit als Artefakt. Das widerspricht dem Kommentar acht Zeilen
+# darueber ("im Zweifel blocken"): ein unlesbarer Treffer wird still
+# geschluckt, statt fail-closed zu wirken.
+# ===========================================================================
+class TestDegenerateSpanIsNotAnArtifact(_RuleFileTestCase,
+                                        unittest.IsolatedAsyncioTestCase):
+    async def _guard(self, span):
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def presidio(text, payload=None):
+            return [{"entity_type": "PERSON", "start": span[0],
+                     "end": span[1], "score": 0.9}]
+
+        guard._presidio_analyze = presidio
+        return guard
+
+    def _masker(self):
+        masker = dg.Masker()
+        # WICHTIG: ein Platzhalter MUSS drin sein, sonst ist filler_spans leer
+        # und der Klassifizierer wird gar nicht erst befragt.
+        masker.reid_map["<PERSON_0>"] = "Max"
+        return masker
+
+    async def test_verdrehter_span_blockt(self):
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard((9, 3))
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("<PERSON_0> Text", self._masker())
+
+    async def test_span_ausserhalb_des_textes_blockt(self):
+        self.write_rules([rule("k", entity="Kundenname", value="Adlerflug")])
+        guard = await self._guard((500, 600))
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._verify_no_pii_left("<PERSON_0> Text", self._masker())
+
+
+# ===========================================================================
+# 22. S4 (Security-Audit, LOW) — _build_probe darf nicht endlos laufen
+#
+# Ein leerer Schluessel im reid_map macht ``text.startswith("", i)`` immer
+# wahr; der Index rueckt nie vor und die Schleife laeuft ewig weiter (und
+# frisst dabei Speicher). Ein leerer Platzhalter ist kein Platzhalter.
+# ===========================================================================
+class TestProbeBuilderTerminates(unittest.TestCase):
+    def test_leerer_schluessel_haengt_nicht(self):
+        reid_map = {"": "irgendwas", "<PERSON_0>": "Max"}
+        # Das "<" ohne folgenden Platzhalter ist der Ausloeser: die Vorpruefung
+        # auf das Anfangszeichen greift, kein echter Schluessel passt -- und
+        # der leere Schluessel passt immer.
+        text = "a < b <PERSON_0> c"
+
+        def wecker(signum, frame):
+            raise TimeoutError("_build_probe terminiert nicht")
+
+        alt = signal.signal(signal.SIGALRM, wecker)
+        signal.setitimer(signal.ITIMER_REAL, 0.25)
+        try:
+            probe, fueller = dg._build_probe(text, reid_map)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, alt)
+
+        self.assertEqual(probe, "a < b   c")
+        self.assertEqual(fueller, [(6, 7)])
+
+
+# ===========================================================================
+# 23. S2 (Security-Audit, MEDIUM) — F11 greift nicht auf allen Abbruchpfaden
+#
+# Der Aufbau der Ergebnis-Dicts wurde fuer F8 bewusst aus dem ``try`` in den
+# ``else:``-Block verschoben -- und hat dort KEINEN Handler. Reisst es dort
+# (MemoryError, OSError, RuntimeError), verlaesst die Ausnahme find() als
+# etwas anderes als RuleMatchingIncomplete und laeuft im Guardrail weiter in
+# den fail-OPEN-Handler: Folgeregeln abgebrochen, Abdeckung unbekannt,
+# Request geht raus. Exakt die Klasse, die F11 gerade verworfen hat.
+# ===========================================================================
+class _KaputterSpan:
+    """Ein Span, der beim Entpacken im Ergebnisaufbau reisst -- also NACH dem
+    Scan, ausserhalb des bisherigen try."""
+
+    def __iter__(self):
+        raise MemoryError("kein Speicher fuer die Ergebnisliste")
+
+
+class _MatchMitKaputtemSpan:
+    def span(self):
+        return _KaputterSpan()
+
+
+class _PatternDasNachDemScanReisst:
+    def finditer(self, text, timeout=None):
+        return [_MatchMitKaputtemSpan()]
+
+
+class TestPostScanErrorIsFailClosed(_RuleFileTestCase):
+    def test_fehler_beim_ergebnisaufbau_wird_zu_incomplete(self):
+        """find() darf diese Klasse nur als RuleMatchingIncomplete verlassen --
+        alles andere landet im fail-open-Handler."""
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug")])
+        rs = cr.RuleSet(self.path)
+        rs.active_rules  # Laden erzwingen
+        rs._active[0].pattern = _PatternDasNachDemScanReisst()
+        with self.assertRaises(cr.RuleMatchingIncomplete):
+            rs.find("Projekt Adlerflug laeuft")
+
+
+class TestPostScanErrorBlocksRequest(_RuleFileTestCase,
+                                     unittest.IsolatedAsyncioTestCase):
+    async def test_analyze_blockt_statt_still_zu_ueberspringen(self):
+        """Ende zu Ende: derselbe Fehler muss den Request blocken."""
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug")])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def keine(text, payload=None):
+            return []
+
+        guard._presidio_analyze = keine
+        guard.custom_rules.active_rules  # Laden erzwingen
+        guard.custom_rules._active[0].pattern = _PatternDasNachDemScanReisst()
+
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard._analyze("Projekt Adlerflug laeuft")
+
+    async def test_ladefehler_bleibt_fail_open(self):
+        """Die Gegengrenze (ISC-26): ein Fehler beim LADEN der Regeldatei ist
+        etwas anderes -- dort ist die Abdeckung bekannt (die Regeln greifen
+        eben nie), und die Presidio-Maskierung darf davon nicht mitgerissen
+        werden. Wer S2 zu weit fixt, scheitert an diesem Test."""
+        self.write_rules([rule("kunde", entity="Kundenname", value="Adlerflug")])
+        guard = dg.DatenschleuseGuardrail(custom_rules_path=self.path)
+
+        async def presidio(text, payload=None):
+            return [{"entity_type": "PERSON", "start": 0, "end": 3,
+                     "score": 0.9}]
+
+        guard._presidio_analyze = presidio
+
+        def kaputtes_laden():
+            raise OSError("Regeldatei unlesbar")
+
+        guard.custom_rules._reload_if_changed = kaputtes_laden
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            treffer = await guard._analyze("Projekt Adlerflug laeuft")
+        self.assertEqual(len(treffer), 1,
+                         "Presidio-Maskierung wurde mitgerissen (ISC-26)")
