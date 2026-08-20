@@ -2,7 +2,34 @@
 *.log
 __pycache__/
 .DS_Store
-.claude/
+# --- .claude/: Prozess gehoert ins Repo, Laufzeitzustand nicht -----------
+# Frueher stand hier pauschal `.claude/`. Damit lagen ALLE Prozess-Gates
+# dieses Projekts ausserhalb von Git: Stop-Gate, Guard, Verdict-Skript,
+# Rollendefinitionen, Slash-Befehle. Die Verfassung schrieb Prozesse vor,
+# deren Ausfuehrung nicht mitgeliefert wurde -- mit drei Folgen, die als
+# Befunde belegt sind (Begruendung: docs/adr/0004-prozess-infrastruktur-
+# versionieren.md):
+#   1. Die Stop-Gate-Tests meldeten in CI `OK (skipped=12)` -- gruen, ohne
+#      etwas zu pruefen, weil die Hooks dort schlicht fehlten.
+#   2. Hooks liessen sich mitten in einer Sitzung austauschen; Schreiber
+#      und Leser sahen dann verschiedene Staende.
+#   3. Der `external-reviewer`, laut Verfassung Pflicht vor jedem Commit,
+#      existierte nur auf einem Rechner.
+#
+# Faustregel fuer neue Eintraege hier: Was den PROZESS definiert, kommt ins
+# Repo. Was PRO LAUF entsteht, bleibt draussen.
+#
+# Achtung beim Erweitern: `verdict.sh` bricht ab, sobald `git status`
+# irgendetwas meldet. Ein neuer, nicht ignorierter Laufzeitpfad legt damit
+# alle Gate-Verdicts still. Neue Laufzeitdatei im .claude/ -> Zeile hier.
+.claude/worktrees/
+.claude/scopes/
+.claude/hooklog.jsonl
+.claude/worklog.jsonl
+.claude/.last_code_edit
+.claude/.last_test_run
+.claude/.stop_block_count
+.claude/settings.local.json
 docker-compose.override.yml
 local-cockpit-test/
 test/e2e/artifacts/
