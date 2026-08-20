@@ -1,7 +1,7 @@
 {
   "gate": "qa",
   "verdict": "pass",
-  "commit": "423d260f548110cad8ae7bf2f8f53d6e6b0bb366",
-  "branch": "feature/DATENSCHLE-67-roundtrip-e2e-rebased",
-  "timestamp": "2026-08-19T14:09:08Z"
+  "commit": "fc5d441ddfd0498daa90fc027cc2e64d68bb5f43",
+  "branch": "main",
+  "timestamp": "2026-08-20T10:36:52Z"
 }
