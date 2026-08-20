@@ -84,7 +84,10 @@ Faelle er durchlaeuft.
 import os
 import random
 import sys
+import tempfile
 import unittest
+
+import yaml
 
 # litellm/-Ordner (mit datenschleuse_guardrail.py) auf den Importpfad legen.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -92,7 +95,9 @@ _LITELLM_DIR = os.path.normpath(os.path.join(_HERE, "..", "litellm"))
 if _LITELLM_DIR not in sys.path:
     sys.path.insert(0, _LITELLM_DIR)
 
+import custom_rules as cr  # noqa: E402
 import datenschleuse_guardrail as dg  # noqa: E402
+import qi_generalization as qig  # noqa: E402
 
 
 _STANDARD_FAELLE = 4000
@@ -119,6 +124,152 @@ def _seed() -> int:
         return int(roh)
     except ValueError:
         return _STANDARD_SEED
+
+
+# ---------------------------------------------------------------------------
+# Das Typ-Universum -- ABGELEITET, nicht von Hand gepflegt
+# ---------------------------------------------------------------------------
+# QA-Finding (DATENSCHLE-78): Hier stand eine handgepflegte Liste aus neun
+# Typen. Von den DREIZEHN eigenen deutschen Recognizern in
+# ``presidio/recognizers-config.yml`` war genau EINER darin (DE_STEUER_ID),
+# Standardtypen wie PHONE_NUMBER, URL und IP_ADDRESS fehlten ganz. Ein Leck
+# der Form
+#
+#     if entity.get("entity_type") == "DE_GEBURTSDATUM": return True
+#
+# lief damit durch Katalog UND Fuzzlauf gruen durch, obwohl es ein Klartext-
+# Geburtsdatum neben einem Platzhalter still verwirft -- exakt die Fehler-
+# klasse F10, gegen die dieser Test ausdruecklich schuetzen soll. Das Problem
+# war erkannt (siehe Kommentar an _ENTITY_TYPEN), die Abhilfe war zu schmal.
+#
+# Eine statische Liste veraltet beim naechsten neuen Recognizer erneut. Also
+# wird das Universum aus den ECHTEN Quellen abgeleitet:
+#
+#   1. ``presidio/recognizers-config.yml`` -- unsere eigenen Recognizer ueber
+#      ``supported_entity``, plus die dort aktivierten Presidio-Standard-
+#      Recognizer ueber ``_PREDEFINED_ENTITAETEN``.
+#   2. ``qi_generalization.QI_ENTITY_TYPES`` -- live importiert statt kopiert.
+#   3. ``custom_rules.ENTITY_PREFIX`` -- die Laufzeit-Typen aus der Regeldatei
+#      lassen sich nicht enumerieren (der Nutzer benennt sie frei), deshalb
+#      stellvertretende Beispiele mit dem ECHTEN Praefix.
+#   4. ``_PRESIDIO_STANDARD_ZUSATZ`` -- Standardtypen, die im Umlauf sein
+#      koennen, ohne dass ein Recognizer sie in unserer Konfiguration fuehrt.
+#
+# FEHLSCHLAGEN STATT SCHRUMPFEN: Fehlt die Konfiguration oder ist sie nicht
+# lesbar, wirft ``_typen_aus_konfiguration`` -- und der Test FAELLT AUS. Ein
+# Fuzzer, der bei fehlender Konfiguration still auf eine Handvoll Typen
+# zusammenfaellt und gruen meldet, waere schlimmer als die statische Liste:
+# er meldete Sicherheit, die er gar nicht geprueft hat.
+
+_KONFIG_PFAD = os.path.normpath(
+    os.path.join(_HERE, "..", "presidio", "recognizers-config.yml"))
+
+# Presidio-Standard-Recognizer -> die Entitaetstypen, die sie liefern.
+# Die Zuordnung ist explizit, damit ein NEU in der Konfiguration aktivierter
+# Standard-Recognizer hier auffaellt: ``_typen_aus_konfiguration`` wirft bei
+# einem unbekannten Namen, statt ihn still ohne Typen zu uebergehen.
+_PREDEFINED_ENTITAETEN = {
+    "EmailRecognizer": ("EMAIL_ADDRESS",),
+    "PhoneRecognizer": ("PHONE_NUMBER",),
+    "IbanRecognizer": ("IBAN_CODE",),
+    "CreditCardRecognizer": ("CREDIT_CARD",),
+    "IpRecognizer": ("IP_ADDRESS",),
+    "UrlRecognizer": ("URL",),
+    "CryptoRecognizer": ("CRYPTO",),
+    "DateRecognizer": ("DATE_TIME",),
+    # Das NER-Modell liefert mehrere Typen ueber denselben Recognizer.
+    "SpacyRecognizer": ("PERSON", "LOCATION", "ORGANIZATION", "NRP",
+                        "DATE_TIME"),
+    "TransformersRecognizer": ("PERSON", "LOCATION", "ORGANIZATION", "NRP"),
+}
+
+# Presidio-Standardtypen, die auftauchen koennen, ohne dass unsere
+# Konfiguration einen eigenen Recognizer dafuer fuehrt (Standard-Registry,
+# andere Deployments, spaetere Aktivierung). Fuer den Fuzzer ist Grosszuegig-
+# keit gratis: der Filter darf auf KEINEN Typ reagieren, also kostet ein Typ
+# zu viel nichts -- ein Typ zu wenig kostet ein unentdecktes Leck. Diese
+# Menge ist rein ADDITIV; sie darf die abgeleiteten Typen nie ersetzen.
+_PRESIDIO_STANDARD_ZUSATZ = (
+    "URL", "IP_ADDRESS", "PHONE_NUMBER", "DATE_TIME", "NRP",
+    "ORGANIZATION", "MEDICAL_LICENSE", "US_SSN",
+)
+
+# Stellvertreter fuer die frei benannten Laufzeit-Typen aus der Regeldatei.
+# Das Praefix kommt aus dem Produktionscode, nicht als Literal -- sonst
+# liefe eine Umbenennung dort hier unbemerkt ins Leere.
+_CUSTOM_BEISPIELE = tuple(
+    cr.ENTITY_PREFIX + name
+    for name in ("KUNDE", "PROJEKT", "DENY", "KUNDENNAME", "PERSON")
+)
+
+
+def _oeffne_konfiguration(pfad):
+    """Indirektion fuer den Dateizugriff -- Tests erzwingen darueber Fehler."""
+    return open(pfad, "r", encoding="utf-8")
+
+
+def _typen_aus_konfiguration(pfad=None):
+    """Entitaetstypen aus ``presidio/recognizers-config.yml`` ableiten.
+
+    Wirft ``RuntimeError``, wenn die Konfiguration fehlt, nicht parsebar ist,
+    einen unbekannten Standard-Recognizer fuehrt oder keine eigenen Typen
+    liefert. Das ist Absicht -- siehe "FEHLSCHLAGEN STATT SCHRUMPFEN" oben.
+    """
+    pfad = pfad or _KONFIG_PFAD
+    try:
+        with _oeffne_konfiguration(pfad) as fh:
+            daten = yaml.safe_load(fh)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Recognizer-Konfiguration nicht lesbar: {pfad} ({exc}). Das "
+            "Typ-Universum des Fuzzers laesst sich damit nicht ableiten -- "
+            "der Test faellt aus, statt still zu schrumpfen."
+        ) from exc
+    except yaml.YAMLError as exc:
+        raise RuntimeError(
+            f"Recognizer-Konfiguration nicht parsebar: {pfad} ({exc})."
+        ) from exc
+
+    if not isinstance(daten, dict):
+        raise RuntimeError(
+            f"Recognizer-Konfiguration ohne Mapping an der Wurzel: {pfad}")
+    eintraege = daten.get("recognizers")
+    if not isinstance(eintraege, list) or not eintraege:
+        raise RuntimeError(
+            f"Recognizer-Konfiguration ohne 'recognizers'-Liste: {pfad}")
+
+    typen = set()
+    eigene = set()
+    for eintrag in eintraege:
+        if not isinstance(eintrag, dict):
+            raise RuntimeError(
+                f"Recognizer-Eintrag ist kein Mapping: {eintrag!r} ({pfad})")
+        entitaet = eintrag.get("supported_entity")
+        if entitaet:
+            typen.add(str(entitaet))
+            eigene.add(str(entitaet))
+            continue
+        name = str(eintrag.get("name", ""))
+        if eintrag.get("type") == "predefined" or name.endswith("Recognizer"):
+            if name not in _PREDEFINED_ENTITAETEN:
+                raise RuntimeError(
+                    f"Unbekannter Presidio-Standard-Recognizer {name!r} in "
+                    f"{pfad}. Trage seine Entitaetstypen in "
+                    "_PREDEFINED_ENTITAETEN ein -- sonst fuzzt niemand "
+                    "diesen Typ.")
+            typen.update(_PREDEFINED_ENTITAETEN[name])
+            continue
+        raise RuntimeError(
+            f"Recognizer {name!r} in {pfad} hat weder 'supported_entity' "
+            "noch die Markierung 'predefined' -- sein Entitaetstyp ist nicht "
+            "bestimmbar.")
+
+    if not eigene:
+        raise RuntimeError(
+            f"Keine eigenen Entitaetstypen in {pfad} gefunden -- die "
+            "Konfiguration ist leer oder hat ein anderes Format. Der Test "
+            "faellt aus, statt ein geschrumpftes Universum zu pruefen.")
+    return tuple(sorted(typen))
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +668,140 @@ class FillerArtefaktFuzzTest(unittest.TestCase):
                 f"ohne Fuellerbereiche darf nichts verworfen werden: "
                 f"probe={probe!r} entity={entity!r}",
             )
+
+
+class TypUniversumTest(unittest.TestCase):
+    """Bildet das Typ-Universum des Fuzzers das echte System ab?
+
+    QA-Finding (DATENSCHLE-78): Es tat es nicht. Neun handgepflegte Typen
+    standen dreizehn eigenen deutschen Recognizern gegenueber -- genau EINER
+    war abgedeckt. Ein Leck, das nach ``entity_type`` verwirft, lief damit
+    gruen durch Katalog und Fuzzlauf. Diese Klasse haelt die Luecke zu, und
+    zwar dauerhaft: sie prueft gegen die Konfiguration, nicht gegen eine
+    zweite handgepflegte Liste.
+    """
+
+    def test_universum_deckt_alle_konfigurierten_typen(self):
+        """Jeder Typ aus der Recognizer-Konfiguration muss gefuzzt werden."""
+        konfiguriert = _typen_aus_konfiguration()
+        fehlend = sorted(set(konfiguriert) - set(_ENTITY_TYPEN))
+        self.assertEqual(
+            fehlend, [],
+            "Typen aus presidio/recognizers-config.yml fehlen im Fuzz-"
+            f"Universum: {fehlend}\n"
+            "Ein Leck, das genau auf einen dieser Typen keyt, findet diese "
+            "Suite NICHT. Das Universum muss aus der Konfiguration abgeleitet "
+            "werden, nicht von Hand gepflegt.",
+        )
+
+    def test_universum_deckt_presidio_standardtypen(self):
+        """Auch die Presidio-Standardtypen gehoeren ins Universum."""
+        fehlend = sorted(set(_PRESIDIO_STANDARD_ZUSATZ) - set(_ENTITY_TYPEN))
+        self.assertEqual(
+            fehlend, [],
+            f"Presidio-Standardtypen fehlen im Fuzz-Universum: {fehlend}")
+
+    def test_universum_deckt_qi_typen(self):
+        """Die QI-Typen kommen live aus dem Produktionsmodul, nicht kopiert."""
+        fehlend = sorted(set(qig.QI_ENTITY_TYPES) - set(_ENTITY_TYPEN))
+        self.assertEqual(
+            fehlend, [],
+            f"QI-Typen fehlen im Fuzz-Universum: {fehlend}")
+
+    def test_universum_enthaelt_laufzeit_custom_typen(self):
+        """Die frei benannten Regel-Typen tragen das ECHTE Praefix."""
+        mit_praefix = [t for t in _ENTITY_TYPEN
+                       if t.startswith(cr.ENTITY_PREFIX)]
+        self.assertGreaterEqual(
+            len(mit_praefix), 3,
+            f"zu wenige Typen mit dem Praefix {cr.ENTITY_PREFIX!r} -- ein "
+            "Rueckbau auf den Praefixfilter (Leck F10) fiele hier nicht "
+            "mehr auf",
+        )
+
+    def test_jeder_typ_im_universum_wird_wirklich_gefahren(self):
+        """Ein typ-gekeytes Leck muss fuer JEDEN Typ des Universums auffallen.
+
+        Das ist die vierte Leckvariante aus dem QA-Audit, als Test gegossen.
+        Fuer jeden Typ wird ein Filter gebaut, der GENAU bei diesem Typ still
+        verwirft. Der Katalogdurchlauf muss ihn finden. Faellt ein Typ hier
+        durch, steht er zwar in der Liste, wird aber nirgends wirklich
+        gefahren -- das Universum waere dann Dekoration statt Abdeckung.
+        """
+        echt = dg._is_filler_artifact
+        ungefangen = []
+        try:
+            for typ in _ENTITY_TYPEN:
+                def leck(probe, entity, filler_spans, _typ=typ):
+                    if entity.get("entity_type") == _typ:
+                        return True          # verwirft immer, typ-gekeyt
+                    return echt(probe, entity, filler_spans)
+
+                dg._is_filler_artifact = leck
+                if not self._katalog_findet_abweichung():
+                    ungefangen.append(typ)
+        finally:
+            dg._is_filler_artifact = echt
+
+        self.assertEqual(
+            ungefangen, [],
+            "Ein Leck, das auf diese Typen keyt, bleibt unentdeckt: "
+            f"{ungefangen}\n"
+            "Diese Typen werden im Katalogdurchlauf nicht gefahren.",
+        )
+
+    def _katalog_findet_abweichung(self) -> bool:
+        """Faehrt den Katalog wie ``test_katalog`` und meldet Abweichungen."""
+        for _name, text, reid_map, span_fn, erwartet in KATALOG:
+            probe, filler = dg._build_probe(text, reid_map)
+            if not filler:
+                continue
+            start, end = span_fn(probe, filler)
+            for typ in _ENTITY_TYPEN:
+                entity = {"start": start, "end": end, "entity_type": typ}
+                if dg._is_filler_artifact(probe, entity, filler) != erwartet:
+                    return True
+        return False
+
+    def test_fehlende_konfiguration_faellt_aus_statt_zu_schrumpfen(self):
+        """Ohne lesbare Konfiguration muss es KNALLEN, nicht leise gruen."""
+        with self.assertRaises(RuntimeError):
+            _typen_aus_konfiguration(
+                os.path.join(_HERE, "gibt-es-nicht", "recognizers-config.yml"))
+
+    def test_unbrauchbare_konfiguration_faellt_aus(self):
+        """Leer, formfremd, kaputt oder ohne eigene Typen -> RuntimeError."""
+        faelle = {
+            "leere Recognizer-Liste": "recognizers: []\n",
+            "leeres Mapping": "{}\n",
+            "keine eigenen Typen": (
+                "recognizers:\n"
+                "  - name: EmailRecognizer\n"
+                "    type: predefined\n"
+            ),
+            "unbekannter Standard-Recognizer": (
+                "recognizers:\n"
+                "  - name: VoellingNeuerRecognizer\n"
+                "    type: predefined\n"
+            ),
+            "Recognizer ohne bestimmbaren Typ": (
+                "recognizers:\n"
+                "  - name: irgendwas\n"
+            ),
+            "kaputtes YAML": "recognizers: [\n  - name: x\n",
+        }
+        for name, inhalt in faelle.items():
+            with self.subTest(fall=name):
+                with tempfile.NamedTemporaryFile(
+                        "w", suffix=".yml", delete=False,
+                        encoding="utf-8") as fh:
+                    fh.write(inhalt)
+                    pfad = fh.name
+                try:
+                    with self.assertRaises(RuntimeError):
+                        _typen_aus_konfiguration(pfad)
+                finally:
+                    os.unlink(pfad)
 
 
 if __name__ == "__main__":
