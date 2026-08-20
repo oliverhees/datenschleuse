@@ -130,15 +130,19 @@ def as_proxy_would(body):
 def snapshot_of(out):
     """Der Logging-Schnappschuss als durchsuchbarer String.
 
-    Das Re-Id-Mapping wird NICHT herausgefiltert: es hat im Schnappschuss
-    nichts zu suchen. Steht dort Klartext, ist das ein Befund -- egal ob er
-    aus einem Nutzfeld oder aus dem Mapping stammt.
+    Das Re-Id-Mapping wird herausgefiltert -- nicht weil es dort hingehoert,
+    sondern weil es ein EIGENER Befund ist (F4: die Klartext-Zuordnungstabelle
+    im Logging-Kanal) mit eigenem Test in test_reid_map_transport.py. Ein
+    Test, eine Aussage: dieser hier misst ausschliesslich, ob die NUTZFELDER
+    den Rebinding-Defekt noch haben.
     """
-    return json.dumps(
-        out.get("proxy_server_request", {}).get("body"),
-        ensure_ascii=False,
-        default=str,
-    )
+    body = out.get("proxy_server_request", {}).get("body")
+    if isinstance(body, dict) and isinstance(body.get("metadata"), dict):
+        body = dict(body)
+        body["metadata"] = {
+            k: v for k, v in body["metadata"].items() if k != dg.REID_MAP_KEY
+        }
+    return json.dumps(body, ensure_ascii=False, default=str)
 
 
 #: Fuer jedes registrierte maskierte Feld eine Wertform, die es real annehmen
@@ -215,7 +219,7 @@ class TestLoggingSnapshotNoPlaintext(unittest.IsolatedAsyncioTestCase):
         fuer alle ausser ``messages``.
         """
         geprueft = 0
-        for route, call_type in _ROUTE_CALL_TYPE.items():
+        for route, call_type in _ROUTE_CALL_TYPE:
             for feld in route.masked:
                 self.assertIn(
                     feld,
@@ -281,7 +285,12 @@ class TestLoggingSnapshotNoPlaintext(unittest.IsolatedAsyncioTestCase):
         out = await self._run(as_proxy_would(body), "acompletion")
         snap = out["proxy_server_request"]["body"]
         self.assertEqual(snap["user"], out["user"])
-        self.assertNotIn(_NAME, json.dumps(snap, ensure_ascii=False))
+        # Nur die NUTZFELDER: dass ``metadata`` mit dem Re-Id-Mapping im
+        # Schnappschuss ebenfalls nichts im Klartext zu suchen hat, ist ein
+        # eigener Befund (F4) und hat seinen eigenen Test -- siehe
+        # test_reid_map_transport.py. Ein Test, eine Aussage.
+        ohne_meta = {k: v for k, v in snap.items() if k != "metadata"}
+        self.assertNotIn(_NAME, json.dumps(ohne_meta, ensure_ascii=False))
 
 
 class TestLoggingSnapshotShape(unittest.IsolatedAsyncioTestCase):

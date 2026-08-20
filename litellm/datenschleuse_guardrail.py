@@ -543,7 +543,9 @@ PAYLOAD_ROUTES = {
 PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     # Vom Proxy bei JEDEM Request gesetzt (empirisch gegen 1.97.0 gemessen).
     "metadata",
-    "proxy_server_request",
+    # ``proxy_server_request`` steht bewusst NICHT mehr hier, sondern in
+    # PAYLOAD_FIELDS_RESYNCED: es ist kein Feld, das nur passiert, sondern
+    # eines, das die Guardrail selbst BEHANDELN muss. Siehe dort.
     "secret_fields",
     # Vom Proxy je nach Header-/Key-Konfiguration gesetzt.
     "litellm_metadata",
@@ -574,6 +576,75 @@ PAYLOAD_FIELDS_INFRASTRUCTURE = frozenset({
     "preset_cache_key",
     "id",
 })
+
+# --- 2b) BEHANDELT: abgeleitete Kopien des Payloads -----------------------
+# Die dritte Kategorie neben "passiert" und "blockt": Keys, die den Payload
+# nicht WEITERTRAGEN, sondern ihn SPIEGELN. Sie erreichen den Provider nicht
+# (deshalb standen sie auf der Passier-Liste) -- aber sie halten eine Kopie
+# genau der Daten, die wir gerade maskiert haben, und geben sie an einen
+# anderen Kanal weiter: das Logging.
+#
+# Das ist die Frage, die das Passier-Kriterium nie gestellt hat. Es fragte
+# "erreicht dieser Key den Provider?" und war damit richtig, aber unvollstaendig.
+# Die fehlende Frage lautet: "Traegt dieser Key eine VERALTETE, unmaskierte
+# Kopie des Payloads?" -- und fuer ``proxy_server_request`` ist die Antwort ja.
+#
+# ``proxy_server_request["body"]`` ist litellms flacher Logging-Schnappschuss
+# (1.97.0, proxy/litellm_pre_call_utils.py:1690-1692):
+#
+#     _body_snapshot = {k: v for k, v in data.items() if k not in exclude}
+#     data["proxy_server_request"]["body"] = _body_snapshot
+#
+# FLACH ist das entscheidende Wort: pro Key haelt der Schnappschuss dieselbe
+# Objekt-Referenz wie ``data``. Daraus folgt unmittelbar, welche Felder dicht
+# waren und welche nicht:
+#
+#   * IN-PLACE mutiert (``messages``: die Message-Dicts werden veraendert, die
+#     Liste bleibt dieselbe)  -> Schnappschuss sieht die Maskierung mit.
+#   * durch REBINDING maskiert (``data[feld] = maskiert``)
+#                              -> Schnappschuss haelt weiter den ALTEN Wert.
+#
+# Konsumenten laut litellms eigenem Kommentar an der Fundstelle:
+# ``standard_logging_payload``, ``lago``, ``spend_tracking_utils``,
+# ``streaming_iterator``. ``turn_off_message_logging`` rettet NICHT:
+# ``perform_redaction`` (litellm_core_utils/redact_messages.py:238-240)
+# redigiert ausschliesslich ``messages``, ``prompt`` und ``input``.
+#
+# WARUM RE-SYNC UND NICHT DURCHGAENGIG IN-PLACE
+# ---------------------------------------------
+# "Container in-place mutieren statt neu binden" schliesst die Fehlerklasse
+# eleganter -- aber nur fuer Container. Es ist fuer die betroffenen Felder
+# NACHWEISLICH NICHT DURCHFUEHRBAR: ``prompt`` (als String), ``suffix``,
+# ``user`` und ``stop`` (als String) sind Python-``str``, also unveraenderlich.
+# Es gibt keine Operation, die einen ``str`` an Ort und Stelle maskiert. Eine
+# Regel "immer in-place" waere damit unerfuellbar und wuerde still gebrochen --
+# genau die Fehlerklasse, die wir schliessen wollen.
+#
+# Der Re-Sync BAUT den Schnappschuss NEU statt ihn feldweise nachzuziehen.
+# Das ist der Unterschied zwischen "den Einzelfall repariert" und "die Klasse
+# geschlossen": ein feldweiser Abgleich deckt die Felder ab, an die jemand
+# gedacht hat; der Neubau deckt alles ab, was im Payload steht -- auch das,
+# was ein kuenftiger Commit hinzufuegt, mutabel oder nicht.
+#
+# ROBUST GEGEN VERSIONSDRIFT: der Neubau benutzt unsere eigene Kopie von
+# litellms Ausschlussmenge. Weicht eine kuenftige litellm-Version davon ab,
+# ist der Fehler in BEIDE Richtungen harmlos -- wir nehmen einen Key zu viel
+# auf (er ist dann maskiert oder registriert, also geprueft) oder einen zu
+# wenig (der Konsument sieht weniger, nie mehr). Ein stilles Leck kann daraus
+# nicht entstehen.
+PAYLOAD_FIELDS_RESYNCED = frozenset({
+    "proxy_server_request",
+})
+
+#: Exakt litellms eigene Ausschlussmenge beim Bau des Schnappschusses
+#: (1.97.0, proxy/litellm_pre_call_utils.py:1690). Bewusst als eigene
+#: Konstante statt Import: die Guardrail muss auch ohne installiertes litellm
+#: importierbar und testbar bleiben.
+LOGGING_SNAPSHOT_EXCLUDE = frozenset({
+    "secret_fields",
+    "proxy_server_request",
+})
+
 
 #: GEMESSENE Ausgangskanaele jenseits des Bodys (litellm 1.97.0). Jeder
 #: dieser Keys erfuellt das alte, zu enge Kriterium -- er steht in
@@ -1570,6 +1641,10 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "werden und der Request ist blockiert (fail-closed)."
             )
         self._validate_payload_shape(data, route)
+        # Die FORM des Logging-Schnappschusses vor jeder Maskierung
+        # (Security-F1): was wir am Ende nicht neu bauen koennen, duerfen wir
+        # gar nicht erst maskiert glauben.
+        self._validate_snapshot_shape(data)
 
         messages = data.get("messages")
         masker = Masker()
@@ -1808,7 +1883,79 @@ class DatenschleuseGuardrail(_GuardrailBase):
                     flush=True,
                 )
 
+        # --- Logging-Schnappschuss nachziehen (Security-F1) ---------------
+        # BEWUSST der letzte Schritt: erst hier steht der endgueltige,
+        # maskierte UND QI-vergroeberte Payload fest. Jeder frueher gebaute
+        # Schnappschuss waere wieder veraltet -- also genau der Defekt.
+        self._resync_logging_snapshot(data)
+
         return data
+
+    # ---- Logging-Schnappschuss (DATENSCHLE-69, Security-F1) ---------------
+    @staticmethod
+    def _validate_snapshot_shape(data: Dict[str, Any]) -> None:
+        """Prueft die FORM von ``proxy_server_request``, BEVOR irgendetwas
+        maskiert wird.
+
+        Dieselbe Doktrin wie ueberall: was wir nicht neu bauen koennen,
+        koennen wir auch nicht dicht machen -> fail-closed blocken statt
+        stillschweigend stehen lassen. Ein ``body`` als roher JSON-String
+        traegt denselben Klartext, ist aber keine Struktur, in die wir den
+        maskierten Payload zurueckschreiben koennen.
+
+        Gesetz 5: kein Client-Wert in der Meldung, nur Typnamen und Namen aus
+        unseren eigenen Konstanten.
+        """
+        psr = data.get("proxy_server_request")
+        if psr is None:
+            return
+        if not isinstance(psr, dict):
+            raise DatenschleuseBlocked(
+                f"proxy_server_request vom Typ {type(psr).__name__!r} wird von "
+                "der Datenschleuse nicht geprueft und ist deshalb blockiert "
+                "(fail-closed). Erlaubt ist nur ein Objekt."
+            )
+        if "body" not in psr:
+            return
+        body = psr["body"]
+        if body is not None and not isinstance(body, dict):
+            raise DatenschleuseBlocked(
+                f"proxy_server_request.body vom Typ {type(body).__name__!r} "
+                "kann nicht mit dem maskierten Payload abgeglichen werden und "
+                "ist deshalb blockiert (fail-closed). Erlaubt ist nur ein "
+                "Objekt -- ein roher String traegt denselben Klartext, laesst "
+                "sich aber nicht neu aufbauen."
+            )
+
+    @staticmethod
+    def _resync_logging_snapshot(data: Dict[str, Any]) -> None:
+        """Baut litellms Logging-Schnappschuss aus dem MASKIERTEN Payload neu.
+
+        Laeuft als LETZTER Schritt des Hooks -- nach der Maskierung UND nach
+        dem QI-Layer. Die Reihenfolge ist nicht kosmetisch: der QI-Layer
+        vergroebert Texte NACH der Maskierung (PLZ, Geburtsjahr). Ein
+        Schnappschuss vor dem QI-Layer truege die feiner aufgeloesten Werte
+        ins Log -- maskiert zwar, aber praeziser als das, was der Provider
+        sieht. Was das Modell nicht sehen darf, darf das Log erst recht nicht
+        sehen.
+
+        Neu BAUEN statt feldweise nachziehen: siehe die ausfuehrliche
+        Begruendung bei PAYLOAD_FIELDS_RESYNCED. Kurz -- ein feldweiser
+        Abgleich deckt nur ab, woran jemand gedacht hat.
+
+        Der Schnappschuss wird nicht geleert: ``spend_tracking_utils`` und
+        ``standard_logging_payload`` lesen ihn. Ein leerer Body waere dicht,
+        wuerde aber die Kostenerfassung des Betreibers kaputtmachen -- ein Fix,
+        der einen anderen Defekt erzeugt.
+        """
+        psr = data.get("proxy_server_request")
+        if not isinstance(psr, dict) or "body" not in psr:
+            return
+        psr["body"] = {
+            key: value
+            for key, value in data.items()
+            if key not in LOGGING_SNAPSHOT_EXCLUDE
+        }
 
     # ---- Route-Register (DATENSCHLE-69) -----------------------------------
     @staticmethod
@@ -1917,6 +2064,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
             set(route.masked)
             | set(route.validated)
             | PAYLOAD_FIELDS_INFRASTRUCTURE
+            | PAYLOAD_FIELDS_RESYNCED
         )
         unbekannt = [key for key in data if key not in erlaubt]
         if unbekannt:
