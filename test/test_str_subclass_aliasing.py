@@ -97,11 +97,16 @@ class _AliasAssertions(unittest.TestCase):
             # Fehlschlag -- dieser Marker haelt den Kontext gueltig, falls die
             # gepruefte Stelle kuenftig gar nicht mehr loggt.
             dg._LOG.warning("datenschleuse-test-marker")
+        # Das LOG zuerst: es ist der eigenstaendige Befund. Stuende die
+        # Exception-Pruefung davor, wuerde sie bei einem Rueckfall zuerst
+        # schlagen und das Log-Leck im Fehlerbericht verdecken -- gegen den
+        # pre-Fix-Stand empirisch nachgestellt.
+        for satz in protokoll.output:
+            self.assertKeinLeck(satz, f"Log ({wo})")
+            self.assertLess(len(satz), 800, f"Log-Satz aufgeblaeht ({wo})")
         meldung = str(ctx.exception)
         self.assertKeinLeck(meldung, f"Blockmeldung ({wo})")
         self.assertLess(len(meldung), 800, f"Meldung aufgeblaeht ({wo})")
-        for satz in protokoll.output:
-            self.assertKeinLeck(satz, f"Log ({wo})")
         return meldung
 
     def assertBlockt(self, aufruf, wo):
