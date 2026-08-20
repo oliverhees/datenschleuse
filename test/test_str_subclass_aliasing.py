@@ -93,10 +93,13 @@ class _AliasAssertions(unittest.TestCase):
         with self.assertLogs(_LOGGER, level="WARNING") as protokoll:
             with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
                 aufruf()
-            # Ohne mindestens einen Log-Satz waere ``assertLogs`` selbst der
-            # Fehlschlag -- dieser Marker haelt den Kontext gueltig, falls die
-            # gepruefte Stelle kuenftig gar nicht mehr loggt.
-            dg._LOG.warning("datenschleuse-test-marker")
+        # KEIN kuenstlicher Marker-Logsatz hier (Review-Finding S2): ein
+        # solcher Marker haette ``assertLogs`` garantiert erfuellt und damit
+        # genau die Zusicherung ausgeschaltet, die er zu schuetzen vorgab --
+        # naemlich dass ein Block ueberhaupt einen Audit-Trail schreibt.
+        # Faellt das ``_LOG.warning`` bei einem Refactoring weg, muessen
+        # diese Tests rot werden.
+        self.assertTrue(protokoll.output, f"kein Warn-Logsatz ({wo})")
         # Das LOG zuerst: es ist der eigenstaendige Befund. Stuende die
         # Exception-Pruefung davor, wuerde sie bei einem Rueckfall zuerst
         # schlagen und das Log-Leck im Fehlerbericht verdecken -- gegen den
@@ -482,30 +485,54 @@ class TestAequivalenzUeberAlleRegister(unittest.TestCase):
     """
 
     def _register(self):
-        reg = {
-            "ALLOWED_MESSAGE_FIELDS": dg.ALLOWED_MESSAGE_FIELDS,
-            "ALLOWED_ROLES": dg.ALLOWED_ROLES,
-            "KNOWN_UNSUPPORTED_MESSAGE_FIELDS": dg.KNOWN_UNSUPPORTED_MESSAGE_FIELDS,
-            "ALLOWED_PART_TYPES": dg.ALLOWED_PART_TYPES,
-            "KNOWN_UNSUPPORTED_PART_TYPES": dg.KNOWN_UNSUPPORTED_PART_TYPES,
-            "KNOWN_UNSUPPORTED_PART_FIELDS": dg.KNOWN_UNSUPPORTED_PART_FIELDS,
-            "IMAGE_URL_ALLOWED_FIELDS": dg.IMAGE_URL_ALLOWED_FIELDS,
-            "IMAGE_URL_DETAILS": dg.IMAGE_URL_DETAILS,
-            "CACHE_CONTROL_ALLOWED_FIELDS": dg.CACHE_CONTROL_ALLOWED_FIELDS,
-            "CACHE_CONTROL_TYPES": dg.CACHE_CONTROL_TYPES,
-            "CACHE_CONTROL_TTLS": dg.CACHE_CONTROL_TTLS,
-            "ALLOWED_CITATION_TYPES": dg.ALLOWED_CITATION_TYPES,
-            "KNOWN_UNSUPPORTED_CITATION_TYPES": dg.KNOWN_UNSUPPORTED_CITATION_TYPES,
-            "KNOWN_UNSUPPORTED_CITATION_FIELDS": dg.KNOWN_UNSUPPORTED_CITATION_FIELDS,
-            "TOOL_CALL_ALLOWED_FIELDS": dg.TOOL_CALL_ALLOWED_FIELDS,
-            "ALLOWED_TOOL_CALL_TYPES": dg.ALLOWED_TOOL_CALL_TYPES,
-            "TOOL_CALL_FUNCTION_ALLOWED_FIELDS": dg.TOOL_CALL_FUNCTION_ALLOWED_FIELDS,
-        }
-        for typ, felder in dg.ALLOWED_PART_FIELDS.items():
-            reg[f"ALLOWED_PART_FIELDS[{typ}]"] = felder
-        for typ, felder in dg.ALLOWED_CITATION_FIELDS.items():
-            reg[f"ALLOWED_CITATION_FIELDS[{typ}]"] = felder
+        """Register per INTROSPEKTION statt von Hand (Review-Finding S3).
+
+        Eine handgepflegte Liste macht die Aussage "ueber ALLE Register"
+        genau so lange wahr, wie jemand daran denkt, sie zu pflegen. Hier
+        wird stattdessen das Modul abgefragt: jede Konstante in
+        GROSSSCHREIBUNG, die eine Menge oder ein Mapping von Strings ist,
+        zaehlt automatisch dazu -- inklusive der pro Typ indizierten
+        Feldmengen und der als ``tuple`` gebauten Register wie
+        IMAGE_POLICIES, die der Handliste vorher fehlten.
+        """
+        reg = {}
+        for name in dir(dg):
+            if not name.isupper():
+                continue
+            wert = getattr(dg, name)
+            if isinstance(wert, dict):
+                # Register-von-Registern (ALLOWED_PART_FIELDS etc.): die
+                # Schluesselmenge UND jede Feldmenge darunter.
+                if all(isinstance(k, str) for k in wert):
+                    reg[name] = frozenset(wert)
+                for schluessel, unter in wert.items():
+                    if isinstance(unter, (set, frozenset, tuple, list)) and all(
+                        isinstance(x, str) for x in unter
+                    ):
+                        reg[f"{name}[{schluessel}]"] = frozenset(unter)
+            elif isinstance(wert, (set, frozenset, tuple)) and wert and all(
+                isinstance(x, str) for x in wert
+            ):
+                reg[name] = frozenset(wert)
         return reg
+
+    def test_alle_bekannten_register_sind_erfasst(self):
+        """Die Introspektion darf die bekannten Register nicht verlieren --
+        sonst wuerde der Beweis unbemerkt schrumpfen statt zu wachsen."""
+        gefunden = self._register()
+        for pflicht in (
+            "ALLOWED_MESSAGE_FIELDS", "ALLOWED_ROLES", "ALLOWED_PART_TYPES",
+            "ALLOWED_CITATION_TYPES", "ALLOWED_TOOL_CALL_TYPES",
+            "CACHE_CONTROL_TYPES", "CACHE_CONTROL_TTLS", "IMAGE_URL_DETAILS",
+            "IMAGE_URL_ALLOWED_FIELDS", "TOOL_CALL_ALLOWED_FIELDS",
+            "TOOL_CALL_FUNCTION_ALLOWED_FIELDS", "CACHE_CONTROL_ALLOWED_FIELDS",
+            "KNOWN_UNSUPPORTED_MESSAGE_FIELDS", "KNOWN_UNSUPPORTED_PART_TYPES",
+            "KNOWN_UNSUPPORTED_PART_FIELDS", "KNOWN_UNSUPPORTED_CITATION_TYPES",
+            "KNOWN_UNSUPPORTED_CITATION_FIELDS", "SICHERE_TYPNAMEN",
+            "IMAGE_POLICIES",
+        ):
+            self.assertIn(pflicht, gefunden)
+        self.assertGreaterEqual(len(gefunden), 23)
 
     def test_echte_str_verhalten_sich_deckungsgleich(self):
         reg = self._register()

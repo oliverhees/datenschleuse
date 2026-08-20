@@ -651,6 +651,24 @@ def _ist_registriert(wert: Any, register: Any) -> bool:
     wird. Wer ein neues Register einfuehrt, hat damit genau eine richtige
     Funktion zur Auswahl statt eines Musters zum Nachbauen.
 
+    VORBEDINGUNG -- nicht ueberlesen (Review-Finding W3):
+    Diese Hilfe ist NUR dort richtig, wo ein ``False`` BLOCKT. Sie verschaerft
+    die Pruefung, und das ist genau dann ein Sicherheitsgewinn, wenn der
+    strengere Zweig der fail-closed-Zweig ist.
+
+    Wo ein ``False`` dagegen etwas UEBERSPRINGT, dreht sie die Wirkung um.
+    Beispiel im selben File: das ``call_type``-Gate in
+    ``async_pre_call_hook`` (Suchbegriff dort: ``aufruftyp``) entscheidet
+    "unbekannter Aufruftyp -> ``return data``", also Maskierung ueberspringen.
+    ``type(CallTypes.acompletion) is str`` ist ``False`` -- die Hilfe dort
+    einzusetzen wuerde JEDEN dispatchten Request ungemaskiert durchreichen.
+    Fail-open, aus einer Zeile, die nach Haertung aussieht.
+
+    Faustregel vor dem Einsetzen: "Was passiert, wenn das hier ``False``
+    liefert?" Lautet die Antwort "blocken" -> richtig. Lautet sie
+    "durchlassen", "ueberspringen" oder "Default nehmen" -> falsch, und die
+    Stelle braucht eine eigene Begruendung statt dieser Hilfe.
+
     Verhaltens-Neutralitaet: fuer echtes ``str`` ist das Ergebnis identisch
     mit ``wert in register``; fuer alles Nicht-``str`` (int, dict, None ...)
     ist es ``False``, also derselbe fail-closed-Zweig wie bisher. Nur die
@@ -716,7 +734,22 @@ def _field_fingerprint(name: Any) -> str:
     Handhabe: derselbe Feldname ergibt denselben Wert, damit laesst sich ein
     blockendes Feld eingrenzen, ohne dass sein Inhalt das System verlaesst.
     """
-    return hashlib.sha256(repr(name).encode("utf-8")).hexdigest()[:8]
+    # ``repr(name)`` laeuft auf einem CLIENT-Objekt, ruft also fremden Code
+    # (Review-Finding W5). Ein ``__repr__``, das wirft oder kein ``str``
+    # liefert, verliesse diese Funktion sonst als TypeError/Beliebiges statt
+    # als DatenschleuseBlocked -- und ob DAS fail-closed ist, entschiede
+    # LiteLLMs Fehlerbehandlung. Darauf darf ein Guardrail nicht wetten:
+    # lieber ein konstanter Fingerprint als ein unkontrollierter Fehlerpfad.
+    try:
+        roh = repr(name)
+    except Exception:
+        return "unlesbar"
+    if not _ist_echter_str(roh):
+        # ``repr`` MUSS laut Protokoll ``str`` liefern; CPython erzwingt das
+        # fuer den Builtin, aber wir formatieren das Ergebnis weiter --
+        # deshalb hier dieselbe Identitaetsfrage wie ueberall sonst.
+        return "unlesbar"
+    return hashlib.sha256(roh.encode("utf-8")).hexdigest()[:8]
 
 
 class _UnsafeJson(Exception):
@@ -1001,17 +1034,34 @@ class DatenschleuseGuardrail(_GuardrailBase):
             or os.getenv("PRESIDIO_IMAGE_REDACTOR_API_BASE")
             or ""
         ).rstrip("/")
-        policy = (kwargs.pop("image_policy", None) or image_policy or os.getenv("DATENSCHLEUSE_IMAGE_POLICY") or "").strip().lower()
+        # ``str(...)`` VOR ``.strip().lower()`` ist Absicht (Review-Finding
+        # W4): ohne den Aufruf laufen ``strip``/``lower`` als METHODEN DES
+        # UEBERGEBENEN OBJEKTS. Eine str-Subklasse, die dort luegt, haette
+        # sich als 'pass' ausgeben und die Bild-Policy aushebeln koennen.
+        # ``str(x)`` liefert dagegen immer ein exaktes ``str`` -- ein
+        # ueberschriebenes ``__str__`` bestimmt zwar den INHALT, aber der
+        # nachfolgende Vergleich urteilt dann ehrlich ueber genau diesen
+        # Inhalt. Danach ist ``policy`` nachweislich exaktes ``str``.
+        policy = str(
+            kwargs.pop("image_policy", None)
+            or image_policy
+            or os.getenv("DATENSCHLEUSE_IMAGE_POLICY")
+            or ""
+        ).strip().lower()
         if not policy:
             # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
             # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
             policy = "redact" if self.image_redactor_url else "block"
-        # Bewusst OHNE ``_ist_registriert``: ``policy`` ist zwei Zeilen
-        # weiter oben durch ``.strip().lower()`` gelaufen, und beide
-        # geben fuer str-Subklassen ein exaktes ``str`` zurueck -- eine
-        # Tarnung ist hier bereits zerstoert, bevor verglichen wird.
-        # Dazu kommt sie aus Betreiber-Konfiguration (kwargs/ENV), nicht
-        # aus dem Request. Verifiziert, nicht angenommen.
+        # Bewusst OHNE ``_ist_registriert``: ``policy`` ist oben durch
+        # ``str(...)`` gelaufen und damit nachweislich exaktes ``str`` --
+        # die Hilfe wuerde hier nichts hinzufuegen.
+        #
+        # Die fruehere Begruendung an dieser Stelle war falsch (W4): sie
+        # berief sich auf ``.strip().lower()`` allein, und die sind
+        # ueberschreibbar. Dass die Entscheidung trotzdem richtig war, macht
+        # die Begruendung nicht richtig -- und der Naechste prueft die
+        # Begruendung, findet sie hinfaellig und kippt die Entscheidung.
+        # Deshalb ist die Zusage jetzt wahr gemacht statt abgeschwaecht.
         if policy not in IMAGE_POLICIES:
             raise ValueError(
                 f"image_policy={policy!r} unbekannt — erlaubt: {', '.join(sorted(IMAGE_POLICIES))}"
@@ -1195,13 +1245,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
     ) -> dict:
         """Maskiert PII in allen Chat-Messages und legt das Re-Id-Mapping in
         den Metadaten ab. Nur fuer Chat-/Text-Completions relevant."""
-        # Bewusst OHNE ``_ist_registriert``: ``call_type`` ist LiteLLMs
-        # eigener Dispatch-Parameter, kein Client-JSON. Und die Richtung
-        # stimmt: eine Tarnung als bekannter Aufruftyp fuehrt HIER zu
-        # MEHR Pruefung (die Maskierung laeuft), nicht zu weniger. Wer
-        # die Maskierung ueberspringen will, braucht dafuer keine
-        # Subklasse -- ein beliebiger unbekannter String genuegt, und das
-        # ist gewolltes Verhalten fuer Nicht-Chat-Aufrufe.
+        # Aufruftyp-Gate. Bewusst OHNE ``_ist_registriert`` -- und hier waere
+        # die Hilfe nicht nur ueberfluessig, sondern FALSCH (Review-Finding
+        # W3/W4; die fruehere Begruendung an dieser Stelle war zu bequem):
+        #
+        # Ein ``False`` blockt hier nicht, es UEBERSPRINGT die Maskierung
+        # (``return data``). LiteLLM definiert ``class CallTypes(str, Enum)``;
+        # fuer dessen Member ist ``type(x) is str`` ``False``. Die Hilfe hier
+        # einzusetzen wuerde also jeden dispatchten Request ungemaskiert
+        # durchreichen -- fail-open aus einer Zeile, die nach Haertung
+        # aussieht. Siehe die VORBEDINGUNG im Docstring von
+        # ``_ist_registriert``.
+        #
+        # Der Parameter stammt ohnehin von LiteLLM, nicht aus dem Request.
+        # Und wer die Maskierung ueberspringen will, braucht keine Subklasse:
+        # ein beliebiger unbekannter String genuegt -- gewolltes Verhalten
+        # fuer Nicht-Chat-Aufrufe.
         if call_type not in ("completion", "text_completion", "acompletion", None):
             return data
 
@@ -1935,15 +1994,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
         DatenschleuseGuardrail._validate_opaque_id(call.get("id"), "tool_calls[].id")
 
-        call_type = call.get("type")
+        tool_call_typ = call.get("type")
         # ``type`` fehlt bei manchen Clients -- historisch impliziert das
         # "function". Ein ANDERER Typ ist dagegen ein uns unbekanntes Format
         # mit unbekannten Feldern -> blocken.
-        if call_type is not None and not _ist_registriert(
-            call_type, ALLOWED_TOOL_CALL_TYPES
+        # Bewusst NICHT ``call_type`` benannt (Review-Finding S6): der
+        # Hook-Parameter gleichen Namens ist die eine Stelle, an der
+        # ``_ist_registriert`` fail-open waere. Eine Namenskollision im grep
+        # ist dort der plausibelste Weg zu genau diesem Fehler.
+        if tool_call_typ is not None and not _ist_registriert(
+            tool_call_typ, ALLOWED_TOOL_CALL_TYPES
         ):
             raise DatenschleuseBlocked(
-                f"tool_call mit nicht erlaubtem Typ (Typ {_typname(call_type)!r}) "
+                f"tool_call mit nicht erlaubtem Typ (Typ {_typname(tool_call_typ)!r}) "
                 "wird von der Datenschleuse nicht geprueft und ist deshalb "
                 f"blockiert (fail-closed). Erlaubt: {', '.join(sorted(ALLOWED_TOOL_CALL_TYPES))}."
             )
