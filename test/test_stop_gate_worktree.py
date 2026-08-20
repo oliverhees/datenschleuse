@@ -102,6 +102,8 @@ class Schmiede:
         git(self.projekt, "add", "-A")
         git(self.projekt, "commit", "-qm", "base")
         os.makedirs(os.path.join(self.projekt, ".claude", "worktrees"))
+        self.track = TRACK
+        self.stop_gate = STOP_GATE
 
     def worktree(self, name):
         """Legt einen Agenten-Worktree an — dort, wo sie real liegen."""
@@ -110,6 +112,16 @@ class Schmiede:
         return pfad
 
     # --- Hook-Aufrufe -----------------------------------------------------
+
+    def ohne_scope_sh(self):
+        """Installiert die Hooks OHNE den Helfer -- wie eine unvollstaendige
+        Kopie, bei der die neue Datei vergessen wurde."""
+        hooks = os.path.join(self.tmp, "hooks-ohne-scope")
+        os.makedirs(hooks, exist_ok=True)
+        for skript in (TRACK, STOP_GATE):
+            shutil.copy(skript, hooks)
+        self.track = os.path.join(hooks, os.path.basename(TRACK))
+        self.stop_gate = os.path.join(hooks, os.path.basename(STOP_GATE))
 
     def _hook(self, skript, payload, cwd):
         """Faehrt einen Hook exakt so, wie Claude Code ihn faehrt.
@@ -126,7 +138,7 @@ class Schmiede:
 
     def code_aenderung(self, wt):
         """Eine Quellcode-Aenderung in genau diesem Worktree."""
-        self._hook(TRACK, {
+        self._hook(self.track, {
             "tool_name": "Edit", "hook_event_name": "PostToolUse", "cwd": wt,
             "tool_input": {"file_path": os.path.join(wt, "litellm", "guardrail.py")},
             "tool_response": {},
@@ -135,7 +147,7 @@ class Schmiede:
 
     def testlauf(self, wt, cmd, ausgabe):
         """Ein Testlauf in genau diesem Worktree."""
-        self._hook(TRACK, {
+        self._hook(self.track, {
             "tool_name": "Bash", "hook_event_name": "PostToolUse", "cwd": wt,
             "tool_input": {"command": cmd},
             "tool_response": {"stdout": ausgabe, "stderr": "", "interrupted": False,
@@ -154,7 +166,7 @@ class Schmiede:
         payload = {"hook_event_name": "Stop", "stop_hook_active": aktiv}
         if mit_cwd:
             payload["cwd"] = wt
-        proc = self._hook(STOP_GATE, payload, wt)
+        proc = self._hook(self.stop_gate, payload, wt)
         return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -280,6 +292,28 @@ class StopGateWorktreeTest(unittest.TestCase):
         rc, out = self.s.stop(self.b, mit_cwd=False)
         self.assertEqual(rc, 2, "Ohne cwd wird der eigene rote Lauf "
                                 "uebersehen:\n" + out)
+
+    def test_ohne_scope_sh_bleibt_das_gate_scharf(self):
+        """Die Zuordnung bringt eine neue Abhaengigkeit mit -- und damit eine
+        neue Absturzstelle.
+
+        Die Hooks liegen ausserhalb von Git und werden von Hand kopiert.
+        Wird scope.sh dabei vergessen, ist `marker_dir` keine Funktion, der
+        Markerpfad waere leer und das Gate faende schlicht nichts mehr vor:
+        es wuerde JEDE Session durchwinken, ohne ein Wort zu sagen. Ein
+        stiller Totalausfall des Waechters ist schlimmer als der Fehlalarm,
+        den dieses Ticket behebt. Fehlt der Helfer, faellt das Gate deshalb
+        auf den gemeinsamen Marker zurueck: laut, aber scharf.
+        """
+        self.s.ohne_scope_sh()
+        self.s.code_aenderung(self.b)
+        self.s.roter_lauf(self.b)
+
+        rc, out = self.s.stop(self.b)
+        self.assertEqual(
+            rc, 2,
+            "Ohne scope.sh laesst das Gate einen roten Lauf durch — es ist "
+            "dann lautlos abgeschaltet:\n" + out)
 
     # --- Der stille Fail-Open ---------------------------------------------
 
