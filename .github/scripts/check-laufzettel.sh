@@ -35,7 +35,12 @@
 set -euo pipefail
 
 BASE="origin/$BASE_REF"
-git fetch origin "$BASE_REF" --depth=200
+# Bewusst OHNE --depth: ein 'git fetch --depth=N' macht ein vollstaendiges
+# Repo nachtraeglich shallow. An der Shallow-Grenze verliert git die
+# Elterninformation -- und genau davon haengen die Vorfahren- und
+# Inhaltsvergleiche unten ab. Der Job checkt mit fetch-depth: 0 aus, die
+# Historie ist also ohnehin vollstaendig da.
+git fetch origin "$BASE_REF"
 
 # --- PR-Spitze statt HEAD. Fail-closed, wenn sie fehlt. ---------------------
 PR_HEAD="${PR_HEAD_SHA:-}"
