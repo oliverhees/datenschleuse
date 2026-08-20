@@ -649,11 +649,48 @@ class RuleSet:
         Jede Regel laeuft in ihrem eigenen ``try`` mit eigenem Zeitbudget:
         eine Regel, die scheitert oder in ein Timeout laeuft, kostet
         ausschliesslich ihre eigene Entitaet (ISC-26).
+
+        ZUSAGE AN DEN AUFRUFER (Security-Finding S2): Sobald der Scan
+        begonnen hat, verlaesst ein Fehler diese Methode ausschliesslich als
+        ``RuleMatchingIncomplete``. Der Guardrail behandelt genau diesen Typ
+        fail-closed; jede andere Ausnahme liefe dort in den fail-OPEN-Pfad
+        und der Request ginge mit unbekannter Abdeckung hinaus.
+
+        Der LADEvorgang steht bewusst VOR dieser Absicherung: scheitert er,
+        greifen die eigenen Regeln eben nie -- die Abdeckung ist dann bekannt
+        und die Presidio-Maskierung darf davon nicht mitgerissen werden
+        (ISC-26). Das ist die einzige Ausnahme, und sie ist gewollt.
         """
         self._reload_if_changed()
         if not text or not self._active:
             return []
+        try:
+            return self._scan(text)
+        except RuleMatchingIncomplete:
+            raise
+        except Exception as exc:
+            # Security-Finding S2: F11 haengte die fail-closed-Behandlung an
+            # den ``finditer``-Aufruf. Der Aufbau der Ergebnis-Dicts wurde
+            # fuer F8 aber bewusst in den ``else:``-Block verschoben -- und
+            # hatte dort keinen Handler. Reisst es dort (MemoryError bei sehr
+            # vielen Treffern, OSError, RuntimeError), brechen die
+            # Folgeregeln ab und die Abdeckung ist genauso unbekannt wie beim
+            # Timeout. Dieselbe Frage, also dieselbe Konsequenz.
+            self._report(
+                f"Die eigenen Regeln sind mitten im Scan fehlgeschlagen "
+                f"({type(exc).__name__}). Die Vollstaendigkeit der "
+                f"Maskierung ist fuer diesen Text nicht gesichert -- der "
+                f"Request wird blockiert (fail-closed).",
+                level="FEHLER",
+            )
+            raise RuleMatchingIncomplete(
+                f"Die eigenen Regeln konnten fuer diesen Text nicht "
+                f"vollstaendig geprueft werden ({type(exc).__name__})."
+            ) from exc
 
+    def _scan(self, text: str) -> List[Dict[str, Any]]:
+        """Der eigentliche Durchlauf. Getrennt von :meth:`find`, damit dort
+        EIN Sicherheitsnetz ueber dem gesamten Scan liegt (Finding S2)."""
         # Security-Finding F2: das Zeitbudget gilt fuer den GESAMTEN Aufruf,
         # nicht pro Regel. Vorher summierte es sich -- 20 pathologische Muster
         # ergaben 20 x 0,25 s = 5 s fuer EINEN Text. Und weil das synchrone

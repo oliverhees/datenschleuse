@@ -955,7 +955,15 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"einer vollstaendigen nicht zu unterscheiden. Muster pruefen "
                 f"mit: datenschleuse-rules list"
             ) from exc
-        except Exception as exc:  # pragma: no cover - defensiv
+        except Exception as exc:
+            # ACHTUNG, ENGE GRENZE (Security-Finding S2): Hierher kommt NUR
+            # noch, was beim LADEN der Regeldatei scheitert. ``RuleSet.find``
+            # sagt zu, dass jeder Fehler AB dem Scan als
+            # ``RuleMatchingIncomplete`` herauskommt und damit oben blockt.
+            # Vorher lief jede Nicht-Timeout-Ausnahme aus dem Scan hier
+            # hinein -- Folgeregeln abgebrochen, Abdeckung unbekannt, Request
+            # trotzdem raus. Wer die Zusage in custom_rules.py aufweicht,
+            # oeffnet dieses Loch wieder.
             # Andere Fehler der Regel-Schicht bleiben folgenlos fuer die
             # Presidio-Maskierung (ISC-26): dort ist die Abdeckung bekannt,
             # nur die eigene Zusatzschicht fehlt.
