@@ -22,3 +22,5 @@ Dieses Dokument dekodiert den Jargon des Projekts. Es wird von
 ## Architektur-Entscheidungen (ADRs)
 
 ADRs liegen unter `docs/adr/`. Kurzverweise hier eintragen.
+
+- **ADR-0002** — Nicht-PII-Wortliste zur Unterdrückung von NER-Fehlalarmen. Genehmigte Ausnahme vom Denylist-Verbot der Security-Baseline: Das Verbot zielt auf Listen, die bestimmen, was als PII *gilt* (Lücke = ungeschützte Daten). Diese Liste bestimmt, was *kein* Name ist (Lücke = Fehlalarm bleibt stehen). Vier testgeprüfte Gegenkontrollen, allen voran die `^...$`-Verankerung.

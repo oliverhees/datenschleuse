@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-08-20T07:57:28.225927+00:00",
+  "timestamp_utc": "2026-08-20T08:40:31.689448+00:00",
   "presidio_url": "http://localhost:5001",
   "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/.claude/worktrees/agent-a901483c0dfeae0df/test/corpus/de-pii-testkorpus.yaml",
   "case_count": 79,
@@ -248,6 +248,23 @@
     ]
   },
   "stopwords_path": "presidio/de-stopwords.yml",
+  "erkennungsziel": {
+    "quelle": "docs/foundation/erkennungsziel.md",
+    "schwellen": {
+      "recall_overall": 0.95,
+      "recall_pattern_based": 0.98,
+      "recall_by_type": {
+        "PERSON": 0.9,
+        "LOCATION": 0.85,
+        "ORGANIZATION": 0.75
+      },
+      "stoerquote_max": 0.1,
+      "precision": 0.9,
+      "per_type_min_support": 3
+    },
+    "verstoesse": [],
+    "bestanden": true
+  },
   "positive_case_unmatched_detections": [
     {
       "case_id": "email-001-standard",

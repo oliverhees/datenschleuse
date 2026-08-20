@@ -93,6 +93,104 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 VALID_EXPECTED_RECALL = {"must_detect", "known_gap"}
 
 
+# --------------------------------------------------------------------------- #
+# Erkennungsziel (Gate) — Quelle: docs/foundation/erkennungsziel.md
+# --------------------------------------------------------------------------- #
+#
+# Die Schwellen sind nach ERKENNUNGSMECHANISMUS gestaffelt, nicht pauschal. Ein
+# einzelner Wert für alle Typen wäre nicht verteidigungsfähig: musterbasierte
+# Erkennung (Regex, Prüfsumme) ist deterministisch, statistische Erkennung
+# (spaCy-NER) ist es nicht — und innerhalb des NER unterscheiden sich die
+# Klassen erheblich. Belege und Herleitung in erkennungsziel.md §5.
+
+TARGET_RECALL_OVERALL = 0.95
+
+# Musterbasierte Typen: Regex/Prüfsumme, deterministisch. Hier gibt es keine
+# Modell-Ausrede — ein Fehltreffer ist ein Muster- oder Konfigurationsfehler.
+TARGET_RECALL_PATTERN_BASED = 0.98
+
+# Statistische Typen: gestaffelt nach dem, was de_core_news_lg laut eigener
+# Modell-Metadaten überhaupt leistet (in-domain, Wikipedia-Text):
+# PER R 0.9202 | LOC R 0.8794 | ORG R 0.7630.
+TARGET_RECALL_BY_TYPE = {
+    "PERSON": 0.90,
+    "LOCATION": 0.85,
+    "ORGANIZATION": 0.75,
+}
+
+TARGET_STOERQUOTE_MAX = 0.10
+TARGET_PRECISION = 0.90
+
+# Unter diesem Support trägt eine Quote keine Aussage — 0/1 ist kein Signal.
+TARGET_PER_TYPE_MIN_SUPPORT = 3
+
+
+def target_for_type(entity_type: str) -> float:
+    """Recall-Ziel für einen Entity-Typ.
+
+    Alles, was nicht ausdrücklich als statistischer NER-Typ geführt wird, gilt
+    als musterbasiert und bekommt die hohe Schwelle. Diese Richtung ist die
+    sichere: ein neuer Custom-Recognizer wird streng geprüft, bis jemand
+    bewusst entscheidet, ihn niedriger einzustufen.
+    """
+    return TARGET_RECALL_BY_TYPE.get(entity_type, TARGET_RECALL_PATTERN_BASED)
+
+
+def evaluate_targets(result: "BenchmarkResult") -> list[str]:
+    """Prüft ein Ergebnis gegen das Erkennungsziel.
+
+    Gibt eine Liste von Klartext-Verstößen zurück; leere Liste = alle Gates
+    erfüllt. Bewusst als reine Funktion ohne IO, damit sie ohne laufenden
+    Analyzer testbar ist.
+    """
+    verstoesse: list[str] = []
+
+    overall = result.must_detect_overall
+    recall = overall.recall
+    if recall is not None and recall < TARGET_RECALL_OVERALL:
+        verstoesse.append(
+            f"Recall gesamt {recall:.1%} < Ziel {TARGET_RECALL_OVERALL:.0%} "
+            f"(TP={overall.tp} FN={overall.fn})"
+        )
+
+    precision = overall.precision
+    if precision is not None and precision < TARGET_PRECISION:
+        verstoesse.append(
+            f"Precision {precision:.1%} < Ziel {TARGET_PRECISION:.0%} "
+            f"(FP={overall.fp})"
+        )
+
+    # Ein Korpus ohne Negativ-Fälle kann die Precision-Seite nicht belegen. Das
+    # ist kein "bestanden", sondern eine ungeprüfte Seite — genau der Zustand,
+    # der DATENSCHLE-70/-71 jahrelang unsichtbar gehalten hat.
+    if result.negative_case_count == 0:
+        verstoesse.append(
+            "Keine Negativ-Fälle im Korpus — die Precision-Seite ist unbelegt. "
+            "Ein Lauf ohne Fehlalarm-Köder misst nur die halbe Wahrheit."
+        )
+    else:
+        stoerquote = result.stoerquote
+        if stoerquote is not None and stoerquote > TARGET_STOERQUOTE_MAX:
+            verstoesse.append(
+                f"Stoerquote {stoerquote:.1%} > Ziel {TARGET_STOERQUOTE_MAX:.0%} "
+                f"({result.negative_cases_with_fp}/{result.negative_case_count} "
+                "PII-freie Texte gestört)"
+            )
+
+    for entity_type, tally in sorted(result.must_detect_by_type.items()):
+        if tally.support < TARGET_PER_TYPE_MIN_SUPPORT:
+            continue
+        type_recall = tally.recall
+        ziel = target_for_type(entity_type)
+        if type_recall is not None and type_recall < ziel:
+            verstoesse.append(
+                f"Recall {entity_type} {type_recall:.1%} < Ziel {ziel:.0%} "
+                f"(TP={tally.tp} FN={tally.fn})"
+            )
+
+    return verstoesse
+
+
 class BenchmarkError(Exception):
     """Technischer Fehler, der zu Exit-Code 2 mit klarer Meldung führt."""
 
@@ -764,6 +862,17 @@ def render_stdout_report(
             )
             print(f"      - [{offender['case_id']}] {treffer}")
 
+    # --- Erkennungsziel-Gate ---
+    print()
+    print("  ERKENNUNGSZIEL (docs/foundation/erkennungsziel.md)")
+    verstoesse = evaluate_targets(result)
+    if not verstoesse:
+        print("    Alle Gates erfüllt. ✅")
+    else:
+        print(f"    {len(verstoesse)} Gate(s) verfehlt:")
+        for v in verstoesse:
+            print(f"      - {v}")
+
     # --- Positiv-Fall-Extra-Detektionen (informativ) ---
     print()
     print("  ZUSÄTZLICHE DETEKTIONEN IN POSITIV-FÄLLEN (informativ, NICHT als FP gezählt)")
@@ -879,6 +988,19 @@ def build_json_report(
             "offenders": result.negative_case_offenders,
         },
         "stopwords_path": stopwords_path,
+        "erkennungsziel": {
+            "quelle": "docs/foundation/erkennungsziel.md",
+            "schwellen": {
+                "recall_overall": TARGET_RECALL_OVERALL,
+                "recall_pattern_based": TARGET_RECALL_PATTERN_BASED,
+                "recall_by_type": TARGET_RECALL_BY_TYPE,
+                "stoerquote_max": TARGET_STOERQUOTE_MAX,
+                "precision": TARGET_PRECISION,
+                "per_type_min_support": TARGET_PER_TYPE_MIN_SUPPORT,
+            },
+            "verstoesse": evaluate_targets(result),
+            "bestanden": not evaluate_targets(result),
+        },
         "positive_case_unmatched_detections": result.positive_case_unmatched,
         "offset_ambiguities": result.ambiguities,
     }
@@ -934,6 +1056,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=float(os.environ.get("OVERLAP_MIN_RATIO", DEFAULT_OVERLAP_MIN_RATIO)),
         help="Mindest-Overlap-Anteil (0..1) für einen Treffer "
         f"(Default: {DEFAULT_OVERLAP_MIN_RATIO}).",
+    )
+    parser.add_argument(
+        "--check-targets",
+        action="store_true",
+        help="Ergebnis gegen das Erkennungsziel aus docs/foundation/"
+        "erkennungsziel.md prüfen und bei Verfehlung mit Exit-Code 1 enden. "
+        "Ohne das Flag bewertet der Exit-Code weiterhin nur den LAUF, nicht "
+        "die Qualität (Default-Vertrag bleibt unverändert).",
     )
     parser.add_argument(
         "--stopwords",
@@ -1015,6 +1145,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     print(f"  JSON-Report geschrieben: {args.output}")
+
+    if args.check_targets:
+        verstoesse = evaluate_targets(result)
+        if verstoesse:
+            print(
+                "FEHLER: Erkennungsziel verfehlt — "
+                + "; ".join(verstoesse),
+                file=sys.stderr,
+            )
+            return 1
+
     return 0
 
 

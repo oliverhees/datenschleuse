@@ -101,7 +101,8 @@ Deshalb braucht das Ziel zwei Zahlen, nicht eine.
 | Kennzahl | Ziel | Gate |
 |---|---|---|
 | **Recall** (`must_detect`, gesamt) | **≥ 95 %** | V1 blockierend |
-| **Recall** je Entity-Typ mit Support ≥ 3 | **≥ 90 %** | V1 blockierend |
+| **Recall** je musterbasiertem Typ (Support ≥ 3) | **≥ 98 %** | V1 blockierend |
+| **Recall** PERSON / LOCATION / ORGANIZATION | **≥ 90 / 85 / 75 %** | V1 blockierend |
 | **Störquote** (PII-freie Texte mit ≥ 1 Fehlalarm) | **≤ 10 %** | V1 blockierend |
 | **Precision** (aus Negativ-Fällen) | **≥ 90 %** | V1 blockierend |
 | Recall bei `known_gap` | keine Vorgabe | nur berichtet |
@@ -122,9 +123,17 @@ er grün wird. Genau dieser Mechanismus hat den Benchmark bis heute bei
 **Recall zusätzlich pro Entity-Typ.** Ein Gesamt-Recall von 95 % kann einen
 Typ mit 0 % Recall verdecken, wenn er selten annotiert ist. Genau das ist im
 Projekt schon einmal passiert: `IP_ADDRESS` stand bei 0 % Recall, weil der
-`IpRecognizer` gar nicht geladen war (dokumentiert in
-`presidio/recognizers-config.yml`). Die Schwelle greift erst ab Support ≥ 3,
-weil eine Quote über ein oder zwei Fälle keine Aussage trägt.
+`IpRecognizer` gar nicht geladen war — die Registry ERSETZT die Presidio-
+Defaults, statt sie zu ergänzen (dokumentiert in
+`presidio/recognizers-config.yml`). Der Gesamtwert hätte das weiter verdeckt.
+Die Schwelle greift erst ab Support ≥ 3, weil eine Quote über ein oder zwei
+Fälle keine Aussage trägt.
+
+Die Per-Typ-Ziele sind nach Erkennungsmechanismus gestaffelt und nicht pauschal
+— hergeleitet aus den Eigenangaben des Modells in Abschnitt 5. Ein flaches
+„90 % pro Typ" würde von ORGANIZATION mehr verlangen, als `de_core_news_lg` auf
+eigenem Terrain liefert (76,3 %); ein solches Gate wird nicht erfüllt, sondern
+umgangen.
 
 **Störquote ≤ 10 %.** Die Zahl ist eine Produktentscheidung, keine abgeleitete
 Größe: Höchstens jeder zehnte PII-freie Text darf gestört werden. Sie ist
@@ -203,6 +212,9 @@ kontextsensitiver Recognizer im Analyzer-Image, der Anrede- und Titel-Kontext
 
 ### 4.4 Spannung zur Security-Baseline — offen benannt
 
+> Entschieden: von Oliver genehmigt, festgehalten in
+> [ADR-0002](../adr/0002-nicht-pii-wortliste.md).
+
 `docs/foundation/security-baseline.md` verbietet Denylists: „sie sind erst
 vollständig, wenn jemand die Lücke findet." Die Stoppwortliste ist der Form
 nach eine Denylist und bewegt sich in die riskante Richtung — sie **reduziert**
@@ -233,10 +245,72 @@ gegengeprüfte Einzelentscheidung — nicht das stille Wachsen einer Denylist.
 
 ---
 
-## 5. Vergleichsrahmen
+## 5. Vergleichsrahmen — was das Modell überhaupt leisten kann
 
-*(Wird ergänzt, sobald die Recherche zu vergleichbaren Werkzeugen vorliegt.
-Bis dahin bewusst leer — eine Zahl ohne Beleg ist hier schlimmer als keine.)*
+Statt fremde Marketing-Zahlen zu zitieren, nehmen wir die Primärquelle: die
+Metadaten des tatsächlich installierten Modells. Jeder kann sie nachlesen:
+
+```bash
+docker exec datenschleuse-analyzer python -c \
+  "import de_core_news_lg; print(de_core_news_lg.load().meta['performance'])"
+```
+
+**`de_core_news_lg` 3.8.0, Eigenangabe des Modells** (trainiert auf TIGER-Korpus
+und WikiNER — also Zeitungs- und Wikipedia-Text):
+
+| Klasse | Precision | **Recall** | F |
+|---|---|---|---|
+| PER | 0,8912 | **0,9202** | 0,9054 |
+| LOC | 0,8720 | **0,8794** | 0,8757 |
+| ORG | 0,7881 | **0,7630** | 0,7754 |
+| MISC | 0,8004 | 0,7260 | 0,7614 |
+| **gesamt** | 0,8534 | **0,8453** | 0,8493 |
+
+### Der unbequeme Befund
+
+**Unser Korpus meldet 100 % PERSON-Recall. Das Modell selbst gibt für PER
+92,02 % an — auf Text, für den es trainiert wurde.**
+
+Ein Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
+Evaluationsmenge, ist nicht besonders gut — er ist besonders leicht. Unsere 79
+Fälle sind handverlesen, kurz und syntaktisch einfach; das Modell sieht dort
+keinen der Fälle, an denen es real scheitert (verschachtelte Sätze, seltene
+Namen, Namen ohne Anrede, fremdsprachige Namen, Namen in Aufzählungen).
+
+Daraus folgt zweierlei:
+
+1. Die 100 % sind **kein Qualitätsbeleg**, sondern eine Aussage über den
+   Schwierigkeitsgrad des Korpus. Sie dürfen so nicht nach außen kommuniziert
+   werden.
+2. Der nächste sinnvolle Schritt ist nicht, die Erkennung zu verbessern,
+   sondern den **Korpus zu härten**, bis er das Modell tatsächlich fordert.
+   Erst dann misst der Recall etwas. Eigenes Work Item.
+
+### Warum die Recall-Ziele nach Mechanismus gestaffelt sind
+
+Aus derselben Tabelle folgt, dass ein pauschales Per-Typ-Ziel nicht
+verteidigungsfähig wäre. Ein flaches „90 % pro Typ" verlangt von ORGANIZATION
+mehr, als das Modell auf eigenem Terrain liefert (76,3 %) — ein solches Gate
+wird nicht erfüllt, sondern umgangen. Deshalb:
+
+| Typklasse | Ziel | Begründung |
+|---|---|---|
+| musterbasiert (Regex/Prüfsumme) | **≥ 98 %** | deterministisch. Ein Fehlschlag ist ein Muster- oder Konfigurationsfehler, kein Modellproblem — hier gibt es keine Ausrede. |
+| PERSON | **≥ 90 %** | knapp unter der Modellangabe von 92,0 %. |
+| LOCATION | **≥ 85 %** | knapp unter 87,9 %. |
+| ORGANIZATION | **≥ 75 %** | an der Modellangabe von 76,3 %. Ehrlich niedrig statt unerreichbar hoch. |
+
+Neue Entity-Typen fallen per Default in die strenge musterbasierte Klasse
+(`target_for_type()`). Diese Richtung ist die sichere: ein neuer
+Custom-Recognizer wird streng geprüft, bis jemand bewusst entscheidet, ihn
+niedriger einzustufen.
+
+### Kommerzielle Anbieter
+
+Bewusst nicht zitiert. Für AWS Comprehend PII, Google Cloud DLP und Azure AI
+Language liegt uns keine belegbare, nachprüfbare Recall-Angabe für **deutsche**
+PII vor. Eine Zahl ohne Quelle wäre hier schlimmer als keine — genau die
+Behauptungs-Kultur, gegen die dieses Dokument gerichtet ist.
 
 ---
 
@@ -251,6 +325,21 @@ python3 test/corpus-benchmark.py
 # Mit Stoppwortliste — der Zustand, der ausgeliefert wird
 python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
 ```
+
+**Gate maschinell prüfen** (Exit-Code 1 bei Verfehlung):
+
+```bash
+python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml --check-targets
+```
+
+Die Schwellen dieses Dokuments stehen als Konstanten in
+`test/corpus-benchmark.py` und werden von `test/test_erkennungsziel_gate.py`
+gegen dieses Dokument abgeglichen. Ein Ziel, das nur im Fließtext steht, ist
+kein Gate, sondern ein Wunsch — man senkt es beim nächsten roten Lauf
+stillschweigend ab.
+
+Ohne `--check-targets` bewertet der Exit-Code weiterhin nur den LAUF (0 = sauber
+gelaufen, 2 = technischer Fehler); der bisherige Vertrag bleibt unverändert.
 
 **Pflicht bei jeder Recognizer- oder Listen-Änderung:** beide Läufe vorher und
 nachher, beide Seiten vergleichen. Eine Precision-Verbesserung ohne
