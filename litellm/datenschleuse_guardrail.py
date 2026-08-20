@@ -552,10 +552,30 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if self.image_policy == "pass":
             return
         if self.image_policy == "block":
+            # Seit DATENSCHLE-83 ist 'block' der Standard, weil der
+            # Image-Redactor nicht mehr Teil des Standard-Stacks ist (er
+            # brachte 42 der 61 kritischen CVE-Befunde mit). Damit liest diese
+            # Meldung nicht mehr der Bastler mit bewusst reduziertem Setup,
+            # sondern jeder, der `docker compose up` getippt hat und nun ein
+            # Bild schickt. Sie muss deshalb den Weg nach vorn zeigen, statt
+            # nur die Tuer zuzuhalten -- sonst ist die Ablehnung zwar sicher,
+            # aber eine Sackgasse.
+            #
+            # Bewusst OHNE jeden Bildinhalt: die Meldung geht an den Client
+            # zurueck und landet potenziell im Log. Ein Base64-Fragment darin
+            # waere genau das Leck, das die Policy verhindern soll.
             raise DatenschleuseBlocked(
                 "Bild-Anhaenge sind blockiert (image_policy='block'). Die "
-                "Datenschleuse maskiert Text; Bilder muessten geschwaerzt "
-                "werden, wofuer der Image-Redactor-Dienst noetig ist."
+                "Datenschleuse maskiert Text; Bilder muessen geschwaerzt "
+                "werden, wofuer der Image-Redactor-Dienst noetig ist. Dieser "
+                "Dienst ist seit DATENSCHLE-83 optional und startet nicht "
+                "mehr per Default (er trug den mit Abstand groessten Teil der "
+                "bekannten CVEs des Stacks). Aktivieren: "
+                "`docker compose --profile images up -d` starten und "
+                "DATENSCHLEUSE_IMAGE_POLICY=redact in der .env setzen. "
+                "Wer Bilder bewusst ungeprueft durchlassen will, setzt "
+                "DATENSCHLEUSE_IMAGE_POLICY=pass -- das ist eine bewusste "
+                "Datenschutzluecke, keine Empfehlung."
             )
         url = _image_part_url(part)
         if not url:
