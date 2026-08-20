@@ -942,6 +942,12 @@ PAYLOAD_FIELDS_RESYNCED = frozenset({
     "proxy_server_request",
 })
 
+#: Alle Felder, die auf IRGENDEINER Route Anwendertext tragen. Basis fuer
+#: die Redaktion eines geblockten Requests -- abgeleitet aus dem Register,
+#: nicht handgepflegt: ein kuenftiges maskiertes Feld wird damit automatisch
+#: mitredigiert, ohne dass jemand daran denken muss.
+_ALLE_MASKIERTEN_FELDER = frozenset()  # wird nach den Routen gefuellt
+
 #: Zugangs-Geheimnisse, die NIE in den Logging-Schnappschuss gehoeren.
 #:
 #: Sie stehen hier aus einem SACHGRUND, nicht weil irgendeine
@@ -1214,6 +1220,12 @@ _PAYLOAD_VALIDATORS = {
     "logit_bias": _payload_expect_logit_bias,
     "stream_options": _payload_expect_stream_options,
 }
+
+# Register-Ableitung: die Union der maskierten Felder beider Routen. Steht
+# hier, weil erst ab dieser Stelle beide Routen definiert sind.
+_ALLE_MASKIERTEN_FELDER = frozenset(
+    CHAT_PAYLOAD_ROUTE.masked
+) | frozenset(TEXT_PAYLOAD_ROUTE.masked)
 
 # Bauart-Absicherung: jedes registrierte Feld braucht einen echten Pruefer.
 # Ein Tippfehler im Register wuerde sonst zur Laufzeit im Verarbeitungspfad
@@ -2025,7 +2037,15 @@ class DatenschleuseGuardrail(_GuardrailBase):
             # jemand spaeter hinzufuegt, ist damit automatisch mit abgedeckt
             # -- dieselbe Logik wie beim Neubau des Schnappschusses statt
             # feldweisem Nachziehen.
-            self._redact_logging_snapshot(data)
+            try:
+                self._redact_logging_snapshot(data)
+            except Exception:  # pragma: no cover - der Aufraeumer selbst
+                # Der Aufraeumer darf die urspruengliche Ausnahme NIE
+                # verdraengen: aus einem sauberen DatenschleuseBlocked
+                # wuerde sonst ein opaker Fehler, und waehrend einer
+                # Cancellation ein verschluckter Abbruch. Bewusst still --
+                # ein Log an dieser Stelle koennte selbst wieder werfen.
+                pass
             raise
 
     async def _pre_call_guarded(
@@ -2590,6 +2610,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
         "datenschleuse": "request blocked -- body withheld from logging"
     }
 
+    #: Ersatzwert fuer die Nutzfelder eines geblockten Requests.
+    BLOCKED_FIELD_MARKER = "<withheld-by-datenschleuse: request blocked>"
+
     @classmethod
     def _redact_logging_snapshot(cls, data: Any) -> None:
         """Ersetzt den Logging-Schnappschuss eines geblockten Requests.
@@ -2610,6 +2633,24 @@ class DatenschleuseGuardrail(_GuardrailBase):
         psr = data.get("proxy_server_request")
         if isinstance(psr, dict) and "body" in psr:
             psr["body"] = dict(cls.BLOCKED_SNAPSHOT_BODY)
+
+        # Der Schnappschuss ist nur EINER von zwei Klartext-Kanaelen.
+        # ``post_call_failure_hook`` bekommt ``request_data`` selbst, und das
+        # darin haengende ``litellm_logging_obj`` wurde mit DERSELBEN
+        # ``messages``-Liste konstruiert. Der Block trifft mitten in der
+        # Message-Schleife -- alles danach ist voellig unmaskiert. Nur den
+        # Schnappschuss zu putzen waere genau die Ein-Kanal-Luecke, die
+        # dieser Docstring oben als Fehlerklasse benennt.
+        for feld in _ALLE_MASKIERTEN_FELDER:
+            if feld in data:
+                data[feld] = cls.BLOCKED_FIELD_MARKER
+        # ``messages`` ist eine Liste von Dicts -- der Marker ersetzt sie
+        # ganz. Ein Weiterreichen der Struktur mit geleerten Werten waere
+        # wieder eine Liste von Feldern, an die jemand gedacht hat.
+        if isinstance(data.get("messages"), list):
+            data["messages"] = [
+                {"role": "user", "content": cls.BLOCKED_FIELD_MARKER}
+            ]
 
     # ---- Route-Register (DATENSCHLE-69) -----------------------------------
     @staticmethod

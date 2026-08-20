@@ -360,6 +360,53 @@ class TestGeblockterRequestLaesstKeinenKlartextZurueck(
         self.assertNotIn(_NAME, flat)
         self.assertNotIn(_IBAN, flat)
 
+    async def test_auch_die_nutzfelder_tragen_nach_dem_block_keinen_klartext(self):
+        """Der Schnappschuss ist nur EINER von zwei Klartext-Kanaelen.
+
+        Der Block trifft mitten in der Message-Schleife: alles danach ist
+        voellig unmaskiert. litellms ``post_call_failure_hook`` bekommt
+        ``request_data``, und das darin haengende ``litellm_logging_obj``
+        wurde mit DERSELBEN ``messages``-Liste konstruiert. Den
+        Schnappschuss zu putzen und die Nutzfelder stehen zu lassen waere
+        genau die Ein-Kanal-Luecke, die dieses Projekt wiederholt gebissen
+        hat -- und die der Docstring der Redaktion selbst als Fehlerklasse
+        benennt.
+        """
+        body = _base_body(dg.CHAT_PAYLOAD_ROUTE)
+        body["messages"] = [
+            {"role": "user", "content": f"Hallo {_NAME}, IBAN {_IBAN}"},
+            {"role": "user", "content": f"Und nochmal {_NAME}"},
+        ]
+        body["audio"] = {"voice": "alloy"}
+        data = await self._blocked(as_proxy_would(body))
+        flat = json.dumps(data.get("messages"), ensure_ascii=False, default=str)
+        self.assertNotIn(_NAME, flat, "Klartext-Name in data['messages'] nach Block")
+        self.assertNotIn(_IBAN, flat, "Klartext-IBAN in data['messages'] nach Block")
+
+    async def test_redaktion_beschaedigt_den_block_nicht(self):
+        """Der Aufraeumer darf die urspruengliche Ausnahme nie verdraengen.
+
+        Liefe die Redaktion ungeschuetzt im except-Block und wuerfe selbst,
+        wuerde aus einem sauberen DatenschleuseBlocked ein opaker Fehler --
+        und waehrend einer Cancellation ein verschluckter Abbruch.
+        """
+        body = _base_body(dg.CHAT_PAYLOAD_ROUTE)
+        body["messages"] = [{"role": "user", "content": f"Hallo {_NAME}"}]
+        body["audio"] = {"voice": "alloy"}
+        data = as_proxy_would(body)
+
+        class Bockig(dict):
+            def __setitem__(self, key, value):
+                raise RuntimeError("schreibgeschuetzt")
+
+        stur = Bockig(data["proxy_server_request"])
+        data["proxy_server_request"] = stur
+        # Die Guardrail-Ausnahme muss durchkommen, nicht der RuntimeError.
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await _guard().async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="acompletion"
+            )
+
     async def test_der_geblockte_snapshot_bleibt_ein_dict(self):
         """Die Konsumenten duerfen nicht ueber die Form stolpern.
 
