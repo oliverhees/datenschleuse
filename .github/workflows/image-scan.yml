@@ -115,8 +115,19 @@ jobs:
       # Ausgabe lesbar ist und eine Veraenderung auffaellt.
       #
       # WIEDER SCHARF SCHALTEN (`exit-code: "1"`), sobald der Presidio-
-      # Altbestand entschieden ist -- Oliver-Entscheidung, siehe
-      # docs/foundation/supply-chain.md §3 "Der Presidio-Altbestand".
+      # Altbestand entschieden ist -- Oliver-Entscheidung.
+      #
+      # ENTSCHEIDUNGSVORLAGE MIT ZAHLEN: docs/adr/0001-image-cve-gate.md
+      # (Gesetz 12; Status "vorgeschlagen"). Kurz: Die urspruengliche
+      # Begruendung "wir koennen die Zahl nicht senken" traegt nicht. Gemessen
+      # am 2026-08-20 entfernt ein `apt-get upgrade` in unserer EIGENEN Schicht
+      # ALLE behebbaren CRITICALs (Analyzer 5->0, Anonymizer 5->0,
+      # Image-Redactor 21->0) und senkt die Gesamtbefunde um 62-76 %.
+      # Umgesetzt fuer den Analyzer in DATENSCHLE-83; dort liegt auch der
+      # Image-Redactor jetzt hinter dem Compose-Profil `images` und ist damit
+      # aus dem Standard-Stack heraus. Behebbare CRITICALs im ausgelieferten
+      # Stack danach: 6 statt 32. Die Schwelle ist damit ERFUELLBAR -- genau
+      # der Einwand, an dem sie hier scheiterte.
       - name: Trivy ${{ matrix.name }} -- CRITICAL-Auszug (nur Meldung)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

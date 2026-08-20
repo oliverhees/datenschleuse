@@ -295,56 +295,151 @@ Begründung im Einzelnen:
   sagen, wir hätten es nicht gesehen —, aber nur die handhabbare Teilmenge
   stoppt den Merge. Sichtbarkeit und Blockade sind bewusst getrennt.
 
-### Der Presidio-Altbestand — offene Entscheidung für Oliver
+### Der Presidio-Altbestand — Entscheidungsvorlage für Oliver
 
-Der erste echte Lauf des Image-Scans (Run `32252889633`, 2026-08-19) hat die
-ursprünglich geplante Schwelle „CRITICAL mit Fix blockiert" sofort widerlegt:
+Der erste echte Lauf des Image-Scans hat die ursprünglich geplante Schwelle
+„CRITICAL mit Fix blockiert" sofort widerlegt. Die Zahlen stammen aus
+Run `32253275837` (head `947bd36`, 2026-08-19) und sind einzeln aus den
+Job-Logs abgelesen, nicht geschätzt:
 
-| Image | CRITICAL (mit Fix) | Gesamt (CRITICAL/HIGH/MEDIUM) |
-|-------|--------------------|-------------------------------|
-| `litellm:v1.97.0` | 0 | 0 |
-| `postgres:16.15-alpine` | 1 (CVE-2025-68121, Go-stdlib `crypto/tls`) | 43 |
-| `presidio-analyzer:2.2.362` | 9 (openssl, gnutls, perl) | 226 |
-| `presidio-anonymizer:2.2.362` | 9 (dieselben) | 228 |
-| `presidio-image-redactor:0.0.58` | vorhanden | — |
+| Image | CRITICAL gesamt | davon **mit Fix** | HIGH | MEDIUM | Befunde gesamt |
+|-------|-----------------|-------------------|------|--------|----------------|
+| `litellm:v1.97.0` | 0 | 0 | 0 | 2 | 2 |
+| `postgres:16.15-alpine` | 1 | 1 | 21 | 21 | 43 |
+| `presidio-analyzer:2.2.362` | 9 | 5 | 66 | 151 | 226 (+20 Python) |
+| `presidio-anonymizer:2.2.362` | 9 | 5 | 68 | 151 | 228 (+18 Python) |
+| `presidio-image-redactor:0.0.58` | **42** | **21** | 705 | 3100 | **3847** (+38 Python) |
+| **Summe** | **61** | **32** | 860 | 3425 | 4346 |
 
-Das Entscheidende ist nicht die Zahl, sondern dass **wir sie nicht senken
-können**: Die Presidio-Images sind Debian-basiert, und `2.2.362` *ist* der
-neueste von Microsoft veröffentlichte Stand. „In Debian gefixt" heißt nicht
-„von uns behebbar" — den Fix muss Microsoft in einen Rebuild gießen. Es gibt
-keinen Digest, auf den wir hochziehen könnten.
+Nachprüfbar mit:
 
-Ein blockierender Check, den niemand erfüllen *kann*, ist exakt der
-Mechanismus, durch den Scanner abgeschaltet werden. Deshalb meldet
-`image-scan.yml` und blockiert nicht. Die Merge-Sperre sitzt dort, wo sie
-handhabbar ist: beim Dependency-Gate.
+```bash
+gh api repos/oliverhees/datenschleuse/actions/jobs/96069004036/logs \
+  | grep -E "Total: [0-9]+ \("
+```
 
-Bemerkenswert im Kontrast: `litellm:v1.97.0` ist sauber. Das Image basiert auf
-Chainguard/Wolfi, wo minimale Angriffsfläche das Produktversprechen ist.
+**Zwei Dinge, die eine frühere Fassung dieser Tabelle falsch darstellte** und
+die für eine Entscheidungsvorlage genau die falschen zwei sind:
 
-**Zu entscheiden hat das Oliver, nicht ein Agent** (Gesetz 5 — Ausnahmen bei
-High/Critical genehmigt nur er). Die Optionen, ehrlich benannt:
+1. Die Spalte hieß „CRITICAL (mit Fix)" und trug für Analyzer/Anonymizer je `9`
+   ein. `9` ist die **Gesamtzahl**; mit Fix sind es je `5`. Deshalb stehen
+   „gesamt" und „mit Fix" jetzt getrennt.
+2. Die Zeile des Image-Redactors war **leer** („vorhanden | —"). Das schlechteste
+   Image des Stacks war das einzige ohne Zahlen. Eine Vorlage, die die
+   schlechteste Zahl auslässt, ist keine Vorlage.
 
-1. **Akzeptieren und dokumentieren.** Die Dienste hängen im internen
-   `datenschleuse-net` und sind nicht öffentlich erreichbar; die
-   OpenSSL-Lücke ist laut Beschreibung auf 32-Bit-Systemen relevant, wir
-   fahren 64 Bit. Kostet nichts, ändert aber am Auslieferungszustand nichts.
-2. **Analyzer/Anonymizer selbst bauen.** Presidio ist Open Source; ein
-   eigener Build auf gepatchter Basis (oder Wolfi) bringt die CRITICALs auf
-   null, kostet aber dauerhaft Wartung — wir übernehmen damit Microsofts Job.
-3. **Warten und beobachten.** Der wöchentliche Lauf meldet, sobald Microsoft
-   nachzieht; dann greift das normale Digest-Update (§1).
+#### Die These „wir können sie nicht senken" trägt nicht — gemessen
 
-Sobald der Altbestand entschieden ist, wird `image-scan.yml` Schritt 2 wieder
-auf `exit-code: "1"` gestellt. Der Schalter steht dort kommentiert.
+Die frühere Begründung lautete: Presidio ist Debian-basiert, `2.2.362` ist der
+neueste Stand von Microsoft, „in Debian gefixt" heiße nicht „von uns behebbar".
+
+Der erste Halbsatz stimmt, die Schlussfolgerung nicht. Die behebbaren CRITICALs
+sind gewöhnliche Debian-Pakete mit vorhandener Zielversion:
+
+```
+libgnutls30t64  CVE-2026-33845, CVE-2026-42010  3.8.9-3+deb13u2 → 3.8.9-3+deb13u4
+libssl3t64      CVE-2026-31789                  3.5.4-1~deb13u2 → 3.5.5-1~deb13u2
+openssl         CVE-2026-31789                  3.5.4-1~deb13u2 → 3.5.5-1~deb13u2
+```
+
+Wir bauen den Analyzer **selbst** — `presidio/Dockerfile.analyzer` setzt mit
+`FROM` auf und legt eine eigene Schicht darauf. Ein `apt-get upgrade` in genau
+dieser Schicht behebt sie. Wir brauchen Microsoft dafür nicht.
+
+**Gemessen am 2026-08-20** (lokal, Trivy 0.70.0, Basis-Image vs. Basis + eigene
+`apt upgrade`-Schicht). Die Absolutzahlen liegen über denen des CI-Laufs vom
+Vortag, weil die Schwachstellen-DB einen Tag jünger ist — verglichen wird
+deshalb *vorher gegen nachher mit derselben DB*, nicht gegen die Tabelle oben:
+
+| Image | CRITICAL mit Fix | CRITICAL gesamt | HIGH | Befunde (OS) |
+|-------|------------------|-----------------|------|--------------|
+| Analyzer vorher | 5 | 9 | 93 | 253 |
+| Analyzer **nachher** | **0** | 4 | 22 | 96 |
+| Anonymizer vorher | 5 | 9 | 95 | 255 |
+| Anonymizer **nachher** | **0** | 4 | 22 | 96 |
+| Image-Redactor vorher | 21 | 42 | 743 | 3835 |
+| Image-Redactor **nachher** | **0** | 21 | 218 | 933 |
+
+Das Ergebnis ist in allen drei Fällen dasselbe: **alle behebbaren CRITICALs
+verschwinden**, die Gesamtbefunde fallen um 62 % bis 76 %. Übrig bleibt genau
+das, wofür es upstream keinen Fix gibt — also genau das, was `ignore-unfixed`
+ohnehin ausblendet.
+
+Gegengeprüft, dass die Schicht nichts kaputt macht:
+
+```
+$ docker run --rm --entrypoint python <upgraded> -c "import presidio_analyzer, spacy, ssl; ..."
+presidio ok / spacy 3.8.11 / OpenSSL 3.5.6 7 Apr 2026
+```
+
+#### Der Preis dieser Option — ehrlich benannt
+
+`apt-get upgrade` holt sich, was am **Build-Tag** aktuell ist. Dieselbe
+Dockerfile an zwei Tagen gebaut ergibt zwei verschiedene Images. Das steht in
+einer gewissen Spannung zum Digest-Pinning aus Abschnitt 1 — wir nageln den
+*Input* fest und lassen dann eine Schicht floaten.
+
+Aufgelöst wird die Spannung dadurch, wo Reproduzierbarkeit für Betreiber
+tatsächlich hängt: am Digest des **Ergebnis**-Images, nicht am Rezept. Der Input
+ist über `FROM …@sha256:` festgenagelt, das Ergebnis wird in der CI gescannt.
+Drift wird damit gemessen statt geglaubt. Echte Bit-Reproduzierbarkeit bräuchte
+`snapshot.debian.org` als Paketquelle — eigene Infrastruktur-Entscheidung,
+eigenes Work Item.
+
+#### Was inzwischen umgesetzt ist (DATENSCHLE-83)
+
+Die Umsetzung liegt **nicht** in diesem PR, sondern in DATENSCHLE-83 — dort
+gehört sie fachlich hin, und zwei Branches dieselbe Datei bauen zu lassen wäre
+ein Merge-Konflikt mit Ansage (Gesetz 8). Umgesetzt sind dort:
+
+- `apt-get upgrade` in `presidio/Dockerfile.analyzer`, mit `USER root` nur für
+  diese eine Schicht und anschließendem Zurückschalten auf UID 1001.
+- Der Image-Redactor liegt hinter dem Compose-Profil `images` und startet bei
+  `docker compose up` **nicht** mehr mit; die Bildpolitik steht per Default auf
+  `block`. Damit ist das mit Abstand schlechteste Image (42 CRITICAL, 3847
+  Befunde) aus dem Standard-Stack heraus.
+
+**Was das für den ausgelieferten Standard-Stack bedeutet:**
+
+| | behebbare CRITICALs |
+|---|---|
+| vorher (alle fünf Images) | **32** |
+| nach DATENSCHLE-83 (Redactor optional, Analyzer upgraded) | **6** |
+| zusätzlich mit `apt`-Schicht für den Anonymizer | **1** |
+
+Die verbleibende `1` ist `postgres:16.15-alpine` (Alpine, kein `apt`; dort wäre
+der Weg ein Digest-Update, sobald Upstream nachzieht).
+
+#### Zu entscheiden hat das Oliver, nicht ein Agent
+
+Gesetz 5 — Ausnahmen bei High/Critical genehmigt nur er, dokumentiert am Work
+Item. Die vollständige Vorlage mit allen vier Optionen und ihren Konsequenzen
+steht in **`docs/adr/0001-image-cve-gate.md`** (Status: vorgeschlagen).
+
+Kurzfassung der Optionen:
+
+1. **Akzeptieren und dokumentieren.** Kostet nichts, ändert am
+   Auslieferungszustand nichts.
+2. **Presidio komplett selbst bauen** (Wolfi o. ä.). Bringt die CRITICALs auf
+   null, wir übernehmen dauerhaft Microsofts Wartungsarbeit.
+3. **Warten und beobachten.** Der Wochenlauf meldet, sobald Microsoft nachzieht.
+4. **`apt upgrade` in unserer eigenen Schicht** — der billige Zwischenweg, den
+   die frühere Fassung dieses Dokuments gar nicht erst anbot. Gemessen: alle
+   behebbaren CRITICALs weg, Aufwand eine RUN-Zeile, Preis ist die oben
+   benannte Build-Zeit-Abhängigkeit.
+
+Sobald das entschieden ist, wird `image-scan.yml` Schritt 2 wieder auf
+`exit-code: "1"` gestellt. Der Schalter steht dort kommentiert. Nach Option 4
+wäre diese Schwelle für den Standard-Stack erfüllbar — genau das war der
+Einwand, an dem sie ursprünglich scheiterte.
 
 ### Wo die Scans hängen — und warum getrennt
 
 - **`security`-Job in `ci.yml`** (bestehender Job, Name unverändert). Der Name
   steht als required Status-Check im Ruleset `main-protection` — seit dem
   2026-08-20 **aktiv**, vorher nur ein nicht angewandtes Template
-  (DATENSCHLE-61). Hätten
-  wir einen neuen Job `vuln-scan` angelegt, hätte `.github/ruleset-main-protection.json`
+  (DATENSCHLE-61). Hätten wir einen neuen Job `vuln-scan` angelegt, hätte
+  `.github/ruleset-main-protection.json`
   mitgepflegt werden müssen — siehe die Pflege-Regel in `docs/BRANCH-PROTECTION.md`.
   Stattdessen wächst die Abdeckung des vorhandenen Checks.
 - **`image-scan.yml`** (eigener Workflow): wöchentlich montags, per
