@@ -195,7 +195,7 @@ Defekt eine Ebene tiefer.
 | `tools`, `tool_choice`, `functions`, `function_call`, `response_format` | strukturerhaltend maskiert (Beschreibungen, Enum-Werte, Schema-Texte) |
 | `model`, `temperature`, `top_p`, `n`, `seed`, `stream`, `stream_options`, `max_tokens`, `logit_bias`, Penalties … | auf Form validiert, unverändert weitergereicht |
 | LiteLLM-interne Felder: `metadata`, `proxy_server_request`, `cache`, `ttl`, `tags`, `litellm_*` … | passieren **ungeprüft** — siehe die Einschränkung unten |
-| `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `headers`, `extra_headers`, `provider_specific_header`, `model_list`, `extra_body`, Prompt-Management-Felder | ⛔ blockiert — noch kein eigenes Register |
+| `audio`, `modalities`, `prediction`, `thinking`, `web_search_options`, `headers`, `extra_headers`, `provider_specific_header`, `model_list`, `api_base`, `custom_llm_provider`, `mock_response`, `extra_body`, Prompt-Management-Felder | ⛔ blockiert — noch kein eigenes Register |
 | jedes unbekannte Feld | ⛔ blockiert |
 
 Wer eines der blockierten Felder braucht, bekommt eine Fehlermeldung, die das
@@ -206,10 +206,21 @@ unsichtbaren Leck vorzuziehen. Jedes dieser Felder ist ein eigenes Arbeitspaket.
 Felder in die Anfrage, bevor die Datenschleuse sie sieht — Sitzungs-IDs,
 Cache-Schalter, Abrechnungs-Metadaten. Die werden **nicht maskiert**. Die
 Rechtfertigung dafür ist nicht „sie sehen harmlos aus", sondern eine Messung:
-Wir haben einen mitschneidenden Server an die Stelle des LLM-Anbieters gesetzt
-und für jedes dieser Felder geprüft, ob es die Anfrage überhaupt verlässt —
-im Body **oder** als HTTP-Header. Drei taten es und stehen deshalb oben in der
-Block-Zeile (`headers`, `provider_specific_header`, `model_list`).
+Wir setzen einen mitschneidenden Server an die Stelle des LLM-Anbieters und
+prüfen für **jedes** dieser Felder, ob es die Anfrage verlässt — in der
+**URL samt Query-String**, in den **HTTP-Headern** oder im **Body**, und das
+gegen mehrere Anbieter-Typen. Sieben Felder taten es und stehen deshalb oben
+in der Block- bzw. Validierungs-Zeile.
+
+Zwei Details, die wir gelernt haben und die für dich relevant sind:
+
+- **Das Ergebnis hängt vom Anbieter ab.** `api_version` ist bei einem
+  OpenAI-kompatiblen Endpunkt dicht und landet bei Azure im Query-String der
+  URL. Wir messen deshalb gegen mehrere Anbieter-Typen, nicht gegen einen.
+- **Nicht alles Gefährliche trägt selbst Daten.** `api_base` enthält keine
+  personenbezogenen Daten — es bestimmt, *wohin* die Anfrage geht. Ein von
+  außen gesetzter Wert würde den gesamten Verkehr umleiten. Solche Felder
+  blockieren wir, auch wenn sie in der Messung „sauber" aussehen.
 
 Was das für dich heißt: Diese Felder erreichen den LLM-Anbieter nicht — wohl
 aber das **Logging** deiner eigenen LiteLLM-Instanz. Wer dort PII hineinschreibt

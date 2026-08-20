@@ -117,16 +117,62 @@ Regeln dazu:
   Behandlung ist eine falsche Zusage.
 - **Infrastruktur-Keys brauchen einen Beleg, keine Vermutung — und der Beleg
   ist eine Messung, keine Namensliste.** Ein Key darf nur dann unmaskiert
-  passieren, wenn nachgewiesen ist, dass er den Provider auf **keinem** Weg
-  erreicht: nicht im Body, nicht als HTTP-Header, nicht über
-  Verbindungs-Konfiguration. Nachweisverfahren: mitschneidender Server an der
-  Stelle des Providers, ein echter `completion()`-Aufruf pro Key, Prüfung des
-  gesamten ausgehenden Requests auf Header **und** Body.
+  passieren, wenn **beides** nachgewiesen ist:
+  1. Er erreicht den Provider auf **keinem** Weg — nicht im Body, nicht als
+     HTTP-Header, **nicht in der URL bzw. deren Query-String**, nicht über
+     Verbindungs-Konfiguration.
+  2. Er bestimmt nicht, **wohin** die Anfrage geht, **mit wessen**
+     Zugangsdaten oder **ob** sie überhaupt hinausgeht. Diese Bedingung ist
+     schärfer als die erste: `api_base` trägt selbst keine PII und leitet
+     trotzdem den kompletten Verkehr auf einen fremden Server um.
+
+- **Das Nachweisverfahren (bindend).** Mitschneidender Server an der Stelle
+  des Providers, ein echter `completion()`-Aufruf pro Key, geprüft wird der
+  **gesamte** ausgehende Request:
+  - **URL inklusive Query-String**, roh *und* URL-dekodiert — sonst versteckt
+    sich der Fund hinter Prozent-Kodierung;
+  - alle HTTP-Header;
+  - der Body.
+
+  Dazu vier Regeln, jede aus einem konkreten Beinahe-Fehler entstanden:
+  - **Provider-abhängig messen, mindestens `openai` und `azure`.** Was gegen
+    einen Provider-Handler dicht ist, muss es gegen einen anderen nicht sein:
+    `api_version` ist gegen `openai` dicht und geht gegen `azure` im
+    Query-String hinaus. Ein Ergebnis ohne Provider-Angabe ist kein Ergebnis.
+  - **Ein Fehler ist kein Freibrief.** Läuft der Aufruf nicht durch oder
+    kommt kein Request an, lautet das Ergebnis *nicht gemessen* — und ein
+    nicht gemessener Key gehört nicht auf die Passier-Liste. So wäre
+    `model_list` beinahe durchgerutscht, und so ist `mock_response`
+    herausgeflogen.
+  - **Eine Messung ist nur so gut wie ihre Wertform.** Ein Marker in einer
+    Struktur, die der Key real nie annimmt, misst nichts und meldet fälschlich
+    „sauber". Jeder Key bekommt eine Form, die er tatsächlich annehmen kann.
+  - **Die Messliste wird gegen die Konstante abgeglichen, nicht von Hand
+    geführt.** Sechs Keys waren nie gemessen worden — darunter `api_base` —,
+    weil sie in der Messliste schlicht fehlten. Der Abgleich ist als Test
+    festgeschrieben (`TestMeasurementCoverage`): die Passier-Liste muss
+    Teilmenge der gemessenen Keys sein.
 - **Der Eintrag in `all_litellm_params` ist notwendig, nicht hinreichend.**
   Genau diese Verwechslung war ein High-Finding: `headers` steht dort und geht
   trotzdem hinaus, als HTTP-Header (`main.py:5029`). Die gemessenen
-  Ausgangskanäle stehen in `PAYLOAD_FIELDS_TRANSPORT_CHANNELS` und blocken:
-  `headers`, `extra_headers`, `provider_specific_header`, `model_list`.
+  Ausgangskanäle stehen in `PAYLOAD_FIELDS_TRANSPORT_CHANNELS`:
+
+  | Key | Weg nach draußen | Behandlung |
+  |---|---|---|
+  | `headers`, `extra_headers` | HTTP-Header | blockiert |
+  | `provider_specific_header` | HTTP-Header (provider-abhängig) | blockiert |
+  | `model_list` | HTTP-Header über `litellm_params.extra_headers` der Deployments | blockiert |
+  | `api_base` | bestimmt das **Ziel** der Anfrage | blockiert |
+  | `api_version` | **URL/Query-String**, nur auf Azure | eng validiert |
+  | `api_key` | `authorization`-Header | eng validiert |
+
+- **Ein Transportkanal passiert nie ungeprüft — blocken oder eng validieren.**
+  Validiert wird nur, wenn der Wert den Provider byte-identisch erreichen muss
+  und der Proxy ihn legitim selbst setzt (`api_version` aus dem Query-String
+  eines Azure-Clients, `api_key` bei Pass-Through-Auth). Dieselbe Logik wie
+  bei `tool_call_id` auf Message-Ebene. Das Muster für `api_version` verbietet
+  ausdrücklich `&` und `=` — genau die Zeichen, mit denen man einen zweiten
+  Query-Parameter an die Provider-URL hängt.
 - **Zwei Namen für denselben Kanal müssen dieselbe Behandlung bekommen.**
   `extra_headers` war korrekt geblockt, `headers` — der ältere Name, der in
   LiteLLM im selben dict landet — passierte. Das war kein Abwägen, sondern ein
@@ -175,13 +221,21 @@ Historie derselben Lücke — der Grund für diese Regel:
 - DATENSCHLE-69 (dritte Runde): der **Transport-Umschlag** — die Felder waren
   registriert, aber das Kriterium prüfte nur den Body. `headers` ging als
   HTTP-Header hinaus.
+- DATENSCHLE-69 (vierte Runde): die **URL** — das Kriterium deckte Header und
+  Body ab, nicht den Query-String. `api_version` ging auf Azure dort hinaus.
+  Diesmal lag der Fehler nicht im Register, sondern in der **Messmethode**.
 
-Siebenmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
+Achtmal dieselbe Ursache: gelesen wurde, was man kannte, alles Übrige lief
 still durch. Deshalb wird auf jeder Ebene **einmal vollständig erfasst** statt
-Fall für Fall entdeckt. Und deshalb ist nach dem Schließen einer Ebene die
-erste Frage, welche Ebene darüber oder darunter dieselbe Bauart hat — und die
-zweite, ob das *Kriterium* der geschlossenen Ebene wirklich alle Wege abdeckt
-oder nur den, an den man zuerst gedacht hat.
+Fall für Fall entdeckt. Und deshalb sind nach dem Schließen einer Ebene drei
+Fragen zu stellen, nicht eine:
+1. Welche Ebene darüber oder darunter hat dieselbe Bauart?
+2. Deckt das *Kriterium* der geschlossenen Ebene wirklich alle Wege ab — oder
+   nur den, an den man zuerst gedacht hat?
+3. Deckt die *Messung*, die das Kriterium belegen soll, wirklich alles ab, was
+   das Kriterium behauptet? Runde vier entstand nicht aus einem lückenhaften
+   Register, sondern aus einer lückenhaften Messung. Ein Beleg, der weniger
+   prüft als er zusagt, ist kein Beleg.
 
 Verbindliches Feld-Register (Quelle: `MESSAGE_FIELDS_MASKED` /
 `MESSAGE_FIELDS_VALIDATED` in `litellm/datenschleuse_guardrail.py` — Code und
