@@ -148,8 +148,9 @@ Item.
 Das eingecheckte `benchmark-results.json` ist der Lauf **mit** Wortliste über
 alle 82 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
 Störquote 37,5 %, `bestanden: false`). Es wird ausschließlich durch einen
-echten Lauf ersetzt, nie von Hand editiert — es ist ein Maschinen-Artefakt.
-Eine Handeintragung wäre keine Korrektur, sondern eine Fälschung der Messung.
+echten Lauf ersetzt, nie von Hand editiert — eine Handeintragung wäre keine
+Korrektur. Damit hat der ausgelieferte Zustand (ohne Liste) derzeit kein
+eingechecktes Artefakt; wer ihn belegen will, fährt Lauf 3 selbst.
 
 ## Aufruf
 
