@@ -139,6 +139,45 @@ traut, löst ihn selbst auf (Befehl unten).
 | `actions/checkout` | `11d5960a326750d5838078e36cf38b85af677262` | v4.4.0 |
 | `actions/setup-python` | `a26af69be951a213d495a4c3e4e4022e16d87065` | v5.6.0 |
 | `gitleaks/gitleaks-action` | `ff98106e4c7b2bc287b24eaf42907196329070c7` | v2.3.9 |
+| `aquasecurity/trivy-action` | `ed142fd0673e97e23eac54620cfb913e5ce36c25` | v0.36.0 |
+
+**Gelernt an der eigenen Regel** (DATENSCHLE-59, Security-Audit): `trivy-action`
+stand zuerst auf `a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8`. Das ist **nicht der
+Commit**, sondern das *annotierte Tag-Objekt* von `v0.36.0` — genau der Fall, vor
+dem das Update-Verfahren unten warnt. Die Regel wurde in demselben PR aufgestellt
+und in demselben PR verletzt. Vier Stellen (`ci.yml` 2x, `image-scan.yml` 2x)
+zeigen jetzt auf den dereferenzierten Commit `ed142fd0`.
+
+**Warum das mehr ist als ein Schönheitsfehler — und was NICHT das Argument ist.**
+
+Zuerst die Klarstellung, weil das Gegenteil naheliegt und falsch ist: Ein
+annotiertes Tag-Objekt ist **nicht** unsicherer im Sinne der Integrität. Git ist
+content-addressed; Commits, Trees, Blobs *und* Tag-Objekte sind unveränderlich.
+`git tag -f` erzeugt ein **neues** Objekt mit **neuer** ID — verschiebbar ist der
+Ref-*Name* `refs/tags/v0.36.0`, niemals die ID `a9c7b0f0`. Der alte Pin war
+weder kaputt noch manipulierbar, und er lief grün (Run `32253275837`).
+
+Die echten Gründe sind andere:
+
+- **Erreichbarkeit statt Integrität.** Wird das Tag upstream verschoben oder
+  gelöscht, verwaist das Tag-Objekt und kann perspektivisch weg-garbage-
+  collectet werden — der Pin bricht dann. Ein Commit, der auf dem Standard-Branch
+  liegt (`ed142fd0` ist Vorfahre von `master`, geprüft), ist deutlich schwerer zu
+  verwaisen. Das ist ein **Verfügbarkeits**-Argument, keine Zusicherung, dass
+  nichts verschwinden *kann*.
+- **Werkzeuge erkennen es nicht.** `gh api repos/aquasecurity/trivy-action/commits/a9c7b0f0…`
+  antwortet mit **HTTP 422** — für die Commit-API existiert diese ID nicht.
+  Pin-Auditoren (zizmor, ratchet) und Dependabot arbeiten auf Commits. Der
+  praktisch teuerste Effekt: Dependabot würde so einen Pin **stillschweigend nie**
+  aktualisieren. Die Veralterung wird unsichtbar — und ein Pin, den nie jemand
+  hochzieht, ist genau das Fossil, vor dem Abschnitt 1 warnt.
+- **Undokumentiertes Verhalten.** Dass GitHub Actions ein Tag-Objekt auf den
+  Commit peelt, ist *beobachtet*, nicht zugesichert. Wer `a9c7b0f0` einträgt,
+  verlässt sich auf Verhalten, das niemand garantiert hat.
+
+Merkregel fürs nächste Mal: `git rev-parse <tag>^{commit}` liefert den Commit;
+`git rev-parse <tag>` liefert bei annotierten Tags das Tag-Objekt. Der Unterschied
+ist genau dieser Fehler.
 
 Bewusst **nicht** mit-aktualisiert: `actions/checkout` steht upstream bei v7,
 `actions/setup-python` bei v7. Pinning ist eine Supply-Chain-Maßnahme;
@@ -181,7 +220,9 @@ Beide sind gute Scanner. Ausschlaggebend war:
 - **Transitiv gepinnte Action.** `aquasecurity/trivy-action` pinnt seinerseits
   `aquasecurity/setup-trivy` und `actions/cache` auf SHAs. Unser SHA-Pin auf
   die äußere Action nagelt damit die ganze Kette fest — geprüft am
-  gepinnten Stand `a9c7b0f0`.
+  gepinnten Stand `ed142fd0` (v0.36.0). Gilt für den *Code* der Kette; die
+  Trivy-Schwachstellen-DB wird zur Scan-Zeit unter rollendem Tag geladen, und
+  das ist bei einem CVE-Scanner auch so gewollt.
 
 Keine neue Laufzeit-Abhängigkeit: Trivy läuft nur in der CI, nichts davon
 landet im ausgelieferten Image.

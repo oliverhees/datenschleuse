@@ -110,7 +110,7 @@ jobs:
       # Zweck: Sichtbarkeit. Auch MEDIUM/LOW und Funde ohne Fix stehen im Log,
       # damit niemand behaupten kann, wir haetten sie nicht gesehen.
       - name: Trivy Dependencies -- vollstaendiger Bericht (nur Meldung)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ runner.temp }}/depscan
@@ -129,7 +129,7 @@ jobs:
       # KANN: CRITICAL/HIGH mit verfuegbarem Fix -> Version hochziehen.
       # Alles ohne Fix und alles unter HIGH steht in Schritt 1 im Bericht.
       - name: Trivy Dependencies -- Gate (CRITICAL/HIGH mit verfuegbarem Fix)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ runner.temp }}/depscan
