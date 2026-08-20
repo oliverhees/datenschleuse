@@ -68,6 +68,26 @@ REQUIRED_IN_SCOPE = (
 
 MATRIX_FILE = Path(".github/workflows/image-scan.yml")
 
+# Referenzen auf LOKAL GEBAUTE Images. Ein Image, das dieser Arbeitsbaum selbst
+# erzeugt, existiert in keiner Registry und hat deshalb keinen Digest, auf den
+# man pinnen koennte -- die Forderung waere nicht streng, sondern unerfuellbar.
+#
+# WICHTIG, weil hier schon einmal ein Loch entstand: Das ist eine ALLOWLIST,
+# keine Denylist. Alles, was nicht ausdruecklich hier steht, MUSS gepinnt sein.
+# Eine neue Referenz faellt damit auf die sichere Seite (rot), nicht auf die
+# bequeme. Genau andersherum als die frueher hartcodierte Datei-Liste, die
+# alles Unbekannte stillschweigend durchliess.
+#
+# Jeder Eintrag braucht eine Begruendung, und die Ausgabe nennt sie -- eine
+# unsichtbare Ausnahme ist eine vergessene Ausnahme.
+LOCAL_BUILD_REFS = {
+    "datenschleuse-datenschleuse:latest": (
+        "lokal von docker-compose.yml gebaut (Projekt `datenschleuse`, Dienst "
+        "`datenschleuse`); liegt in keiner Registry, hat also keinen Digest. "
+        "Der Inhalt ist ueber litellm/Dockerfile gepinnt."
+    ),
+}
+
 # `FROM <ref>` in a Dockerfile, `image: <ref>` in compose. Comment lines are
 # dropped beforehand so the explanatory prose above each pin is not mistaken
 # for a real reference.
@@ -138,6 +158,8 @@ def collect_used(root: Path, files: "list[Path]") -> "tuple[dict, list[str]]":
     problems: list[str] = []
     for path in files:
         for ref in collect(root, path, USE_RE):
+            if ref in LOCAL_BUILD_REFS:
+                continue
             match = DIGEST_RE.search(ref)
             if not match:
                 problems.append(
@@ -179,12 +201,31 @@ def compare(used: dict, scanned: dict, files: "list[Path]") -> "list[str]":
     return problems
 
 
+def is_shipped(path: Path) -> bool:
+    """Does this file define part of what we ship?
+
+    Two different invariants live in this script and they are NOT the same:
+
+      * Every image reference must carry a digest -- supply-chain integrity.
+        Applies everywhere, test scaffolding included.
+      * Every image must be in the weekly CVE matrix -- applies only to what we
+        actually ship. Test-only images belong in neither the matrix nor the
+        shipped-images table of the playbook; demanding it there would push
+        scaffolding into a document about the delivered product.
+
+    Test scaffolding is identified by path: anything under `test/`.
+    """
+    return path.parts[0] != "test"
+
+
 def main() -> int:
     files = discover_used_files(ROOT)
     used, problems = collect_used(ROOT, files)
+    shipped_files = [f for f in files if is_shipped(f)]
+    shipped_used, _ = collect_used(ROOT, shipped_files)
     scanned, scan_problems = collect_scanned(ROOT, MATRIX_FILE)
     problems += scan_problems
-    problems += compare(used, scanned, files)
+    problems += compare(shipped_used, scanned, shipped_files)
 
     if problems:
         print("Image-Pin-Drift gefunden:\n", file=sys.stderr)
@@ -197,7 +238,10 @@ def main() -> int:
         f"alle mit Digest, alle in der Scan-Matrix abgedeckt."
     )
     for path in files:
-        print(f"  geprueft: {path}")
+        marker = "" if is_shipped(path) else "  (nur Digest-Pflicht, Test-Gestell)"
+        print(f"  geprueft: {path}{marker}")
+    for ref, reason in sorted(LOCAL_BUILD_REFS.items()):
+        print(f"  ausgenommen (lokal gebaut): {ref}\n      {reason}")
     for _digest, where in sorted(used.items(), key=lambda kv: kv[1]):
         print(f"  {where}")
     return 0

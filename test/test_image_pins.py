@@ -144,6 +144,61 @@ class ValidationTest(unittest.TestCase):
         self.assertIn("python:3.12-slim", problems[0])
 
 
+class ScopeSplitTest(unittest.TestCase):
+    """Two invariants, deliberately not the same (see is_shipped)."""
+
+    def test_e2e_scaffolding_is_digest_checked_but_not_shipped(self) -> None:
+        e2e = Path("test/e2e/docker-compose.e2e.yml")
+        self.assertIn(
+            e2e,
+            set(guard.discover_used_files(guard.ROOT)),
+            "Test-Gestell muss der Digest-Pflicht unterliegen",
+        )
+        self.assertFalse(
+            guard.is_shipped(e2e),
+            "Test-Gestell darf NICHT in die Scan-Matrix der ausgelieferten "
+            "Images gezwungen werden",
+        )
+
+    def test_shipped_files_are_shipped(self) -> None:
+        for path in (
+            Path("docker-compose.yml"),
+            Path("litellm/Dockerfile"),
+            Path("deploy/coolify/docker-compose.yaml"),
+        ):
+            self.assertTrue(guard.is_shipped(path), f"{path} muss als ausgeliefert gelten")
+
+
+class LocalBuildAllowlistTest(unittest.TestCase):
+    """Locally built images have no registry digest -- exempt, but visibly so."""
+
+    def test_allowlisted_local_build_is_skipped(self) -> None:
+        ref = next(iter(guard.LOCAL_BUILD_REFS))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "docker-compose.yml").write_text(
+            f"services:\n  a:\n    image: {ref}\n", encoding="utf-8"
+        )
+        _used, problems = guard.collect_used(root, [Path("docker-compose.yml")])
+        self.assertEqual(problems, [], "Allowlisteter lokaler Build darf nicht meckern")
+
+    def test_allowlist_is_not_a_blanket_pass(self) -> None:
+        """Anything NOT on the allowlist still has to be pinned (fail closed)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "docker-compose.yml").write_text(
+            "services:\n  a:\n    image: some-other-local:latest\n", encoding="utf-8"
+        )
+        _used, problems = guard.collect_used(root, [Path("docker-compose.yml")])
+        self.assertEqual(len(problems), 1, problems)
+
+    def test_every_exemption_carries_a_reason(self) -> None:
+        for ref, reason in guard.LOCAL_BUILD_REFS.items():
+            self.assertTrue(reason.strip(), f"{ref} ohne Begruendung ausgenommen")
+
+
 class RealRepositoryTest(unittest.TestCase):
     """End-to-end: the repository as it stands must pass its own guard."""
 

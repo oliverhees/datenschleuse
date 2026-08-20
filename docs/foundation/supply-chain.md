@@ -447,8 +447,15 @@ der Weg ein Digest-Update, sobald Upstream nachzieht).
 #### Zu entscheiden hat das Oliver, nicht ein Agent
 
 Gesetz 5 — Ausnahmen bei High/Critical genehmigt nur er, dokumentiert am Work
-Item. Die vollständige Vorlage mit allen vier Optionen und ihren Konsequenzen
-steht in **`docs/adr/0001-image-cve-gate.md`** (Status: vorgeschlagen).
+Item. Die vollständige Vorlage steht in
+**`docs/adr/0003-image-cve-gate.md`** (Status: vorgeschlagen).
+
+**Wichtig für die Form der Vorlage:** Oliver hat bereits entschieden, dass
+**nichts freigegeben wird, was behebbar ist**. Die Vorlage bittet deshalb nicht
+um Genehmigung der 32 behebbaren CRITICALs — sie sind Arbeit, keine Ausnahme.
+Zur Entscheidung steht nur, was **nach** allen Maßnahmen übrig bleibt: die Funde
+ohne Upstream-Fix. Die behebbaren werden behoben (Redactor-Profil und
+Analyzer-`apt`-Schicht in DATENSCHLE-83; Anonymizer als Folge-Item).
 
 Kurzfassung der Optionen:
 
@@ -529,7 +536,7 @@ ein Archiv:
 |------|-----|-----|
 | Montags nach dem Wochenlauf | der Teammate mit dem Wartungs-Work-Item | Security-Tab öffnen: Sind **neue** CRITICALs dazugekommen? Nur die Veränderung zählt, nicht der Absolutstand. |
 | Bei jedem Fund mit verfügbarem Fix | derselbe | Digest-Update nach Abschnitt 1 anstoßen — eigenes Work Item. |
-| Quartalsweise | Oliver | Gesamtstand gegen die Entscheidung aus `docs/adr/0001-image-cve-gate.md` prüfen: Gilt die Begründung noch? |
+| Quartalsweise | Oliver | Gesamtstand gegen die Entscheidung aus `docs/adr/0003-image-cve-gate.md` prüfen: Gilt die Begründung noch? |
 
 Ohne festen Termin verfällt jede Berichtspflicht zu Hintergrundrauschen. Der
 Wochenlauf ist der Termin.
