@@ -68,6 +68,18 @@ except ImportError:  # pragma: no cover - Abhängigkeit fehlt
     )
     sys.exit(2)
 
+try:
+    # `regex`, nicht die stdlib `re`: der Analyzer nutzt intern `import regex
+    # as re`. Nur `regex` akzeptiert die gejointen Muster mit gekapselten
+    # Inline-Flags exakt so, wie der Analyzer sie kompiliert.
+    import regex
+except ImportError:  # pragma: no cover - Abhängigkeit fehlt
+    print(
+        "FEHLER: `regex` ist nicht installiert. Bitte `pip install -r test/requirements.txt` ausführen.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 
 # --------------------------------------------------------------------------- #
 # Konfiguration / Defaults
@@ -383,14 +395,22 @@ def _build_ground_truth_entity(
 # --------------------------------------------------------------------------- #
 
 
-def load_stopwords(path: Path) -> list[str]:
+def load_stopwords(path: Path) -> tuple[list[str], int]:
     """Lädt die Nicht-PII-Wortliste und gibt die Presidio-``allow_list`` zurück.
 
     Die Liste ist eine reine Datendatei (``presidio/de-stopwords.yml``); der
     Benchmark nutzt exakt denselben Mechanismus wie der Guardrail in
-    Produktion — ``allow_list`` + ``allow_list_match: regex`` am
+    Produktion — ``allow_list`` + ``allow_list_match`` + ``regex_flags`` am
     /analyze-Request. Damit misst der Benchmark die Konfiguration, die
     tatsächlich ausgeliefert wird, und nicht eine Benchmark-Sonderlogik.
+
+    ``regex_flags`` ist PFLICHT und wird bewusst nicht defaultet: der Analyzer
+    setzt sonst DOTALL|MULTILINE|IGNORECASE. Unter MULTILINE sind ``^``/``$``
+    Zeilen-Anker statt Vollspan-Anker — ein Span wie
+    ``"Zahlungsart\nLoewenstein"`` würde dann komplett unterdrückt, inklusive
+    des echten Nachnamens (Security-Finding F1 gegen 32e648c).
+
+    :returns: (Muster-Liste, regex_flags)
     """
     try:
         with path.open(encoding="utf-8") as fh:
@@ -407,6 +427,19 @@ def load_stopwords(path: Path) -> list[str]:
             f"Stoppwortliste {path}: allow_list_match muss 'regex' sein "
             f"(gefunden: {doc.get('allow_list_match')!r})."
         )
+    if "regex_flags" not in doc:
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: 'regex_flags' fehlt. Ohne explizite Flags "
+            "defaultet der Analyzer auf DOTALL|MULTILINE|IGNORECASE — dann sind "
+            "^/$ Zeilen-Anker und mehrzeilige Spans werden komplett "
+            "unterdrückt (Security-Finding F1)."
+        )
+    regex_flags = doc["regex_flags"]
+    if not isinstance(regex_flags, int) or isinstance(regex_flags, bool):
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: 'regex_flags' muss eine Ganzzahl sein "
+            f"(gefunden: {regex_flags!r})."
+        )
 
     entries = doc.get("entries")
     if not isinstance(entries, list) or not entries:
@@ -419,7 +452,20 @@ def load_stopwords(path: Path) -> list[str]:
                 f"Stoppwortliste {path}: entries[{idx}] hat kein String-Feld 'pattern'."
             )
         patterns.append(entry["pattern"])
-    return patterns
+
+    # Das GEJOINTE Muster muss kompilieren — der Analyzer joint mit "|", und
+    # einzeln kompilierbare Muster können gejoint scheitern (z.B. globale
+    # Inline-Flags nicht am Anfang). Hier scheitern ist besser als im Betrieb.
+    try:
+        regex.compile("|".join(patterns), flags=regex_flags)
+    except Exception as exc:
+        raise BenchmarkError(
+            f"Stoppwortliste {path}: das gejointe Muster kompiliert nicht "
+            f"({exc}). Der Analyzer joint alle Einträge mit '|' zu EINEM "
+            "Ausdruck."
+        ) from exc
+
+    return patterns, regex_flags
 
 
 def analyze_text(
@@ -428,6 +474,7 @@ def analyze_text(
     text: str,
     timeout: float,
     allow_list: Optional[list[str]] = None,
+    regex_flags: int = 0,
 ) -> list[PredictedEntity]:
     """Schickt einen Text an POST {base_url}/analyze und parst die Antwort.
 
@@ -439,6 +486,8 @@ def analyze_text(
     if allow_list:
         payload["allow_list"] = allow_list
         payload["allow_list_match"] = "regex"
+        # Explizit — sonst DOTALL|MULTILINE|IGNORECASE per Server-Default.
+        payload["regex_flags"] = regex_flags
 
     try:
         response = session.post(endpoint, json=payload, timeout=timeout)
@@ -1096,13 +1145,16 @@ def run_benchmark(args: argparse.Namespace) -> tuple[BenchmarkResult, int]:
 
     cases = load_corpus(args.corpus)
 
-    allow_list = load_stopwords(args.stopwords) if args.stopwords else None
+    if args.stopwords:
+        allow_list, regex_flags = load_stopwords(args.stopwords)
+    else:
+        allow_list, regex_flags = None, 0
 
     matches: list[CaseMatch] = []
     with requests.Session() as session:
         for case in cases:
             predictions = analyze_text(
-                session, args.url, case.text, args.timeout, allow_list
+                session, args.url, case.text, args.timeout, allow_list, regex_flags
             )
             matches.append(match_case(case, predictions, args.overlap_ratio))
 

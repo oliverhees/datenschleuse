@@ -690,6 +690,44 @@ cases:
         value: "Ruediger Loewenstein"
         expected_recall: must_detect
 
+  # ---------------------------------------------------------------------
+  # POSITIV — Layouts aus dem Security-Audit gegen 32e648c
+  #
+  # Diese drei Faelle sind Regressionsschutz fuer die Findings F1 und F2. Die
+  # erste Fassung der Stoppwortliste hat sie alle verloren, weil `^...$` unter
+  # dem Analyzer-Default MULTILINE ein ZEILEN-Anker ist und nicht der
+  # Vollspan-Anker, fuer den er gehalten wurde.
+  #
+  # Label-Wert-Layouts ueber zwei Zeilen und "Nachname, Vorname" sind in
+  # Formularen, Tabellen, CSV-Exporten und Personenlisten der Regelfall --
+  # also in genau den Datenbestaenden, die die Liste als Zielgruppe nennt.
+  # ---------------------------------------------------------------------
+
+  - id: person-012-label-wert-zweizeilig
+    text: |-
+      Zahlungsart
+      Loewenstein
+    entities:
+      - type: PERSON
+        value: "Loewenstein"
+        expected_recall: must_detect
+
+  - id: person-013-label-wert-zweizeilig-betrag
+    text: |-
+      Rechnungsbetrag
+      Schroeder
+    entities:
+      - type: PERSON
+        value: "Schroeder"
+        expected_recall: must_detect
+
+  - id: person-014-nachname-vorname
+    text: "Menge, Andreas"
+    entities:
+      - type: PERSON
+        value: "Menge"
+        expected_recall: must_detect
+
   # Haerteste Kombination: echter Name UND FP-Koeder im selben Satz.
   # Eine Massnahme, die 'Spaeter' unterdrueckt, darf 'Maria Meier' nicht
   # mitnehmen.
