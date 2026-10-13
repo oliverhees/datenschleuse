@@ -158,7 +158,8 @@ annotiertes Tag-Objekt ist **nicht** unsicherer im Sinne der Integrität. Git is
 content-addressed; Commits, Trees, Blobs *und* Tag-Objekte sind unveränderlich.
 `git tag -f` erzeugt ein **neues** Objekt mit **neuer** ID — verschiebbar ist der
 Ref-*Name* `refs/tags/v0.36.0`, niemals die ID `a9c7b0f0`. Der alte Pin war
-weder kaputt noch manipulierbar, und er lief grün.
+weder kaputt noch manipulierbar; der Lauf mit diesem Pin ist in ADR-0003
+(`docs/adr/0003-image-cve-gate.md`) vermerkt.
 
 Die echten Gründe sind andere:
 
@@ -407,9 +408,9 @@ Postgres noch offen) stehen ausschließlich in
 nicht gescannt (siehe oben); hier wird bewusst keine eigene Zahl behauptet.
 
 Der Kommentar in `presidio/Dockerfile.analyzer` führt dieselben CVE-IDs je Paket
-auf wie der CVE-ID-Codeblock weiter unten (3 CVE-IDs in 3 Paketen) und hält
-fest, das „gebaute
-Image wird derzeit NICHT in der CI gescannt". Ebenfalls offen: Die
+auf wie der CVE-ID-Codeblock weiter oben (3 CVE-IDs in 3 Paketen) und hält
+fest, das
+„gebaute Image wird derzeit NICHT in der CI gescannt". Ebenfalls offen: Die
 Trivy-Messung (Zahl in ADR-0003) zählt pro Befund und damit anders als die
 CVE-IDs. Warum, lässt sich aus den Dateien nicht belegen (keine Befundliste pro
 Paket abgelegt) — **offen**, zu klären mit dem Folge-Item `CI-Scan des gebauten
