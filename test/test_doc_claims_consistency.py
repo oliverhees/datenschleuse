@@ -87,8 +87,74 @@ class TestCveClaimsConsistency(unittest.TestCase):
                 self.assertIsNone(m, f"{_rel(f)}: raw CVE number/table outside ADR-0003: {m and m.group(0)!r}")
 
     def test_supply_chain_and_image_scan_refer_to_adr(self):
-        for rel in ("docs/foundation/supply-chain.md", ".github/workflows/image-scan.yml"):
-            self.assertIn("ADR-0003", _flat(ROOT / rel), rel)
+        self.assertIn("ADR-0003", _flat(ROOT / ".github/workflows/image-scan.yml"))
+        text = (ROOT / "docs/foundation/supply-chain.md").read_text(encoding="utf-8")
+        start = text.index("### Der Presidio-Altbestand")
+        m = re.search(r"\n### (?!#)", text[start + 5:])
+        section = text[start: start + 5 + m.start()] if m else text[start:]
+        self.assertIn("ADR-0003", section, "section 'Der Presidio-Altbestand' must refer to ADR-0003")
+
+    # --- generalized sweep (DATENSCHLE-89, QA-F1): the CLASS of error ----------
+    # Any CVE measurement (counts next to severity words, "N of M", percent
+    # ranges, number arrows) and any CI run/job ID outside ADR-0003 is a
+    # violation. Audit finding IDs (MEDIUM-4, HIGH-2), versions, ports, digests,
+    # dates and UIDs must NOT trigger.
+    _NOT = r"(?:(?!Schritt|DATENSCHLE|Audit|exit-code|Gesetz)\D)"
+    SWEEP = {
+        "count before severity word": re.compile(
+            r"(?<![-\w.])\d+\s*(?:behebbar\w*|CRITICAL\w*|HIGH\b|MEDIUM\b|Befund\w*|kritisch\w*)(?!-\d)", re.I),
+        "severity word before count": re.compile(
+            r"\b(?:CRITICAL|HIGH|MEDIUM|behebbar\w*)\b(?!-\d)" + _NOT + r"{0,40}?(?<![-\w.])\d{1,6}(?![\w.-])", re.I),
+        "N of M": re.compile(
+            r"\b\d+\s+(?:der|von)\s+\d+\s+(?:kritischen|CRITICAL|Gesamtbefunde\w*|Befunden)", re.I),
+        "CI run/job id": re.compile(r"\b\d{9,}\b"),
+    }
+    CONTEXT_SWEEP = {
+        "percent range near findings": (
+            re.compile(r"\d+\s*(?:-|–|bis)\s*\d+\s*%"), re.compile(r"Befund|CRITICAL|CVE|behebbar", re.I)),
+        "number arrow near findings": (
+            re.compile(r"(?<![\w.])\d+\s*(?:->|→)\s*\d+(?![\w.])"), re.compile(r"Befund|CRITICAL|CVE|behebbar", re.I)),
+    }
+
+    # Rhetorical example in ADR-0004 (client wording), not a measurement.
+    ALLOWED_PHRASES = ("nicht *5 Critical Findings*",)
+
+    def _sweep_findings(self, name, text):
+        out = []
+        for phrase in self.ALLOWED_PHRASES:
+            text = text.replace(phrase, " ")
+        for label, pat in self.SWEEP.items():
+            for m in pat.finditer(text):
+                out.append(f"{name}: {label}: {m.group(0)!r}")
+        for label, (pat, ctxpat) in self.CONTEXT_SWEEP.items():
+            for m in pat.finditer(text):
+                if ctxpat.search(text[max(0, m.start() - 80): m.end() + 80]):
+                    out.append(f"{name}: {label}: {m.group(0)!r}")
+        return out
+
+    def test_generalized_sweep_no_cve_measurements_or_run_ids_outside_adr(self):
+        findings = []
+        for f in _files():
+            if _rel(f) == ADR or f.parent.name == "test":
+                continue
+            findings += self._sweep_findings(_rel(f), _flat(f))
+        self.assertEqual(findings, [], "CVE measurements/run IDs outside ADR-0003:\n" + "\n".join(findings))
+
+    def test_sweep_has_no_false_positives_on_legit_data(self):
+        legit = (
+            "Audit-Fund MEDIUM-4, HIGH-2 und S1-R/HIGH-1; Version v1.97.0, Port 5001:3000, "
+            "sha256:286e3fa7f3a7426e775e8564fe1870f1ba8f999d3ab8bbb8cc46a44355d9d6e9, "
+            "Datum 2026-08-19, UID 1001, Alles unter HIGH steht in Schritt 1 im Bericht, "
+            "60–95 % Einsparung, 26 von 32 PII-freien Texten, DATENSCHLE-59."
+        )
+        self.assertEqual(self._sweep_findings("legit", legit), [])
+
+    def test_sweep_detects_known_variants(self):
+        for bad in ("Es gibt 32 behebbare CRITICALs.", "0 CRITICAL  -> gruen", "9 CRITICAL (openssl)",
+                    "Genehmigung der 32 behebbaren CRITICALs", "Messung `5 behebbare CRITICALs`",
+                    "(Run 32252889633, 2026-08-19)", "um 62–76 % weniger Befunde",
+                    "Gesamtbefunde 4346 → 12", "gemessen 5 → 0 CRITICAL"):
+            self.assertTrue(self._sweep_findings("x", bad), bad)
 
     def test_adr_states_numbers_are_upstream_calculation(self):
         flat = _flat(ROOT / ADR)
