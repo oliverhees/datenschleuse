@@ -182,8 +182,8 @@ services:
   # NICHT IM STANDARDSTART (DATENSCHLE-83, ADR-0003): Der Dienst liegt hinter
   # dem Compose-Profil `images` und kommt bei `docker compose up` NICHT hoch.
   # Grund ist gemessen, nicht geschaetzt -- er allein trug 42 der 61
-  # kritischen und 3847 der 4346 Gesamtbefunde des ausgelieferten Stacks
-  # (CI-Run 32253275837). Ein Proxy fuer LLM-TEXTanfragen soll dieses
+  # kritischen und 3847 der 4346 Gesamtbefunde der gescannten Upstream-Images
+  # (CI-Matrix, CI-Run 32253275837). Ein Proxy fuer LLM-TEXTanfragen soll dieses
   # CVE-Profil nicht ungefragt mitliefern.
   #
   # EINSCHALTEN (bewusste Entscheidung, uebernimmt das CVE-Profil):

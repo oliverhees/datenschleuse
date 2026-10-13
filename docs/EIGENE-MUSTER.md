@@ -219,9 +219,9 @@ kein Satz.
 
 - **Bilder.** Eure eigenen Regeln wirken auf Text, nicht auf Bildinhalte —
   der Image-Redactor ist ein eigener Dienst mit eigener Erkennung. Verlasst
-  euch für eigene Begriffe also nicht auf Bilder. Wer das nicht in Kauf nehmen
-  will, setzt `DATENSCHLEUSE_IMAGE_POLICY=block`; dann kommen Bilder gar nicht
-  erst durch.
+  euch für eigene Begriffe also nicht auf Bilder. `block` ist der Standard
+  (Bilder kommen gar nicht erst durch); ein Wechsel ist nur noetig, wenn der
+  Redaktor bewusst aktiviert wurde (`redact`).
 - **Schreibweisen.** Eine Regel trifft, was dasteht. `Nordwind Logistik`
   fängt nicht `Nordwind-Logistik` oder `Nordwind GmbH`. Für Varianten entweder
   mehrere Begriffe anlegen oder ein Muster schreiben — und mit

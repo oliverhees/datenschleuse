@@ -143,7 +143,7 @@ class TestAnalyzerDockerfile(unittest.TestCase):
     def test_apt_upgrade_is_noninteractive_without_env(self):
         text = _read("presidio/Dockerfile.analyzer")
         self.assertNotRegex(text, r"(?m)^\s*ENV\s+DEBIAN_FRONTEND")
-        m = re.search(r"(?ms)^RUN\b[^\n]*(?:\\\n[^\n]*)*", text[text.index("USER root"):])
+        m = re.search(r"(?m)^RUN\b(?:[^\n]*\\\n)*[^\n]*", text[text.index("USER root"):])
         self.assertIsNotNone(m)
         run = m.group(0)
         self.assertIn("apt-get upgrade", run)

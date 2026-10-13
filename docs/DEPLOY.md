@@ -112,9 +112,11 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
 - **Upgrade fuer Bestandsinstallationen:** Wer den Stack vor dieser Aenderung
   gestartet hat, hat evtl. noch einen laufenden alten Redactor-Container
   (`datenschleuse-image-redactor`). Er wird durch ein neues `docker compose up`
-  nicht entfernt. Abraeumen mit
-  `docker compose --profile images down` bzw.
+  nicht entfernt. Gezielt abraeumen mit
+  `docker compose --profile images rm -sf presidio-image-redactor` bzw.
   `docker rm -f datenschleuse-image-redactor`.
+  **Nicht `docker compose down` verwenden:** `down` stoppt den GANZEN Stack,
+  nicht nur den Redactor.
   *Nicht verifiziert (kein Docker-Test)* — der Containername stammt aus
   `docker-compose.yml`, die Befehle wurden nicht ausgefuehrt.
 
