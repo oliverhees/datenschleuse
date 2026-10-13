@@ -46,7 +46,7 @@ class TestCveClaimsConsistency(unittest.TestCase):
                               f"{_rel(f)}: unqualified '{m.group(0)}'")
 
     def test_gate_satisfiable_claims_name_anonymizer_and_postgres(self):
-        pat = re.compile(r"(?<!un)erf[uü]llbar", re.I)
+        pat = re.compile(r"(?<!un)erf(?:ue|ü)llbar", re.I)
         for f in _files():
             flat = _flat(f)
             for m in pat.finditer(flat):
