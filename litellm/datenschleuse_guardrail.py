@@ -832,7 +832,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Policy statt stillem Default, weil beide Enden gefaehrlich sind: ohne
         # Redactor-Container waere "durchlassen" ein stilles Leck und "blocken"
         # ein hartes Verhaltensbruch. Deshalb explizit:
-        #   redact = schwaerzen, Fehler => Block (empfohlen, braucht den Dienst)
+        #   redact = schwaerzen, Fehler => Block (braucht den Dienst)
         #   block  = Bilder grundsaetzlich ablehnen (sicher ohne Extra-Dienst)
         #   pass   = altes Verhalten, Bilder gehen UNGEPRUEFT raus (bewusste Luecke)
         self.image_redactor_url = (
@@ -843,6 +843,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
         ).rstrip("/")
         policy = (kwargs.pop("image_policy", None) or image_policy or os.getenv("DATENSCHLEUSE_IMAGE_POLICY") or "").strip().lower()
         if not policy:
+            # Code-Default (ohne gesetzte Policy): haengt von der URL ab. Der
+            # Compose-/Coolify-Standard ist dagegen `block` -- docker-compose.yml
+            # setzt DATENSCHLEUSE_IMAGE_POLICY explizit auf block.
             # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
             # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
             policy = "redact" if self.image_redactor_url else "block"
@@ -1091,10 +1094,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if self.image_policy == "pass":
             return
         if self.image_policy == "block":
+            # Bewusst OHNE jeden Bildinhalt: die Meldung geht an den Client
+            # zurueck und landet potenziell im Log. Ein Base64-Fragment darin
+            # waere genau das Leck, das die Policy verhindern soll.
+            # Entscheidung (Oliver, DATENSCHLE-89): Die Client-Meldung ist
+            # NEUTRAL (keine Infrastruktur-Details an API-Clients). Die
+            # Aktivierungsanleitung steht nur im Server-Log, ohne Inhalt.
+            _LOG.warning(
+                "image part blocked (image_policy=block). Operator: to process "
+                "images, start the compose profile `images` "
+                "(`docker compose --profile images up -d`) and set "
+                "DATENSCHLEUSE_IMAGE_POLICY=redact (Docker Compose self-hosting "
+                "only). See docs/DEPLOY.md, section "
+                "'Bilder: Policy und Compose-Profil `images`'."
+            )
             raise DatenschleuseBlocked(
-                "Bild-Anhaenge sind blockiert (image_policy='block'). Die "
-                "Datenschleuse maskiert Text; Bilder muessten geschwaerzt "
-                "werden, wofuer der Image-Redactor-Dienst noetig ist."
+                "Bild-Anhaenge sind blockiert. Bitte den Betreiber kontaktieren."
             )
         url = _image_part_url(part)
         if not url:

@@ -121,13 +121,22 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
 **Backend:** forwardet an [eurouter.ai](https://www.eurouter.ai?ref=06ZUHPBK) (EU-gehostet, GDPR, Zero Data Retention) — Gürtel und Hosenträger: EU-Hosting *plus* PII-Stripping davor.
 **Persistenz:** Postgres (LiteLLM Admin-UI/Spend-Logs, nie Message-Content) + verschlüsseltes, TTL-begrenztes SQLite (Quasi-Identifier-Session-State).
 
-**Bilder (multimodal):** Ein Screenshot transportiert dieselben Daten wie Text, wird aber von der Textmaskierung nicht erfasst. Bild-Parts laufen deshalb über [presidio-image-redactor](https://microsoft.github.io/presidio/image-redactor/) (OCR + schwarze Boxen). Gesteuert über `DATENSCHLEUSE_IMAGE_POLICY`:
+**Bilder (multimodal):** Ein Screenshot transportiert dieselben Daten wie Text, wird aber von der Textmaskierung nicht erfasst. **Der Compose-/Coolify-Standard ist `block`: Bilder werden abgelehnt** (fail-closed; Compose setzt die Policy explizit, ohne gesetzte Policy hängt der Code-Default von der gesetzten Redactor-URL ab). Der Redactor ([presidio-image-redactor](https://microsoft.github.io/presidio/image-redactor/), OCR + schwarze Boxen) ist ein optionaler Dienst und startet nicht mit `docker compose up`. Aktivieren:
+
+```bash
+# in der .env:
+DATENSCHLEUSE_IMAGE_POLICY=redact
+# Redactor-Dienst mitstarten:
+docker compose --profile images up -d
+```
 
 | Policy | Verhalten |
 |---|---|
-| `redact` (Default mit Dienst) | Bild wird geschwärzt, bevor es rausgeht. Fehler beim Schwärzen ⇒ Request blockiert. |
-| `block` (Default ohne Dienst) | Bilder werden abgelehnt. Sicher ohne Zusatzcontainer. |
+| `block` (Standard) | Bilder werden abgelehnt. Sicher ohne Zusatzcontainer. |
+| `redact` | Bild wird geschwärzt, bevor es rausgeht. Braucht Profil `images` (Redactor-Dienst). Fehler beim Schwärzen ⇒ Request blockiert. |
 | `pass` | Bilder gehen **ungeprüft** raus. Nur bewusst setzen. |
+
+Der API-Client sieht bei einem Block nur eine neutrale Meldung („Bitte den Betreiber kontaktieren"); die Aktivierungsanleitung steht im Server-Log und in der Doku. Auf Coolify sind Bilder standardmäßig blockiert; `redact` ist dort nicht vorgesehen. Details, Upgrade-Hinweis und Coolify: [docs/DEPLOY.md](docs/DEPLOY.md).
 
 Zwei ehrliche Grenzen: Der Image-Redactor bringt seine eigene Presidio-Instanz mit und kennt die **deutschen Custom-Recognizer nicht** — im Bild greifen nur die eingebauten Typen. Und Bilder, die als externe `http`-URL statt eingebettet ankommen, werden blockiert, weil das Modell sie serverseitig abrufen würde, also an der Schleuse vorbei.
 
