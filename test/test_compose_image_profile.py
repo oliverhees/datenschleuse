@@ -81,6 +81,27 @@ class TestImageDocs(unittest.TestCase):
         self.assertIn(f"docker compose --profile images rm -sf {REDACTOR}", deploy)
         self.assertIn("`down` stoppt den GANZEN Stack", deploy)
         self.assertNotIn("--profile images down", deploy)
+        self.assertIn("Compose-/Coolify-Standard", deploy)
+        self.assertIn("Code-Default", deploy)
+
+    def test_deploy_doc_never_recommends_compose_down_for_cleanup(self):
+        deploy = _read("docs/DEPLOY.md")
+        pat = re.compile(r"docker compose\s+(?:--profile\s+\S+\s+)?down\b")
+        for line in deploy.splitlines():
+            if pat.search(line):
+                # Only allowed as an explicit warning, never as a recommendation.
+                self.assertIn("Nicht", line, f"down recommended: {line!r}")
+        self.assertIn("rm -sf presidio-image-redactor", deploy)
+        self.assertIn("docker rm -f datenschleuse-image-redactor", deploy)
+
+    def test_readme_and_env_example_name_compose_coolify_default(self):
+        self.assertIn("Compose-/Coolify-Standard", _read("README.md"))
+        self.assertIn("Compose-/Coolify-Standard", _read(".env.example"))
+
+    def test_guardrail_comment_does_not_call_redact_recommended(self):
+        src = _read("litellm/datenschleuse_guardrail.py")
+        self.assertNotIn("(empfohlen, braucht den Dienst)", src)
+        self.assertIn("Code-Default", src)
         self.assertIn("Nicht verifiziert (kein Docker-Test)", deploy)
         self.assertIn("redact", deploy)
         self.assertIn("standardmaessig blockiert", deploy)
@@ -116,7 +137,9 @@ class TestSupplyChainHonesty(unittest.TestCase):
             if l.lstrip().startswith("#")
         )
         text = " ".join(text.split())
-        self.assertIn("4346 Gesamtbefunde der gescannten Upstream-Images", text)
+        self.assertIn("gescannten Upstream-Images", text)
+        self.assertIn("ADR-0003", text)
+        self.assertNotIn("4346", text)
         self.assertNotIn("ausgelieferten Stacks", text)
 
     def test_test_docstrings_do_not_overclaim_totals_scope(self):
@@ -156,6 +179,9 @@ class TestAnalyzerDockerfile(unittest.TestCase):
         run = m.group(0)
         self.assertIn("apt-get upgrade", run)
         self.assertIn("DEBIAN_FRONTEND=noninteractive", run)
+        # Each apt-get call individually carries the prefix.
+        self.assertRegex(run, r"DEBIAN_FRONTEND=noninteractive\s+apt-get\s+update")
+        self.assertRegex(run, r"DEBIAN_FRONTEND=noninteractive\s+apt-get\s+upgrade")
 
 
 if __name__ == "__main__":

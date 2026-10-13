@@ -95,13 +95,13 @@ class TestTotalFindingCountConsistent(unittest.TestCase):
             totals.add(stated)
         self.assertEqual(len(totals), 1)
 
-    def test_compose_and_test_docstring_use_table_total(self):
+    def test_compose_and_test_docstring_refer_to_adr_instead_of_numbers(self):
+        # Structure principle (DATENSCHLE-89): totals live only in ADR-0003.
         stated, _ = _table_total("docs/adr/0003-image-cve-gate.md")
         for rel in ("docker-compose.yml", "test/test_image_policy.py"):
             flat = re.sub(r"[\s#]+", " ", _read(rel))
-            m = re.search(r"der (?:rund )?(\d{4}) Gesamtbefunde", flat)
-            self.assertIsNotNone(m, rel)
-            self.assertEqual(int(m.group(1)), stated, rel)
+            self.assertNotIn(str(stated), flat, rel)
+            self.assertIn("ADR-0003", flat, rel)
 
 
 if __name__ == "__main__":

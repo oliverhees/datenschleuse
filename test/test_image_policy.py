@@ -354,9 +354,9 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
 # ===========================================================================
 class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
     """Seit DATENSCHLE-83 ist der Image-Redactor NICHT mehr Teil des
-    Standardstarts: er bringt allein 42 der 61 kritischen und 3847 der
-    4346 Gesamtbefunde der gescannten Upstream-Images (CI-Matrix) mit
-    (CI-Run 32253275837). Er liegt jetzt hinter dem
+    Standardstarts: Er traegt den Grossteil der CVE-Befunde der gescannten
+    Upstream-Images (Zahlen und Einordnung: docs/adr/0003-image-cve-gate.md,
+    ADR-0003). Er liegt jetzt hinter dem
     Compose-Profil ``images``, und die Standard-Policy ist ``block``.
 
     Entscheidung (Oliver, DATENSCHLE-89, Option B): Die Meldung an den
@@ -380,6 +380,9 @@ class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
 
     async def test_client_message_is_neutral(self):
         message = await self._block({"messages": [image_message()]})
+        self.assertEqual(
+            message, "Bild-Anhaenge sind blockiert. Bitte den Betreiber kontaktieren."
+        )
         low = message.lower()
         self.assertIn("bild", low)
         self.assertIn("betreiber", low)
@@ -410,7 +413,25 @@ class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
                 )
         joined = "\n".join(logs.output)
         self.assertNotIn("streng-geheimes", joined)
-        self.assertNotIn(base64.b64encode(secret).decode("ascii"), joined)
+        b64 = base64.b64encode(secret).decode("ascii")
+        self.assertNotIn(b64, joined)
+        # Any fragment (>= 16 chars) of the payload must be absent as well.
+        for i in range(0, len(b64) - 15):
+            self.assertNotIn(b64[i:i + 16], joined)
+        # Every record: no format args, message is fixed text.
+        for rec in logs.records:
+            self.assertFalse(rec.args, "log record must not carry format args")
+            self.assertEqual(rec.getMessage(), rec.msg)
+        # Fixed text: a different payload yields identical messages.
+        other = {"messages": [image_message(url=data_url(raw=b"voellig-anderes-bild"))]}
+        with self.assertLogs("datenschleuse", level="WARNING") as logs2:
+            with self.assertRaises(dg.DatenschleuseBlocked):
+                await guard.async_pre_call_hook(
+                    user_api_key_dict=None, cache=None, data=other, call_type="completion"
+                )
+        self.assertEqual(
+            [r.getMessage() for r in logs.records], [r.getMessage() for r in logs2.records]
+        )
 
     async def test_block_message_leaks_no_image_content(self):
         """Fail-closed heisst auch: die Meldung selbst darf nie Bilddaten
