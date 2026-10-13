@@ -107,6 +107,16 @@ _RECALL_KONTROLLEN = [
     # --- "Nachname, Vorname" (Personenlisten, HR-Export) ---
     ("Menge, Andreas", "Menge"),
     ("Fuege, Anna", "Fuege"),
+    # --- Reale Nachnamen mit erlaubtem Kopf-Morphem (Security-Finding F2) ---
+    # 'art' ist ein erlaubter Kopf (Zahlungsart). Nachnamen auf -hart/-art
+    # bestehen den Kopf-Test formal: ein Eintrag (?i:\Agebhart\z) wuerde
+    # "Herr Gebhart" still entfernen. Der Kopf-Filter allein schuetzt davor
+    # NICHT; erst diese Kontrollen tun es.
+    ("Herr Gebhart kommt morgen.", "Gebhart"),
+    ("Frau Burkhart hat angerufen.", "Burkhart"),
+    ("Der Termin mit Herrn Eckart steht.", "Eckart"),
+    ("Bitte Herrn Reinhart zurueckrufen.", "Reinhart"),
+    ("Die Akte betreut Frau Bernhart.", "Bernhart"),
 ]
 
 # Spans, die die gejointe Liste NICHT treffen darf. Direkt aus den
@@ -120,6 +130,13 @@ _VERBOTENE_SPANS = [
     "Fuege",
     "Mueller",
     "Herr Mueller",
+    # F2: reale Nachnamen auf erlaubtem Kopf-Morphem ('art').
+    "Gebhart",
+    "Burkhart",
+    "Eckart",
+    "Reinhart",
+    "Bernhart",
+    "Herr Gebhart",
 ]
 
 

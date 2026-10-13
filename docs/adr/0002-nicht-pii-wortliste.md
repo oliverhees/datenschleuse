@@ -165,6 +165,17 @@ Bedingung 1 ohne Bedingung 2 wertlos, und deshalb ist der bare Kopf gesperrt.
 
 Beides erzwingt `test/test_de_stopwords.py`.
 
+**Aufnahmebedingung für Namen mit erlaubtem Kopf (Audit F2).** Reale
+Nachnamen, die auf einem erlaubten Kopf-Morphem enden, bestehen Bedingung 1
+formal — `art` ist ein erlaubter Kopf, `Gebhart`, `Burkhart`, `Eckart`,
+`Reinhart` und `Bernhart` enden darauf. Ein Eintrag `(?i:\Agebhart\z)` würde
+„Herr Gebhart" lautlos entfernen. Deshalb stehen genau diese Namen als
+Kontroll- und Verbotsspans in `test/test_de_stopwords.py`
+(`_RECALL_KONTROLLEN`, `_VERBOTENE_SPANS`): Ein Eintrag, dessen Muster einen
+davon trifft, macht den Test rot. Wer einen neuen Term mit erlaubtem Kopf
+aufnimmt, nimmt zugleich die real existierenden Nachnamen dieser Endung in
+die Kontrollen auf — der Kopf-Filter ist keine Namensausschlussregel.
+
 Die Regel ist bewusst eng. Sie schließt Terme aus, die sehr wahrscheinlich
 harmlos wären (`aendere`, `pruefe`) — aber „sehr wahrscheinlich" ist genau die
 Kategorie, die das Audit ausgehebelt hat.
@@ -238,6 +249,12 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
    deckungsgleich. Beleg: `test/guardrail-benchmark.py` und
    `test/test_de_stopwords.py::WirkungImAusgelieferbenPfad`.
 
+   Grenze dieses Belegs: „ausgeliefert" heißt hier der Codepfad des Guardrails
+   gegen einen laufenden Analyzer sowie die Verdrahtung in den
+   Compose-Dateien (Simulation des `/app`-Layouts in
+   `test/test_deploy_layout.py`). Ein echter Image-Build und Container-Start
+   ist damit **nicht** belegt.
+
 2. **Der Betreiber-Vorrang ist durchgesetzt (seit DATENSCHLE-82).**
    Presidios `allow_list` wirkt **nach** der Erkennung und entfernt jeden
    Treffer, dessen Span sie matcht — auch einen, der aus einer `deny_list` in
@@ -268,6 +285,22 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
      wird nicht still weitergelaufen. Ist die Betreiber-Config nicht lesbar,
      ist der Vorrang nicht prüfbar — auch das ist ein Startfehler. Erzwungen
      von `test/test_de_stopwords.py::BetreiberVorrangZurLaufzeit`.
+
+   Zwei Härtungen aus dem Audit gehören dazu. Erstens matcht Presidios
+   `deny_list` case-insensitiv; die Kollisionsprüfung testet jeden
+   `deny_list`-Term deshalb in mehreren Schreibweisen (original, klein, groß,
+   Title/capitalize) — ein case-sensitives Muster `\Abürgermeister\z` wird
+   abgelehnt. Zweitens muss der Guardrail-Container **dieselbe**
+   `recognizers-config.yml` lesen wie der Analyzer, sonst prüft die Kollision
+   eine Datei, die der Analyzer nie lädt: Beide Compose-Dateien mounten
+   dieselbe Host-Datei (Invariante, erzwungen von
+   `test/test_deploy_layout.py`; Details: `docs/DEPLOY.md`).
+
+   Der Lader prüft außerdem jeden Eintrag auf absolute Verankerung
+   (`\A...\z`, optional `(?i:...)`-gekapselt, kein Top-Level-`|`) und
+   verlangt `regex_flags == 0`; eine über
+   `DATENSCHLEUSE_STOPWORDS_PATH` eingehängte Datei mit unverankertem Muster
+   startet nicht.
 
    Die vier Gegenkontrollen decken diese Frage nicht ab: sie schützen die
    Erkennung des Modells vor der Liste, nicht die Konfiguration des
