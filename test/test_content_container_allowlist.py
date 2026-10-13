@@ -93,6 +93,20 @@ class TestContentContainerAllowlist(unittest.IsolatedAsyncioTestCase):
         brechen, ein normales, spezifiziertes Nutzungsmuster. content=None
         muss deshalb WIE BISHER unveraendert durchgereicht werden."""
         guard = _guard()
+
+        # NACHTRAG DATENSCHLE-66: seit die Guardrail auch
+        # ``tool_calls[].function.arguments`` prueft (vorher lief das Feld
+        # ungeprueft ans Modell), loesen die tool_calls dieser Message echte
+        # Analyzer-Calls aus. Ohne Stub griffe hier fail-closed wegen
+        # unerreichbarem Presidio -- der Test wuerde also eine Luecke
+        # einfordern, die es nicht mehr gibt. Die AUSSAGE des Tests bleibt
+        # unveraendert: content=None darf nicht blocken, tool_calls muessen
+        # erhalten bleiben.
+        async def fake_analyze(text):
+            return []
+
+        guard._analyze = fake_analyze  # type: ignore[method-assign]
+
         messages = [
             {
                 "role": "assistant",

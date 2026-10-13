@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Datenschleuse — eigene Begriffe und Muster pflegen (DATENSCHLE-7).
+
+Der Weg fuer alles, was die automatische Erkennung nicht findet: Kundennamen,
+Projektnamen, interne Kuerzel, Produktbezeichnungen, Mandantennamen.
+
+    ./tools/datenschleuse-rules list
+    ./tools/datenschleuse-rules add kunde-nordwind \\
+        --entity Kundenname --term "Nordwind Logistik" \\
+        --example "Angebot fuer Nordwind Logistik rausgeschickt"
+    ./tools/datenschleuse-rules test "Angebot fuer Nordwind Logistik"
+    ./tools/datenschleuse-rules remove kunde-nordwind
+
+Aenderungen wirken SOFORT -- kein Rebuild, kein Container-Neustart. Eine Regel
+ohne gruenen Testfall wird gar nicht erst geschrieben.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.normpath(os.path.join(_HERE, ".."))
+sys.path.insert(0, os.path.join(_REPO, "litellm"))
+
+try:
+    import custom_rules as cr
+except ImportError as exc:  # pragma: no cover
+    sys.exit(f"Fehler: litellm/custom_rules.py nicht importierbar ({exc}).\n"
+             f"Fehlt eine Abhaengigkeit? pip install -r litellm/requirements-guardrail.txt")
+
+import yaml  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Pfad-Aufloesung
+# ---------------------------------------------------------------------------
+def resolve_path(explicit: str | None) -> str:
+    """--rules > ENV > Repo-Pfad > Modul-Default (Container).
+
+    Im Container setzt docker-compose DATENSCHLEUSE_CUSTOM_RULES_PATH, auf dem
+    Host greift der Repo-Pfad. So zeigt derselbe Befehl an beiden Orten auf
+    dieselbe Datei, ohne dass man Pfade tippen muss.
+    """
+    if explicit:
+        return os.path.abspath(explicit)
+    if os.getenv("DATENSCHLEUSE_CUSTOM_RULES_PATH"):
+        return os.getenv("DATENSCHLEUSE_CUSTOM_RULES_PATH")
+    repo_rules = os.path.join(_REPO, "rules", "custom-rules.yml")
+    if os.path.exists(repo_rules) or os.path.isdir(os.path.dirname(repo_rules)):
+        return repo_rules
+    return cr.DEFAULT_RULES_PATH
+
+
+# ---------------------------------------------------------------------------
+# Ausgabe-Helfer
+# ---------------------------------------------------------------------------
+GRUEN, ROT, GELB, GRAU, AUS = "\033[32m", "\033[31m", "\033[33m", "\033[90m", "\033[0m"
+
+
+def farbe(text: str, code: str) -> str:
+    return text if not sys.stdout.isatty() else f"{code}{text}{AUS}"
+
+
+def builtin_recognizers() -> list[str]:
+    """Die eingebauten deutschen Recognizer -- fuer das Gesamtbild (ISC-25).
+
+    Best effort: im Container liegt die Presidio-Registry nicht neben der CLI.
+    Fehlt sie, wird der Abschnitt einfach weggelassen statt zu scheitern.
+    """
+    pfad = os.path.join(_REPO, "presidio", "recognizers-config.yml")
+    try:
+        with open(pfad, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except OSError:
+        return []
+    namen = []
+    for rec in doc.get("recognizers", []):
+        if isinstance(rec, dict):
+            namen.append(str(rec.get("supported_entity") or rec.get("name")))
+    return [n for n in namen if n and n != "None"]
+
+
+# ---------------------------------------------------------------------------
+# Befehle
+# ---------------------------------------------------------------------------
+def cmd_list(args) -> int:
+    pfad = resolve_path(args.rules)
+    rs = cr.RuleSet(pfad)
+    info = rs.describe()
+
+    if args.json:
+        info["builtin_entities"] = builtin_recognizers()
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"Regeldatei: {info['path']}"
+          f"{'' if info['exists'] else farbe('  (noch nicht angelegt)', GRAU)}")
+    if info["load_error"]:
+        print(farbe(f"! {info['load_error']}", ROT))
+    if info.get("permission_warning"):
+        print(farbe(f"! {info['permission_warning']}", GELB))
+
+    print(f"\n{farbe('AKTIVE EIGENE REGELN', GRUEN)} ({len(info['active'])})")
+    if not info["active"]:
+        print(farbe("  (keine)", GRAU))
+    for r in info["active"]:
+        art = "Begriff" if r["type"] == "term" else "Muster "
+        print(f"  {farbe('✓', GRUEN)} {r['name']:<28} {art}  "
+              f"{r['value']!r} → <{r['entity_type']}_N>  (score {r['score']})")
+
+    if info["quarantined"]:
+        print(f"\n{farbe('NICHT AKTIV — Testfall rot oder Regel ungueltig', ROT)} "
+              f"({len(info['quarantined'])})")
+        print(farbe("  Diese Muster schuetzen NICHT. Bitte korrigieren.", GELB))
+        for q in info["quarantined"]:
+            print(f"  {farbe('✗', ROT)} {q['name']:<28} {q['reason']}")
+
+    eingebaut = builtin_recognizers()
+    if eingebaut and not args.own_only:
+        print(f"\n{farbe('EINGEBAUTE ERKENNUNG', GRAU)} ({len(eingebaut)}) — "
+              f"presidio/recognizers-config.yml")
+        print(farbe("  " + ", ".join(sorted(set(eingebaut))), GRAU))
+    return 0
+
+
+def cmd_add(args) -> int:
+    pfad = resolve_path(args.rules)
+    if bool(args.term) == bool(args.regex):
+        print(farbe("Fehler: genau eines von --term oder --regex angeben.", ROT))
+        return 2
+
+    roh = {
+        "name": args.name,
+        "entity": args.entity,
+        "type": "term" if args.term else "regex",
+        "value": args.term or args.regex,
+        "examples": args.example,
+    }
+    if args.counter_example:
+        roh["counter_examples"] = args.counter_example
+    if args.score is not None:
+        roh["score"] = args.score
+    if args.case_sensitive:
+        roh["case_sensitive"] = True
+
+    try:
+        regel = cr.add_rule(pfad, roh)
+    except cr.RuleError as exc:
+        print(farbe(f"Nicht gespeichert — {exc}", ROT))
+        # Der ISC-24-Hinweis passt nur zum roten Testfall; bei einem
+        # Validierungsfehler waere er irrefuehrend.
+        if "Testfall" in str(exc):
+            print(farbe("Kein ungetestetes Muster geht live (ISC-24).", GELB))
+        print(farbe("Die Regeldatei ist unveraendert.", GELB))
+        return 1
+
+    print(farbe(f"✓ Regel {regel.name!r} gespeichert und SOFORT aktiv.", GRUEN))
+    print(f"  Platzhalter: <{regel.entity_type}_N>")
+    print(f"  Testfall gruen: {len(regel.examples)} Beispiel(e)"
+          f"{f', {len(regel.counter_examples)} Gegenbeispiel(e)' if regel.counter_examples else ''}")
+    print(farbe("  Kein Neustart noetig — die Datenschleuse liest die Datei "
+                "beim naechsten Request neu ein.", GRAU))
+    return 0
+
+
+def cmd_test(args) -> int:
+    pfad = resolve_path(args.rules)
+    rs = cr.RuleSet(pfad)
+
+    if args.text:
+        text = " ".join(args.text)
+    elif args.file:
+        with open(args.file, encoding="utf-8") as fh:
+            text = fh.read()
+    else:
+        text = sys.stdin.read()
+
+    treffer = rs.find(text)
+    if not treffer:
+        print(farbe("Kein Treffer durch eigene Regeln.", GELB))
+        print(farbe("(Presidio-Erkennung ist hier NICHT enthalten — dieser "
+                    "Befehl prueft nur die eigenen Regeln.)", GRAU))
+        return 1
+
+    print(f"{farbe('Treffer:', GRUEN)} {len(treffer)}")
+    for t in sorted(treffer, key=lambda e: e["start"]):
+        quelle = t.get("recognition_metadata", {}).get("recognizer_name", "")
+        regel = quelle.split(":")[-1] if quelle else "?"
+        print(f"  {text[t['start']:t['end']]!r:<40} → <{t['entity_type']}>  "
+              f"{farbe('via ' + regel, GRAU)}")
+
+    # So sieht es das Modell -- ueber denselben Masker wie im Produktivpfad.
+    try:
+        import datenschleuse_guardrail as dg
+        masker = dg.Masker()
+        print(f"\n{farbe('So verlaesst der Text die Datenschleuse:', GRUEN)}")
+        print(f"  {masker.mask(text, treffer)}")
+    except Exception:  # pragma: no cover - Vorschau ist Kuer, nicht Pflicht
+        pass
+    return 0
+
+
+def cmd_remove(args) -> int:
+    pfad = resolve_path(args.rules)
+    try:
+        cr.remove_rule(pfad, args.name)
+    except cr.RuleError as exc:
+        print(farbe(str(exc), ROT))
+        return 1
+    print(farbe(f"✓ Regel {args.name!r} entfernt (sofort wirksam).", GRUEN))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        prog="datenschleuse-rules",
+        description="Eigene Begriffe und Muster der Datenschleuse pflegen.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("\n", 2)[2],
+    )
+    p.add_argument("--rules", help="Pfad zur Regeldatei (Default: rules/custom-rules.yml)")
+    sub = p.add_subparsers(dest="befehl", required=True)
+
+    pl = sub.add_parser("list", help="zeigt alle aktiven und alle roten Regeln")
+    pl.add_argument("--json", action="store_true")
+    pl.add_argument("--own-only", action="store_true",
+                    help="ohne die eingebauten Presidio-Entitaeten")
+    pl.set_defaults(func=cmd_list)
+
+    pa = sub.add_parser("add", help="neuen Begriff / neues Muster hinterlegen")
+    pa.add_argument("name", help="Kurzname der Regel, z.B. kunde-nordwind")
+    pa.add_argument("--entity", required=True,
+                    help="Kategorie, z.B. Kundenname / Projektname / Kuerzel")
+    pa.add_argument("--term", help="woertlicher Begriff (kein Regex)")
+    pa.add_argument("--regex", help="Regex-Muster")
+    pa.add_argument("--example", action="append", required=True,
+                    help="Beispieltext, in dem die Regel greifen MUSS "
+                         "(mehrfach angebbar). Pflicht — ISC-24.")
+    pa.add_argument("--counter-example", action="append",
+                    help="Text, in dem die Regel NICHT greifen darf")
+    pa.add_argument("--score", type=float, help="Konfidenz 0..1")
+    pa.add_argument("--case-sensitive", action="store_true")
+    pa.set_defaults(func=cmd_add)
+
+    pt = sub.add_parser("test", help="Text gegen die eigenen Regeln pruefen")
+    pt.add_argument("text", nargs="*", help="der zu pruefende Text")
+    pt.add_argument("--file", help="Text aus Datei lesen")
+    pt.set_defaults(func=cmd_test)
+
+    pr = sub.add_parser("remove", help="Regel entfernen")
+    pr.add_argument("name")
+    pr.set_defaults(func=cmd_remove)
+
+    args = p.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

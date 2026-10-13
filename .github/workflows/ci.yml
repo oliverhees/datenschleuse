@@ -7,6 +7,8 @@ on:
 # Jobs, die mehr brauchen, bekommen es explizit und einzeln (aktuell keiner).
 permissions:
   contents: read
+  # Nur fuer den SARIF-Upload im `security`-Job (Audit-Fund MEDIUM-4).
+  security-events: write
 
 # SUPPLY-CHAIN-REGEL (DATENSCHLE-59), bindend fuer diese Datei:
 # JEDE `uses:`-Zeile wird auf einen Commit-SHA gepinnt, nie auf ein Tag.
@@ -110,7 +112,7 @@ jobs:
       # Zweck: Sichtbarkeit. Auch MEDIUM/LOW und Funde ohne Fix stehen im Log,
       # damit niemand behaupten kann, wir haetten sie nicht gesehen.
       - name: Trivy Dependencies -- vollstaendiger Bericht (nur Meldung)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ runner.temp }}/depscan
@@ -118,6 +120,38 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN
           exit-code: "0"
           cache: true
+
+      # Schritt 1b: SARIF erzeugen und hochladen -- VOR dem Gate (MEDIUM-4).
+      #
+      # Die Reihenfolge ist der ganze Punkt: Schritt 2 beendet den Job mit
+      # exit-code 1, danach laeuft nichts mehr. Stuende der Upload dahinter,
+      # wuerde ausgerechnet der blockierende Fund NICHT im Security-Tab landen
+      # -- aufgezeichnet waeren nur die harmlosen Laeufe.
+      #
+      # Ohne das hier existieren die Funde nur als Tabelle im Job-Log, und
+      # GitHub loescht Job-Logs nach 90 Tagen.
+      - name: Trivy Dependencies -- SARIF erzeugen
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/depscan
+          scanners: vuln
+          severity: CRITICAL,HIGH,MEDIUM
+          format: sarif
+          output: trivy-deps.sarif
+          exit-code: "0"
+          trivyignores: .trivyignore.yaml
+          cache: true
+          skip-setup-trivy: true
+
+      # Forks haben kein `security-events: write` -- ohne diese Bedingung
+      # scheiterte jeder Fork-PR an einem Upload, nicht an seiner Qualitaet.
+      - name: SARIF ins Code-Scanning hochladen
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          sarif_file: trivy-deps.sarif
+          category: dependencies
 
       # Schritt 2: das Gate. Blockiert bei CRITICAL/HIGH -- aber nur, wenn es
       # einen Fix gibt (`ignore-unfixed`).
@@ -129,7 +163,7 @@ jobs:
       # KANN: CRITICAL/HIGH mit verfuegbarem Fix -> Version hochziehen.
       # Alles ohne Fix und alles unter HIGH steht in Schritt 1 im Bericht.
       - name: Trivy Dependencies -- Gate (CRITICAL/HIGH mit verfuegbarem Fix)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ runner.temp }}/depscan
@@ -152,38 +186,7 @@ jobs:
       - name: Laufzettel pruefen (SHA-gepinnte Verdicts)
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-          BASE="origin/$BASE_REF"
-          git fetch origin "$BASE_REF" --depth=200
-
-          CODE_CHANGED=$(git diff --name-only "$BASE"...HEAD -- . ':(exclude).gates' ':(exclude)docs' ':(exclude)*.md' | wc -l)
-          if [ "$CODE_CHANGED" -eq 0 ]; then
-            echo "Nur Doku/Gates geaendert — keine Verdicts noetig. ✅"
-            exit 0
-          fi
-
-          UI_CHANGED=$(git diff --name-only "$BASE"...HEAD | grep -E '\.(tsx|jsx)$|styles?/' | wc -l || true)
-          REQUIRED="security qa"
-          [ "$UI_CHANGED" -gt 0 ] && REQUIRED="$REQUIRED ux"
-
-          FAIL=0
-          for GATE in $REQUIRED; do
-            FILE=".gates/$GATE.json"
-            if [ ! -f "$FILE" ]; then
-              echo "❌ Verdict fehlt: $GATE"; FAIL=1; continue
-            fi
-            VERDICT=$(python3 -c "import json;print(json.load(open('$FILE'))['verdict'])")
-            PINNED=$(python3 -c "import json;print(json.load(open('$FILE'))['commit'])")
-            if [ "$VERDICT" != "pass" ]; then
-              echo "❌ $GATE: Verdict ist '$VERDICT'"; FAIL=1; continue
-            fi
-            STALE=$(git rev-list "$PINNED"..HEAD -- . ':(exclude).gates' | wc -l)
-            if [ "$STALE" -gt 0 ]; then
-              echo "❌ $GATE: $STALE Code-Commit(s) NACH dem Audit (gepinnt: ${PINNED:0:8}) — erneutes Audit noetig."
-              FAIL=1
-            else
-              echo "✅ $GATE: pass @ ${PINNED:0:8} (frisch)"
-            fi
-          done
-          exit $FAIL
+          # Die echte PR-Spitze. HEAD ist hier der von GitHub fabrizierte
+          # Probe-Merge refs/pull/N/merge, nicht der auditierte Stand.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/check-laufzettel.sh

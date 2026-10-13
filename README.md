@@ -33,6 +33,7 @@
   - [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen)
   - [Quasi-Identifier](#quasi-identifier-session-übergreifende-akkumulation)
 - [Was erkannt wird](#-was-erkannt-wird)
+- [Eigene Begriffe und Muster](docs/EIGENE-MUSTER.md)
 - [Ehrliche DSGVO-Einordnung](#️-ehrliche-dsgvo-einordnung-bitte-lesen)
 - [Lizenz](#-lizenz)
 - [Status](#-status)
@@ -130,6 +131,27 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
 
 Zwei ehrliche Grenzen: Der Image-Redactor bringt seine eigene Presidio-Instanz mit und kennt die **deutschen Custom-Recognizer nicht** — im Bild greifen nur die eingebauten Typen. Und Bilder, die als externe `http`-URL statt eingebettet ankommen, werden blockiert, weil das Modell sie serverseitig abrufen würde, also an der Schleuse vorbei.
 
+**Tool-Calls (agentische Clients):** Für Agenten ist `content` nicht der Hauptkanal — Kundendaten stehen im Normalbetrieb in `tool_calls[].function.arguments`. Die Datenschleuse maskiert diese Argumente **strukturerhaltend**: der JSON-String wird geparst, ersetzt werden nur die Werte (und Schlüssel), die Syntax bleibt intakt — sonst wäre der Tool-Aufruf beim Modell unbrauchbar. Dasselbe gilt für `function_call` (Legacy-Format), `name` und `refusal`. Auf dem Rückweg greift die Re-Identifikation ebenso in Antwort-`tool_calls` und in der Gedankenkette von Reasoning-Modellen (`reasoning_content`) — auch im Streaming, wo beide in Fragmenten ankommen und ein Platzhalter mitten durch einen Chunk brechen kann.
+
+Welche Felder einer **Nachricht** dabei wie behandelt werden, ist abschließend festgelegt — **was nicht in dieser Liste steht, wird blockiert**, statt ungeprüft durchzulaufen:
+
+| Feld | Behandlung |
+|---|---|
+| `content` | maskiert (String und Part-Liste; andere Formen blockieren) |
+| `name`, `refusal`, `reasoning_content` | maskiert |
+| `tool_calls[].function.arguments` | maskiert, JSON-strukturerhaltend |
+| `tool_calls[].function.name`, `function_call` | maskiert |
+| `role` | validiert (nur Protokoll-Rollen) |
+| `tool_call_id`, `tool_calls[].id` | validiert als opake ID — bewusst **nicht** maskiert, sonst bricht die Zuordnung von Aufruf und Ergebnis |
+| `cache_control` | validiert (Caching-Marker, kein Anwendertext) |
+| alles andere | **blockiert** (fail-closed) |
+
+Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Das ist die einzige Prüfung, die unabhängig davon greift, welchen Weg ein Wert genommen hat.
+
+Der Grund für diese Form: dieselbe Lücke ist dreimal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
+
+Eine Ebene ist noch offen, und das sagen wir lieber, als es zu verschweigen: Innerhalb eines **content-Parts** greift die Liste bisher auf den Part-*Typ*; die *Feldebene* innerhalb eines Parts ist noch in Arbeit. Bis der Fix draußen ist, gilt „alles andere wird blockiert" auf dieser Ebene also nicht — verlass dich dort nicht darauf. Der Fix ist als eigenes Arbeitspaket terminiert. Die Einzelheiten halten wir bis dahin zurück: eine offene Lücke beschreiben wir im Umfang, nicht als Anleitung.
+
 Details zu jeder Komponente: [Wiki → Architektur](../../wiki/Architektur).
 
 ## 🛡️ Sicherheitsmodell
@@ -178,7 +200,63 @@ Schwellwert konfigurierbar über `qi_risk_preset` in `litellm/config.yaml`: `uti
 Standard (über Presidio, deutsch): Namen, Orte, E-Mail, Telefon, Kreditkarte, IBAN, IP-Adresse.
 Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregisternummer, KFZ-Kennzeichen.**
 
-Gemessen gegen einen eigenen deutschen Testkorpus (`test/corpus/`): **Recall 100 %, Precision 100 %** über alle Pflicht-Entitäten (Ziel war ≥95 %/≥90 %). Lauf jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py`.
+### Wie gut wird erkannt — die ehrliche Fassung
+
+Gemessen wird gegen einen eigenen deutschen Testkorpus (82 Fälle, `test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py` misst die heute wirksame Erkennungskonfiguration, `--stopwords presidio/de-stopwords.yml` zusätzlich die mit der Nicht-PII-Wortliste erreichbare.
+
+**Recall: 100 % — und genau das ist der Grund für Skepsis.** Über alle Pflicht-Entitäten wird bislang jede erwartete Entität gefunden. Als Qualitätsbeleg taugt die Zahl trotzdem nicht. Das eingesetzte Sprachmodell `de_core_news_lg` gibt für Personennamen in seinen eigenen Metadaten **92,02 % Recall** an — auf Zeitungs- und Wikipedia-Text, für den es trainiert wurde. Ein Korpus, auf dem ein Modell besser abschneidet als auf seiner eigenen Evaluationsmenge, ist nicht besonders gut, sondern zu leicht. Selbst nachsehen:
+
+```bash
+docker exec datenschleuse-analyzer python -c \
+  "import de_core_news_lg; print(de_core_news_lg.load().meta['performance'])"
+```
+
+Unsere Fälle sind handverlesen, kurz und syntaktisch einfach. Das Modell trifft dort keinen der Fälle, an denen es real scheitert: verschachtelte Sätze, seltene und fremdsprachige Namen, Namen ohne Anrede, Namen in Aufzählungen. Die 100 % sind eine Aussage über den Schwierigkeitsgrad des Korpus, nicht über die Erkennungsleistung in freier Wildbahn. Die Härtung des Korpus ist ein offenes Work Item.
+
+**Precision: Hier stand vorher 100 %. Die Zahl ist zurückgezogen.** Sie kam zustande, weil der Korpus auf der Negativ-Seite ausschließlich die Regex-Recognizer beprobte (IBAN, Telefon, KFZ, Aktenzeichen, Firma); die statistische Erkennung war unbeprobt. Nachdem sie beprobt wurde, sieht es so aus:
+
+| Kennzahl | Ziel | heute ausgeliefert | mit Wortliste — **noch nicht verdrahtet** |
+|---|---|---|---|
+| Recall (Pflicht-Entitäten) | ≥ 95 % | 100 % — auf zu leichtem Korpus, siehe oben | 100 % |
+| Precision (aus Negativ-Fällen) | ≥ 90 % | **67,5 %** | 81,8 % |
+| Störquote (PII-freie Texte mit Fehlalarm) | ≤ 10 % | **81,2 %** (26 von 32) | 37,5 % (12 von 32) |
+
+**Vier von fünf PII-freien Texten werden also gestört.** Das ist keine historische Zahl, sondern das, was ein Betreiber heute erlebt.
+
+Die rechte Spalte ist eine geprüfte, aber **nicht ausgelieferte** Fähigkeit. Es gibt eine gemessene Nicht-PII-Wortliste (`presidio/de-stopwords.yml`) mit derzeit 14 Einträgen. Sie deckt ausschließlich **deutsche Schema-Schlüssel** ab — `bestellnummer`, `lieferdatum`, `zahlungsart` und ähnliche Komposita, die das Modell als Orte oder Namen meldet. Das ist eng, und zwar mit Absicht: Der Recall bleibt auf diesem Korpus unverändert bei 54 von 54 Pflicht-Entitäten. Sie liegt im Repo, sie ist gegen den laufenden Analyzer belegt, und sie wirkt im Benchmark. **Nur sendet der Guardrail sie nicht an Presidio** — im Proxy ist sie schlicht nicht angeschlossen. Der nächste Schritt ist deshalb kein Erkennungsproblem, sondern eine Verdrahtung; die nötige Änderung ist in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md) §7 spezifiziert („Spezifikation, nicht umgesetzt") und als eigenes Work Item vorgesehen. Warum es die Liste überhaupt gibt, welche vier Gegenkontrollen sie absichern und welche Alternativen nach Messung verworfen wurden: [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md).
+
+Wer die 81,8 % / 37,5 % als heutigen Betriebszustand liest, liest sie falsch. Sie stehen hier, weil eine belegte Fähigkeit dazugehört — nicht, weil sie schon wirkt.
+
+**Das Erkennungsziel ist damit nicht erreicht, und es wird nicht abgesenkt, bis es passt.** Precision und Störquote stehen beide rot, und sie stehen aus einem benannten Grund rot: Groß geschriebene deutsche Alltagswörter am Satzanfang — Verbformen wie `Aendere`, `Fasse`, `Übersetze`, dazu `Spaeter` und `Rueckruf` — erzeugen denselben Span wie ein echter Nachname. Das trifft ASCII-Umschrift und echte Umlautschreibung gleichermaßen. Die Wortliste sieht nur diesen Span, nicht den Kontext — sie kann den Fehlalarm nicht unterdrücken, ohne den Namen mitzunehmen. `Menge` und `Füge` sind reale deutsche Familiennamen und standen genau deshalb schon einmal zu Unrecht auf der Liste. Das braucht einen kontextsensitiven Recognizer und ist offen.
+
+Zur Reichweite der Absicherung, damit auch das nicht zu gut klingt: Der Benchmark-Runner liegt im Repo und ist jederzeit wiederholbar, und `test/test_erkennungsziel_gate.py` sichert die Schwellen gegen stilles Absenken. Was **nicht** läuft: Ein gemessener Lauf gegen diese Schwellen (`--check-targets`) ist in der CI nicht verdrahtet. Die Schwelle kann also nicht heimlich gesenkt werden — dass sie eingehalten wird, erzwingt heute noch niemand automatisch.
+
+Zum Nachschlagen: Zielpapier mit allen Schwellen und ihrer Herleitung in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md), die Entscheidung über die Wortliste in [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md). `test/corpus/benchmark-results.json` ist der letzte eingecheckte Messlauf und entspricht der **rechten** Spalte der Tabelle oben (82 Fälle, mit Wortliste) — nicht dem ausgelieferten Zustand.
+
+Was das für den Betrieb heißt: Der teure Fehler ist übersehene PII, und dort steht die Datenschleuse gut da — nur eben auf einem Korpus gemessen, der leichter ist als die Realität. Der häufige Fehler sind Fehlalarme; die kosten Nutzbarkeit, nicht Schutz. Beides steht hier, weil ein Sicherheitswerkzeug, das nur seine Bestwerte zeigt, sich nicht einschätzen lässt.
+
+### Und was sie nicht kennt: eure eigenen Begriffe
+
+Kundennamen, Projektnamen, interne Kürzel, Produkt- und Mandantenbezeichnungen
+kann keine generische Erkennung kennen — die heißen bei euch anders als überall
+sonst. Dafür hinterlegt ihr **eigene Begriffe und Regex-Muster**:
+
+```bash
+./tools/datenschleuse-rules add kunde-nordwind \
+    --entity Kundenname --term "Nordwind Logistik" \
+    --example "Angebot fuer Nordwind Logistik rausgeschickt"
+```
+
+Sofort wirksam — kein Rebuild, kein Neustart. Deterministisch, **kein
+ML-Training**: gespeichert werden nur eure Muster, nie Trefferdaten. Jede Regel
+trägt ihren eigenen Testfall und geht ohne grünen Test gar nicht erst live.
+Anleitung: [`docs/EIGENE-MUSTER.md`](docs/EIGENE-MUSTER.md).
+
+## 🔁 Der Round-Trip, bewiesen
+
+Die zentrale Behauptung — *Klartext rein, Platzhalter zum Modell, Klartext zurück* — ist nicht nur unit-getestet, sondern gegen den echten Stack mitgeschnitten: der Upstream-Payload wird an der Vertrauensgrenze protokolliert, und dort steht nachweislich `<PERSON_0>` statt „Maria Meier". Inklusive Streaming über zerrissene Chunk-Grenzen hinweg.
+
+Selbst nachvollziehen: `./test/run-e2e-roundtrip.sh` — Details und Artefakte in [E2E-ROUNDTRIP-BEWEIS.md](docs/E2E-ROUNDTRIP-BEWEIS.md).
 
 ## ⚠️ Ehrliche DSGVO-Einordnung (bitte lesen)
 
