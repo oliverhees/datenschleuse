@@ -1,18 +1,18 @@
 {
-  "timestamp_utc": "2026-08-04T12:52:11.363528+00:00",
+  "timestamp_utc": "2026-08-20T08:57:10.759291+00:00",
   "presidio_url": "http://localhost:5001",
-  "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/test/corpus/de-pii-testkorpus.yaml",
-  "case_count": 45,
+  "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/.claude/worktrees/agent-a901483c0dfeae0df/test/corpus/de-pii-testkorpus.yaml",
+  "case_count": 82,
   "overlap_min_ratio": 0.5,
   "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
   "must_detect": {
     "overall": {
-      "tp": 43,
+      "tp": 54,
       "fn": 0,
-      "fp": 0,
-      "support": 43,
+      "fp": 12,
+      "support": 54,
       "recall": 1.0,
-      "precision": 1.0
+      "precision": 0.8182
     },
     "by_type": {
       "CREDIT_CARD": {
@@ -154,18 +154,26 @@
       "LOCATION": {
         "tp": 4,
         "fn": 0,
-        "fp": 0,
+        "fp": 3,
         "support": 4,
         "recall": 1.0,
-        "precision": 1.0
+        "precision": 0.5714
+      },
+      "ORGANIZATION": {
+        "tp": 0,
+        "fn": 0,
+        "fp": 1,
+        "support": 0,
+        "recall": null,
+        "precision": 0.0
       },
       "PERSON": {
-        "tp": 5,
+        "tp": 16,
         "fn": 0,
-        "fp": 0,
-        "support": 5,
+        "fp": 8,
+        "support": 16,
         "recall": 1.0,
-        "precision": 1.0
+        "precision": 0.6667
       },
       "PHONE_NUMBER": {
         "tp": 2,
@@ -214,8 +222,171 @@
     ]
   },
   "negative_cases": {
-    "false_positives_total": 0,
-    "false_positives_by_type": {}
+    "count": 32,
+    "false_positives_total": 12,
+    "false_positives_by_type": {
+      "LOCATION": 3,
+      "ORGANIZATION": 1,
+      "PERSON": 8
+    },
+    "cases_with_false_positive": 12,
+    "stoerquote": 0.375,
+    "stoerquote_note": "Anteil der PII-freien Texte mit mindestens einem Fehlalarm. Ergänzt die Precision, weil TP/(TP+FP) Buckets mischt: TP kommen aus Positiv-Fällen, FP aus Negativ-Fällen. Dadurch lässt sich die Precision durch Hinzufügen von Positiv-Fällen optisch verbessern, ohne dass ein Fehlalarm verschwindet. Die Störquote ist dagegen immun und bildet ab, was ein Anwender tatsächlich erlebt.",
+    "offenders": [
+      {
+        "case_id": "negativ-007-ascii-imperativ-aendere",
+        "text": "Aendere keinen einzigen Wert.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Aendere",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-008-ascii-imperativ-pruefe",
+        "text": "Pruefe die Eingabe auf Fehler.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Pruefe",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-009-ascii-imperativ-uebersetze",
+        "text": "Uebersetze den Absatz ins Englische.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Uebersetze",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-010-ascii-imperativ-fuege",
+        "text": "Fuege eine Fussnote hinzu.",
+        "detections": [
+          {
+            "entity_type": "LOCATION",
+            "span": "Fuege",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-011-ascii-imperativ-beruecksichtige",
+        "text": "Beruecksichtige alle offenen Posten.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Beruecksichtige",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-012-ascii-imperativ-erlaeutere",
+        "text": "Erlaeutere den Sachverhalt ausfuehrlich.",
+        "detections": [
+          {
+            "entity_type": "ORGANIZATION",
+            "span": "Erlaeutere",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-013-ascii-adverb-spaeter",
+        "text": "Spaeter wurde der Vorgang an die Fachabteilung uebergeben.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Spaeter",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-014-ascii-nomen-rueckruf",
+        "text": "Der Rueckruf ist fuer morgen vorgesehen.",
+        "detections": [
+          {
+            "entity_type": "LOCATION",
+            "span": "Rueckruf",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-016-umlaut-imperativ-fasse",
+        "text": "Fasse den Text zusammen.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Fasse",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-017-umlaut-imperativ-uebersetze",
+        "text": "Übersetze den Absatz ins Englische.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Übersetze",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-026-schema-rueckruf",
+        "text": "Rueckruf",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Rueckruf",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "negativ-030-schema-menge",
+        "text": "menge",
+        "detections": [
+          {
+            "entity_type": "LOCATION",
+            "span": "menge",
+            "score": 0.85
+          }
+        ]
+      }
+    ]
+  },
+  "stopwords_path": "presidio/de-stopwords.yml",
+  "erkennungsziel": {
+    "quelle": "docs/foundation/erkennungsziel.md",
+    "schwellen": {
+      "recall_overall": 0.95,
+      "recall_pattern_based": 0.98,
+      "recall_by_type": {
+        "PERSON": 0.9,
+        "LOCATION": 0.85,
+        "ORGANIZATION": 0.75
+      },
+      "stoerquote_max": 0.1,
+      "precision": 0.9,
+      "per_type_min_support": 3
+    },
+    "verstoesse": [
+      "Precision 81.8% < Ziel 90% (FP=12)",
+      "Stoerquote 37.5% > Ziel 10% (12/32 PII-freie Texte gestört)"
+    ],
+    "bestanden": false
   },
   "positive_case_unmatched_detections": [
     {
@@ -447,6 +618,20 @@
       "entity_type": "LOCATION",
       "start": 125,
       "end": 132,
+      "score": 0.85
+    },
+    {
+      "case_id": "person-014-nachname-vorname",
+      "entity_type": "PERSON",
+      "start": 7,
+      "end": 14,
+      "score": 0.85
+    },
+    {
+      "case_id": "person-011-ascii-name-neben-fp-koeder",
+      "entity_type": "PERSON",
+      "start": 0,
+      "end": 7,
       "score": 0.85
     }
   ],

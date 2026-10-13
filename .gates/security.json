@@ -1,7 +1,7 @@
 {
   "gate": "security",
   "verdict": "pass",
-  "commit": "4e92766fb60abce54614b349a3c9eda6ccb5bc9b",
-  "branch": "feature/DATENSCHLE-66-toolcalls-maskierung",
-  "timestamp": "2026-08-19T13:12:02Z"
+  "commit": "02579065651fdb13ba7987f2e678c8894fb8ee9a",
+  "branch": "HEAD",
+  "timestamp": "2026-08-20T18:21:06Z"
 }
