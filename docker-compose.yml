@@ -182,15 +182,16 @@ services:
   # NICHT IM STANDARDSTART (DATENSCHLE-83, ADR-0003): Der Dienst liegt hinter
   # dem Compose-Profil `images` und kommt bei `docker compose up` NICHT hoch.
   # Grund ist gemessen, nicht geschaetzt -- er allein trug 42 der 61
-  # kritischen und 3847 der rund 4344 Gesamtbefunde des ausgelieferten Stacks
+  # kritischen und 3847 der 4346 Gesamtbefunde des ausgelieferten Stacks
   # (CI-Run 32253275837). Ein Proxy fuer LLM-TEXTanfragen soll dieses
   # CVE-Profil nicht ungefragt mitliefern.
   #
   # EINSCHALTEN (bewusste Entscheidung, uebernimmt das CVE-Profil):
   #   docker compose --profile images up -d
   #   # zusaetzlich in der .env: DATENSCHLEUSE_IMAGE_POLICY=redact
-  # Ohne beides bleibt es beim Block -- die Guardrail-Meldung nennt diesen
-  # Befehl ausdruecklich, damit niemand in einer Sackgasse steht.
+  # Ohne beides bleibt es beim Block. Die Client-Meldung ist bewusst neutral
+  # (nur "blockiert, Betreiber kontaktieren"); diese Anleitung steht im
+  # Server-Log des Proxys und in docs/DEPLOY.md.
   #
   # GRENZE: Der Dienst bringt seine eigene Presidio-Instanz samt Tesseract-OCR
   # mit und kennt die deutschen Custom-Recognizer aus

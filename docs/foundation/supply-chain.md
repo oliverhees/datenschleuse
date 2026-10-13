@@ -451,13 +451,15 @@ der Weg ein Digest-Update, sobald Upstream nachzieht).
 Rechnung auf den **Upstream-Images** der CI-Matrix (32 − 5 Analyzer − 21 Redactor
 = 6), plus lokale Einzelmessungen am Basis-Image mit `apt upgrade`-Schicht. Für
 das tatsächlich **ausgelieferte, gebaute** Analyzer-Image ist die Zahl in der CI
-nicht belegt, weil dieses Image dort nicht gescannt wird (siehe oben). Ebenfalls
-offen: Der Kommentar in `presidio/Dockerfile.analyzer` nennt „2 CVEs in 3
-Paketen", die Tabelle oben zählt 3 CVE-IDs in 3 Paketen, die Messung „5 behebbare
-CRITICALs" ist eine Trivy-Zählung pro Befund. Dass und warum diese Zahlen
-unterschiedlich zählen, lässt sich aus den Dateien nicht belegen (keine
-Befundliste pro Paket abgelegt) — **offen**, zu klären mit dem Folge-Item
-„CI-Scan des gebauten Images".
+nicht belegt, weil dieses Image dort nicht gescannt wird (siehe oben).
+
+Der Kommentar in `presidio/Dockerfile.analyzer` führt dieselben CVE-IDs je Paket
+auf wie die Tabelle oben (3 CVE-IDs in 3 Paketen) und hält fest, das „gebaute
+Image wird derzeit NICHT in der CI gescannt". Ebenfalls offen: Die Messung `5
+behebbare CRITICALs` ist eine Trivy-Zählung pro Befund und zählt anders als die
+CVE-IDs. Warum, lässt sich aus den Dateien nicht belegen (keine Befundliste pro
+Paket abgelegt) — **offen**, zu klären mit dem Folge-Item `CI-Scan des gebauten
+Images`.
 
 #### Zu entscheiden hat das Oliver, nicht ein Agent
 

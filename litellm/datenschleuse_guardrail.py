@@ -1093,16 +1093,19 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if self.image_policy == "block":
             # Bewusst OHNE jeden Bildinhalt: die Meldung geht an den Client
             # zurueck und landet potenziell im Log. Ein Base64-Fragment darin
-            # waere genau das Leck, das die Policy verhindern soll. Die
-            # ausfuehrliche Anleitung steht in docs/DEPLOY.md, nicht hier.
+            # waere genau das Leck, das die Policy verhindern soll.
+            # Entscheidung (Oliver, DATENSCHLE-89): Die Client-Meldung ist
+            # NEUTRAL (keine Infrastruktur-Details an API-Clients). Die
+            # Aktivierungsanleitung steht nur im Server-Log, ohne Inhalt.
             _LOG.warning(
-                "image part blocked (image_policy=block); "
-                "see docs/DEPLOY.md, section image policy"
+                "image part blocked (image_policy=block). Operator: to process "
+                "images, start the compose profile `images` "
+                "(`docker compose --profile images up -d`) and set "
+                "DATENSCHLEUSE_IMAGE_POLICY=redact (Docker Compose self-hosting "
+                "only). See docs/DEPLOY.md, section image policy."
             )
             raise DatenschleuseBlocked(
-                "Bild-Anhaenge sind blockiert. Betreiber: Compose-Profil "
-                "`images` starten (`docker compose --profile images up -d`) "
-                "und DATENSCHLEUSE_IMAGE_POLICY=redact setzen."
+                "Bild-Anhaenge sind blockiert. Bitte den Betreiber kontaktieren."
             )
         url = _image_part_url(part)
         if not url:

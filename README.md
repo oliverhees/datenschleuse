@@ -136,7 +136,7 @@ docker compose --profile images up -d
 | `redact` | Bild wird geschwärzt, bevor es rausgeht. Braucht Profil `images` (Redactor-Dienst). Fehler beim Schwärzen ⇒ Request blockiert. |
 | `pass` | Bilder gehen **ungeprüft** raus. Nur bewusst setzen. |
 
-Auf Coolify sind Bilder standardmäßig blockiert; `redact` ist dort nicht vorgesehen. Details, Upgrade-Hinweis und Coolify: [docs/DEPLOY.md](docs/DEPLOY.md).
+Der API-Client sieht bei einem Block nur eine neutrale Meldung („Bitte den Betreiber kontaktieren"); die Aktivierungsanleitung steht im Server-Log und in der Doku. Auf Coolify sind Bilder standardmäßig blockiert; `redact` ist dort nicht vorgesehen. Details, Upgrade-Hinweis und Coolify: [docs/DEPLOY.md](docs/DEPLOY.md).
 
 Zwei ehrliche Grenzen: Der Image-Redactor bringt seine eigene Presidio-Instanz mit und kennt die **deutschen Custom-Recognizer nicht** — im Bild greifen nur die eingebauten Typen. Und Bilder, die als externe `http`-URL statt eingebettet ankommen, werden blockiert, weil das Modell sie serverseitig abrufen würde, also an der Schleuse vorbei.
 

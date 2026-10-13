@@ -98,6 +98,11 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
   docker compose --profile images up -d
   ```
 
+- **Was der Client sieht:** nur "Bild-Anhaenge sind blockiert. Bitte den
+  Betreiber kontaktieren." Die Aktivierungsanleitung (Profil `images` plus
+  `DATENSCHLEUSE_IMAGE_POLICY=redact`, nur Docker-Compose-Self-Hosting) steht
+  im Server-Log des Proxys (`docker compose logs datenschleuse`) und in diesem
+  Abschnitt. Das Log enthaelt keinen Bild- oder Client-Inhalt.
 - **`pass`** laesst Bilder ungeprueft durch — eine bewusste Datenschutzluecke,
   nur setzen, wenn du das willst.
 - **Coolify:** Bilder sind dort standardmaessig blockiert. `redact` ist auf
