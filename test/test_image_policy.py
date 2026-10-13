@@ -396,6 +396,36 @@ class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
         message = str(ctx.exception)
         self.assertIn("DATENSCHLEUSE_IMAGE_POLICY", message)
 
+    async def test_block_message_has_no_internal_or_misleading_content(self):
+        """Die Meldung geht an den Client: keine Ticket-ID, keine CVE-Aussage,
+        kein Hinweis auf die Policy `pass` (die Anleitung gehoert in die Doku)."""
+        guard = dg.DatenschleuseGuardrail(image_policy="block")
+        data = {"messages": [image_message()]}
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+            )
+        message = str(ctx.exception)
+        self.assertNotIn("DATENSCHLE-", message)
+        self.assertNotIn("CVE", message)
+        self.assertNotIn("pass", message.lower().replace("passwort", ""))
+        self.assertIn("DATENSCHLEUSE_IMAGE_POLICY=redact", message)
+
+    async def test_block_logs_doc_reference_without_content(self):
+        """Server-seitig wird ein Verweis auf die Doku geloggt -- ohne Bildinhalt."""
+        guard = dg.DatenschleuseGuardrail(image_policy="block")
+        secret = b"streng-geheimes-bild-mit-pii"
+        data = {"messages": [image_message(url=data_url(raw=secret))]}
+        with self.assertLogs("datenschleuse", level="WARNING") as logs:
+            with self.assertRaises(dg.DatenschleuseBlocked):
+                await guard.async_pre_call_hook(
+                    user_api_key_dict=None, cache=None, data=data, call_type="completion"
+                )
+        joined = "\n".join(logs.output)
+        self.assertIn("docs/DEPLOY.md", joined)
+        self.assertNotIn("streng-geheimes", joined)
+        self.assertNotIn(base64.b64encode(secret).decode("ascii"), joined)
+
     async def test_block_message_leaks_no_image_content(self):
         """Fail-closed heisst auch: die Meldung selbst darf nie Bilddaten
         transportieren. Sie geht an den Client zurueck und potenziell ins Log."""
