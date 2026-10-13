@@ -129,15 +129,17 @@ Precision-Zahl danach aussieht.
 Das Precision-Ziel ist **rot**. Der Korpus beprobte auf der Negativ-Seite lange
 nur die Regex-Recognizer (IBAN, Telefon, KFZ, Aktenzeichen, Firma) — die
 statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **67,5 %**
-bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört). **Das
-ist der ausgelieferte Zustand** — vier von fünf PII-freien Texten werden gestört.
+bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört). Das
+ist der **Rohzustand** des Analyzers ohne Wortliste und die Gegenprobe zur
+ausgelieferten Konfiguration.
 
 Mit der Nicht-PII-Wortliste (`presidio/de-stopwords.yml`) steigt die Precision
-ohne Recall-Verlust auf **81,8 %** bei **37,5 %** Störquote (12 von 32). Diese
-Zahlen sind gemessen und die Liste liegt im Repo, aber der Guardrail sendet sie
-nicht an Presidio — sie beschreiben den **erreichbaren**, nicht den
-ausgelieferten Zustand (siehe „Aufruf"). Beide Gates bleiben in beiden Fällen
-verfehlt.
+ohne Recall-Verlust auf **81,8 %** bei **37,5 %** Störquote (12 von 32). Das ist
+die **ausgelieferte Konfiguration**: Der Guardrail sendet die Liste seit
+DATENSCHLE-82 an jeden Presidio-Aufruf (`docs/foundation/erkennungsziel.md`
+§7), und `test/guardrail-benchmark.py` misst dieselben Zahlen durch den
+Guardrail-Pfad (siehe „Aufruf"). Belegt ist damit der Codepfad gegen einen
+laufenden Analyzer, kein Container-Start. Beide Gates bleiben verfehlt.
 
 Der gemeldete **Recall von 100 % ist ebenfalls kein Qualitätsbeleg**:
 `de_core_news_lg` gibt für PERSON in seinen eigenen Metadaten 92,02 % Recall an.
@@ -149,8 +151,8 @@ Das eingecheckte `benchmark-results.json` ist der Lauf **mit** Wortliste über
 alle 82 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
 Störquote 37,5 %, `bestanden: false`). Es wird ausschließlich durch einen
 echten Lauf ersetzt, nie von Hand editiert — eine Handeintragung wäre keine
-Korrektur. Damit hat der ausgelieferte Zustand (ohne Liste) derzeit kein
-eingechecktes Artefakt; wer ihn belegen will, fährt Lauf 3 selbst.
+Korrektur. Der Rohzustand (ohne Liste) hat kein eingechecktes Artefakt; wer
+ihn belegen will, fährt Lauf 3 selbst.
 
 ## Aufruf
 
@@ -167,16 +169,19 @@ pip install -r test/requirements.txt
 # 3. Benchmark laufen lassen — Rohzustand des Analyzers
 python3 test/corpus-benchmark.py
 
-# 4. ... und mit der Nicht-PII-Wortliste: der ERREICHBARE Zustand.
-#    Nicht der ausgelieferte — der Guardrail sendet die Liste noch nicht.
+# 4. ... und mit der Nicht-PII-Wortliste: die ausgelieferte Konfiguration
+#    (der Guardrail sendet dieselbe Liste an jeden /analyze-Aufruf).
 python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
+
+# 5. Gegenprobe durch den Guardrail-Pfad selbst (gleiche Auswertung)
+PYTHONPATH=litellm python3 test/guardrail-benchmark.py
 ```
 
-> **Welche Zahl beschreibt den heutigen Betrieb?** Die aus Lauf 3 (ohne Liste):
-> Störquote **81,2 %**. Der Lauf mit Liste (37,5 %) beschreibt den Zustand
-> **nach** der in `docs/foundation/erkennungsziel.md` §7 spezifizierten
-> Guardrail-Änderung, die noch nicht umgesetzt ist. Wer die 37,5 % als
-> Betriebszustand liest, liest sie falsch.
+> **Welche Zahl beschreibt den Betrieb?** Die aus Lauf 4 (mit Liste):
+> Störquote **37,5 %**. Lauf 3 (81,2 %) ist der Rohzustand ohne Wortliste und
+> zeigt, was die Liste bewirkt. Beide Zahlen belegen den Codepfad gegen einen
+> laufenden Analyzer; ein echter Docker-Build/Container-Start ist damit nicht
+> belegt.
 
 **Pflicht bei jeder Recognizer- oder Listen-Änderung:** beide Läufe vorher und
 nachher, beide Seiten vergleichen. Eine Precision-Verbesserung ohne
@@ -194,7 +199,7 @@ Der Runner druckt einen Report auf stdout und schreibt zusätzlich
 | `--output` | `test/corpus/benchmark-results.json` | Alternativer Report-Pfad. |
 | `--timeout` / `PRESIDIO_TIMEOUT_SECONDS` | `30` | Netzwerk-Timeout pro Request (s). |
 | `--overlap-ratio` / `OVERLAP_MIN_RATIO` | `0.5` | Mindest-Overlap-Anteil für einen Treffer. |
-| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei. Misst den **erreichbaren** Zustand — der Guardrail sendet die Liste noch nicht (§7). |
+| `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei. Misst die ausgelieferte Konfiguration — der Guardrail sendet dieselbe Liste (§7). |
 | `--no-stopwords` | _(Default)_ | Explizit ohne Liste messen; markiert den Vorher-Lauf in Skripten sichtbar. |
 
 ## Exit-Codes

@@ -211,7 +211,7 @@ Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregis
 
 ### Wie gut wird erkannt — die ehrliche Fassung
 
-Gemessen wird gegen einen eigenen deutschen Testkorpus (82 Fälle, `test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py` misst die heute wirksame Erkennungskonfiguration, `--stopwords presidio/de-stopwords.yml` zusätzlich die mit der Nicht-PII-Wortliste erreichbare.
+Gemessen wird gegen einen eigenen deutschen Testkorpus (82 Fälle, `test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py` misst den Rohzustand des Analyzers ohne Wortliste, `--stopwords presidio/de-stopwords.yml` misst mit der Nicht-PII-Wortliste, die der Guardrail seit DATENSCHLE-82 mitsendet.
 
 **Recall: 100 % — und genau das ist der Grund für Skepsis.** Über alle Pflicht-Entitäten wird bislang jede erwartete Entität gefunden. Als Qualitätsbeleg taugt die Zahl trotzdem nicht. Das eingesetzte Sprachmodell `de_core_news_lg` gibt für Personennamen in seinen eigenen Metadaten **92,02 % Recall** an — auf Zeitungs- und Wikipedia-Text, für den es trainiert wurde. Ein Korpus, auf dem ein Modell besser abschneidet als auf seiner eigenen Evaluationsmenge, ist nicht besonders gut, sondern zu leicht. Selbst nachsehen:
 
@@ -224,23 +224,23 @@ Unsere Fälle sind handverlesen, kurz und syntaktisch einfach. Das Modell trifft
 
 **Precision: Hier stand vorher 100 %. Die Zahl ist zurückgezogen.** Sie kam zustande, weil der Korpus auf der Negativ-Seite ausschließlich die Regex-Recognizer beprobte (IBAN, Telefon, KFZ, Aktenzeichen, Firma); die statistische Erkennung war unbeprobt. Nachdem sie beprobt wurde, sieht es so aus:
 
-| Kennzahl | Ziel | heute ausgeliefert | mit Wortliste — **noch nicht verdrahtet** |
+| Kennzahl | Ziel | Rohzustand, ohne Wortliste | **mit Wortliste — ausgelieferte Konfiguration** |
 |---|---|---|---|
 | Recall (Pflicht-Entitäten) | ≥ 95 % | 100 % — auf zu leichtem Korpus, siehe oben | 100 % |
-| Precision (aus Negativ-Fällen) | ≥ 90 % | **67,5 %** | 81,8 % |
-| Störquote (PII-freie Texte mit Fehlalarm) | ≤ 10 % | **81,2 %** (26 von 32) | 37,5 % (12 von 32) |
+| Precision (aus Negativ-Fällen) | ≥ 90 % | 67,5 % | **81,8 %** |
+| Störquote (PII-freie Texte mit Fehlalarm) | ≤ 10 % | 81,2 % (26 von 32) | **37,5 %** (12 von 32) |
 
-**Vier von fünf PII-freien Texten werden also gestört.** Das ist keine historische Zahl, sondern das, was ein Betreiber heute erlebt.
+**Gut drei von zehn PII-freien Texten werden weiterhin gestört** (12 von 32), und das Ziel ist verfehlt. Ohne die Wortliste waren es vier von fünf.
 
-Die rechte Spalte ist eine geprüfte, aber **nicht ausgelieferte** Fähigkeit. Es gibt eine gemessene Nicht-PII-Wortliste (`presidio/de-stopwords.yml`) mit derzeit 14 Einträgen. Sie deckt ausschließlich **deutsche Schema-Schlüssel** ab — `bestellnummer`, `lieferdatum`, `zahlungsart` und ähnliche Komposita, die das Modell als Orte oder Namen meldet. Das ist eng, und zwar mit Absicht: Der Recall bleibt auf diesem Korpus unverändert bei 54 von 54 Pflicht-Entitäten. Sie liegt im Repo, sie ist gegen den laufenden Analyzer belegt, und sie wirkt im Benchmark. **Nur sendet der Guardrail sie nicht an Presidio** — im Proxy ist sie schlicht nicht angeschlossen. Der nächste Schritt ist deshalb kein Erkennungsproblem, sondern eine Verdrahtung; die nötige Änderung ist in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md) §7 spezifiziert („Spezifikation, nicht umgesetzt") und als eigenes Work Item vorgesehen. Warum es die Liste überhaupt gibt, welche vier Gegenkontrollen sie absichern und welche Alternativen nach Messung verworfen wurden: [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md).
+Die rechte Spalte ist die ausgelieferte Konfiguration. Die gemessene Nicht-PII-Wortliste (`presidio/de-stopwords.yml`, derzeit 14 Einträge) wird vom Guardrail seit DATENSCHLE-82 an jeden Presidio-Aufruf gehängt, in Maskierung und Verifikationsdurchlauf gleichermaßen. Sie deckt ausschließlich **deutsche Schema-Schlüssel** ab — `bestellnummer`, `lieferdatum`, `zahlungsart` und ähnliche Komposita, die das Modell als Orte oder Namen meldet. Das ist eng, und zwar mit Absicht: Der Recall bleibt auf diesem Korpus unverändert bei 54 von 54 Pflicht-Entitäten. Die Zahlen der rechten Spalte sind durch den Guardrail-Pfad selbst gemessen (`test/guardrail-benchmark.py`, gegen einen laufenden Analyzer) und stimmen mit dem Benchmark-Lauf mit Liste überein. Die Wirkung beschreibt [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md) §7; warum es die Liste gibt, welche Gegenkontrollen sie absichern und welche Alternativen verworfen wurden: [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md).
 
-Wer die 81,8 % / 37,5 % als heutigen Betriebszustand liest, liest sie falsch. Sie stehen hier, weil eine belegte Fähigkeit dazugehört — nicht, weil sie schon wirkt.
+**Was „ausgeliefert" hier belegt und was nicht:** Belegt sind die Verdrahtung im Code (der Guardrail sendet `allow_list`, `allow_list_match` und `regex_flags`) und die Layout-Simulation `test/test_deploy_layout.py`, die aus Dockerfile- und Compose-Dateien das `/app`-Layout nachbaut und den Guardrail darin importiert und konstruiert. Ein echter Docker-Build und ein Container-Start wurden dafür **nicht** ausgeführt.
 
 **Das Erkennungsziel ist damit nicht erreicht, und es wird nicht abgesenkt, bis es passt.** Precision und Störquote stehen beide rot, und sie stehen aus einem benannten Grund rot: Groß geschriebene deutsche Alltagswörter am Satzanfang — Verbformen wie `Aendere`, `Fasse`, `Übersetze`, dazu `Spaeter` und `Rueckruf` — erzeugen denselben Span wie ein echter Nachname. Das trifft ASCII-Umschrift und echte Umlautschreibung gleichermaßen. Die Wortliste sieht nur diesen Span, nicht den Kontext — sie kann den Fehlalarm nicht unterdrücken, ohne den Namen mitzunehmen. `Menge` und `Füge` sind reale deutsche Familiennamen und standen genau deshalb schon einmal zu Unrecht auf der Liste. Das braucht einen kontextsensitiven Recognizer und ist offen.
 
 Zur Reichweite der Absicherung, damit auch das nicht zu gut klingt: Der Benchmark-Runner liegt im Repo und ist jederzeit wiederholbar, und `test/test_erkennungsziel_gate.py` sichert die Schwellen gegen stilles Absenken. Was **nicht** läuft: Ein gemessener Lauf gegen diese Schwellen (`--check-targets`) ist in der CI nicht verdrahtet. Die Schwelle kann also nicht heimlich gesenkt werden — dass sie eingehalten wird, erzwingt heute noch niemand automatisch.
 
-Zum Nachschlagen: Zielpapier mit allen Schwellen und ihrer Herleitung in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md), die Entscheidung über die Wortliste in [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md). `test/corpus/benchmark-results.json` ist der letzte eingecheckte Messlauf und entspricht der **rechten** Spalte der Tabelle oben (82 Fälle, mit Wortliste) — nicht dem ausgelieferten Zustand.
+Zum Nachschlagen: Zielpapier mit allen Schwellen und ihrer Herleitung in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md), die Entscheidung über die Wortliste in [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md). `test/corpus/benchmark-results.json` ist der letzte eingecheckte Messlauf und entspricht der **rechten** Spalte der Tabelle oben (82 Fälle, mit Wortliste), also der ausgelieferten Konfiguration.
 
 Was das für den Betrieb heißt: Der teure Fehler ist übersehene PII, und dort steht die Datenschleuse gut da — nur eben auf einem Korpus gemessen, der leichter ist als die Realität. Der häufige Fehler sind Fehlalarme; die kosten Nutzbarkeit, nicht Schutz. Beides steht hier, weil ein Sicherheitswerkzeug, das nur seine Bestwerte zeigt, sich nicht einschätzen lässt.
 
