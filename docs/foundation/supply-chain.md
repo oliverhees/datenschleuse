@@ -158,7 +158,7 @@ annotiertes Tag-Objekt ist **nicht** unsicherer im Sinne der Integrität. Git is
 content-addressed; Commits, Trees, Blobs *und* Tag-Objekte sind unveränderlich.
 `git tag -f` erzeugt ein **neues** Objekt mit **neuer** ID — verschiebbar ist der
 Ref-*Name* `refs/tags/v0.36.0`, niemals die ID `a9c7b0f0`. Der alte Pin war
-weder kaputt noch manipulierbar, und er lief grün (Run `32253275837`).
+weder kaputt noch manipulierbar, und er lief grün.
 
 Die echten Gründe sind andere:
 
@@ -332,10 +332,11 @@ Begründung im Einzelnen:
 ### Der Presidio-Altbestand — Entscheidungsvorlage für Oliver
 
 Der erste echte Lauf des Image-Scans hat die ursprünglich geplante Schwelle
-„CRITICAL mit Fix blockiert" sofort widerlegt. Die Messdaten (Run `32253275837`, Zahlen pro Image, Summen, die Abruf-Anleitung
-und die Einordnung als Upstream-Rechnung) stehen vollständig und ausschließlich
-in **ADR-0003** (`docs/adr/0003-image-cve-gate.md`). Hier steht bewusst keine
-eigene Zahl; das gebaute Image wird in der CI nicht gescannt.
+„CRITICAL mit Fix blockiert" sofort widerlegt. Die Messdaten (Run-Angaben, Zahlen pro Image,
+Summen, die Abruf-Anleitung und die Einordnung als Upstream-Rechnung) stehen
+vollständig und ausschließlich in **ADR-0003**
+(`docs/adr/0003-image-cve-gate.md`). Hier steht bewusst keine eigene Zahl; das
+gebaute Image wird in der CI nicht gescannt.
 
 #### Die These „wir können sie nicht senken" trägt nicht — gemessen
 
@@ -406,9 +407,10 @@ Postgres noch offen) stehen ausschließlich in
 nicht gescannt (siehe oben); hier wird bewusst keine eigene Zahl behauptet.
 
 Der Kommentar in `presidio/Dockerfile.analyzer` führt dieselben CVE-IDs je Paket
-auf wie die Tabelle oben (3 CVE-IDs in 3 Paketen) und hält fest, das „gebaute
-Image wird derzeit NICHT in der CI gescannt". Ebenfalls offen: Die Messung `5
-behebbare CRITICALs` ist eine Trivy-Zählung pro Befund und zählt anders als die
+auf wie der CVE-ID-Codeblock weiter unten (3 CVE-IDs in 3 Paketen) und hält
+fest, das „gebaute
+Image wird derzeit NICHT in der CI gescannt". Ebenfalls offen: Die
+Trivy-Messung (Zahl in ADR-0003) zählt pro Befund und damit anders als die
 CVE-IDs. Warum, lässt sich aus den Dateien nicht belegen (keine Befundliste pro
 Paket abgelegt) — **offen**, zu klären mit dem Folge-Item `CI-Scan des gebauten
 Images`.
@@ -421,7 +423,7 @@ Item. Die vollständige Vorlage steht in
 
 **Wichtig für die Form der Vorlage:** Oliver hat bereits entschieden, dass
 **nichts freigegeben wird, was behebbar ist**. Die Vorlage bittet deshalb nicht
-um Genehmigung der 32 behebbaren CRITICALs — sie sind Arbeit, keine Ausnahme.
+um Genehmigung der behebbaren CRITICALs (Zahl: ADR-0003) — sie sind Arbeit, keine Ausnahme.
 Zur Entscheidung steht nur, was **nach** allen Maßnahmen übrig bleibt: die Funde
 ohne Upstream-Fix. Die behebbaren werden behoben (Redactor-Profil und
 Analyzer-`apt`-Schicht in DATENSCHLE-83; Anonymizer als Folge-Item).
