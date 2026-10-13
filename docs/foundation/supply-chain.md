@@ -332,7 +332,8 @@ Begründung im Einzelnen:
 ### Der Presidio-Altbestand — Entscheidungsvorlage für Oliver
 
 Der erste echte Lauf des Image-Scans hat die ursprünglich geplante Schwelle
-„CRITICAL mit Fix blockiert" sofort widerlegt. Die Zahlen stammen aus
+„CRITICAL mit Fix blockiert" sofort widerlegt. Die Zahlen (Einordnung als Upstream-Rechnung: ADR-0003,
+`docs/adr/0003-image-cve-gate.md`) stammen aus
 Run `32253275837` (head `947bd36`, 2026-08-19) und sind einzeln aus den
 Job-Logs abgelesen, nicht geschätzt:
 
@@ -344,6 +345,9 @@ Job-Logs abgelesen, nicht geschätzt:
 | `presidio-anonymizer:2.2.362` | 9 | 5 | 68 | 151 | 228 (+18 Python) |
 | `presidio-image-redactor:0.0.58` | **42** | **21** | 705 | 3100 | **3847** (+38 Python) |
 | **Summe** | **61** | **32** | 860 | 3425 | 4346 |
+
+Einordnung dieser Zahlen (Upstream-Rechnung, gebautes Image nicht gescannt):
+ADR-0003.
 
 Nachprüfbar mit:
 
@@ -433,25 +437,14 @@ ein Merge-Konflikt mit Ansage (Gesetz 8). Umgesetzt sind dort:
   diese eine Schicht und anschließendem Zurückschalten auf UID 1001.
 - Der Image-Redactor liegt hinter dem Compose-Profil `images` und startet bei
   `docker compose up` **nicht** mehr mit; die Bildpolitik steht per Default auf
-  `block`. Damit ist das mit Abstand schlechteste Image (42 CRITICAL, 3847
-  Befunde) aus dem Standard-Stack heraus.
+  `block`. Damit ist das mit Abstand schlechteste Image (Zahlen: ADR-0003)
+  aus dem Standard-Stack heraus.
 
-**Was das für den ausgelieferten Standard-Stack bedeutet:**
-
-| | behebbare CRITICALs |
-|---|---|
-| vorher (alle fünf Images) | **32** |
-| nach DATENSCHLE-83 (Redactor optional, Analyzer upgraded) | **6** |
-| zusätzlich mit `apt`-Schicht für den Anonymizer | **1** |
-
-Die verbleibende `1` ist `postgres:16.15-alpine` (Alpine, kein `apt`; dort wäre
-der Weg ein Digest-Update, sobald Upstream nachzieht).
-
-**Einschränkung zu diesen Zahlen (Korrektur, DATENSCHLE-89):** „32 → 6" ist eine
-Rechnung auf den **Upstream-Images** der CI-Matrix (32 − 5 Analyzer − 21 Redactor
-= 6), plus lokale Einzelmessungen am Basis-Image mit `apt upgrade`-Schicht. Für
-das tatsächlich **ausgelieferte, gebaute** Analyzer-Image ist die Zahl in der CI
-nicht belegt, weil dieses Image dort nicht gescannt wird (siehe oben).
+**Was das für den Standard-Stack bedeutet:** Die Zahlen und die
+Upstream-Rechnung (Redactor optional, Analyzer aufgerüstet, Anonymizer und
+Postgres noch offen) stehen ausschließlich in
+`docs/adr/0003-image-cve-gate.md` (ADR-0003). Das gebaute Image wird in der CI
+nicht gescannt (siehe oben); hier wird bewusst keine eigene Zahl behauptet.
 
 Der Kommentar in `presidio/Dockerfile.analyzer` führt dieselben CVE-IDs je Paket
 auf wie die Tabelle oben (3 CVE-IDs in 3 Paketen) und hält fest, das „gebaute
@@ -487,9 +480,10 @@ Kurzfassung der Optionen:
    benannte Build-Zeit-Abhängigkeit.
 
 Sobald das entschieden ist, wird `image-scan.yml` Schritt 2 wieder auf
-`exit-code: "1"` gestellt. Der Schalter steht dort kommentiert. Nach Option 4
-wäre diese Schwelle für den Standard-Stack erfüllbar — genau das war der
-Einwand, an dem sie ursprünglich scheiterte.
+`exit-code: "1"` gestellt. Der Schalter steht dort kommentiert. Die Schwelle
+ist für den Standard-Stack erst erfüllbar, wenn zusätzlich die `apt`-Schicht für
+den Anonymizer und das Postgres-Update umgesetzt sind; DATENSCHLE-83 allein
+genügt nicht (ADR-0003).
 
 ### Wo die Scans hängen — und warum getrennt
 
@@ -526,7 +520,7 @@ Das ist ein Behelf, kein Lockfile. Siehe Abschnitt 4.
 Bis zum Security-Audit von DATENSCHLE-59 schrieben beide Workflows **nur eine
 Tabelle ins Job-Log**. Kein SARIF, kein Artefakt, keine Benachrichtigung. Der
 wöchentliche Lauf endete mit fünf grünen Haken, während darunter tausende Funde
-lagen. Ein grüner Haken über 3847 Befunden ist kein neutrales Signal, sondern ein
+lagen. Ein grüner Haken über tausenden Befunden ist kein neutrales Signal, sondern ein
 **aktiv irreführendes**. Dazu löscht GitHub Job-Logs nach 90 Tagen: Wer in einem
 halben Jahr belegen will, was wir heute ausgeliefert haben, findet nichts mehr —
 womit der Zweck aus der Einleitung („nachträglich feststellbar, welche Software

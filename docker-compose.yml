@@ -61,7 +61,7 @@ services:
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
       # Bild-Parts: Standard ist seit DATENSCHLE-83 'block' -- der
       # Image-Redactor ist nicht mehr Teil des Standard-Stacks (ADR-0003:
-      # er trug 42 der 61 kritischen CVE-Befunde). Wer Bilder verarbeiten
+      # er trug den Grossteil der CVE-Befunde). Wer Bilder verarbeiten
       # will, startet ihn bewusst mit `--profile images` und setzt
       # DATENSCHLEUSE_IMAGE_POLICY=redact.
       #
@@ -181,9 +181,9 @@ services:
   #
   # NICHT IM STANDARDSTART (DATENSCHLE-83, ADR-0003): Der Dienst liegt hinter
   # dem Compose-Profil `images` und kommt bei `docker compose up` NICHT hoch.
-  # Grund ist gemessen, nicht geschaetzt -- er allein trug 42 der 61
-  # kritischen und 3847 der 4346 Gesamtbefunde der gescannten Upstream-Images
-  # (CI-Matrix, CI-Run 32253275837). Ein Proxy fuer LLM-TEXTanfragen soll dieses
+  # Grund ist gemessen, nicht geschaetzt -- er allein trug den Grossteil
+  # der CVE-Befunde der gescannten Upstream-Images (CI-Matrix; Zahlen und
+  # Einordnung: ADR-0003, docs/adr/0003-image-cve-gate.md). Ein Proxy fuer LLM-TEXTanfragen soll dieses
   # CVE-Profil nicht ungefragt mitliefern.
   #
   # EINSCHALTEN (bewusste Entscheidung, uebernimmt das CVE-Profil):

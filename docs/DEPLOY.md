@@ -87,8 +87,11 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
 
 ## Bilder: Policy und Compose-Profil `images`
 
-- **Standard ist `block`:** Bild-Anhaenge werden abgelehnt (fail-closed). Das gilt
-  fuer `docker compose up` und fuer Coolify.
+- **Compose-/Coolify-Standard ist `block`:** Bild-Anhaenge werden abgelehnt
+  (fail-closed). Das gilt fuer `docker compose up` (Compose setzt die Variable
+  explizit) und fuer Coolify. Der **Code-Default** des Guardrails (ohne gesetzte
+  Policy) haengt dagegen von `PRESIDIO_IMAGE_REDACTOR_API_BASE` ab: ist die URL
+  gesetzt, waehlt er `redact`, sonst `block`.
 - **`redact` (Bilder schwaerzen)** braucht den optionalen Dienst
   `presidio-image-redactor`. Er liegt hinter dem Compose-Profil `images` und
   startet nur so:

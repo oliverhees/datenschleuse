@@ -121,7 +121,7 @@ Dein Tool  ──►  Datenschleuse (LiteLLM)  ──►  Presidio (erkennt + ma
 **Backend:** forwardet an [eurouter.ai](https://www.eurouter.ai?ref=06ZUHPBK) (EU-gehostet, GDPR, Zero Data Retention) — Gürtel und Hosenträger: EU-Hosting *plus* PII-Stripping davor.
 **Persistenz:** Postgres (LiteLLM Admin-UI/Spend-Logs, nie Message-Content) + verschlüsseltes, TTL-begrenztes SQLite (Quasi-Identifier-Session-State).
 
-**Bilder (multimodal):** Ein Screenshot transportiert dieselben Daten wie Text, wird aber von der Textmaskierung nicht erfasst. **Standard ist `block`: Bilder werden abgelehnt** (fail-closed). Der Redactor ([presidio-image-redactor](https://microsoft.github.io/presidio/image-redactor/), OCR + schwarze Boxen) ist ein optionaler Dienst und startet nicht mit `docker compose up`. Aktivieren:
+**Bilder (multimodal):** Ein Screenshot transportiert dieselben Daten wie Text, wird aber von der Textmaskierung nicht erfasst. **Der Compose-/Coolify-Standard ist `block`: Bilder werden abgelehnt** (fail-closed; Compose setzt die Policy explizit, ohne gesetzte Policy hängt der Code-Default von der gesetzten Redactor-URL ab). Der Redactor ([presidio-image-redactor](https://microsoft.github.io/presidio/image-redactor/), OCR + schwarze Boxen) ist ein optionaler Dienst und startet nicht mit `docker compose up`. Aktivieren:
 
 ```bash
 # in der .env:

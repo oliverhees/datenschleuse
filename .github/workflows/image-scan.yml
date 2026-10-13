@@ -125,9 +125,11 @@ jobs:
       # Image-Redactor 21->0) und senkt die Gesamtbefunde um 62-76 %.
       # Umgesetzt fuer den Analyzer in DATENSCHLE-83; dort liegt auch der
       # Image-Redactor jetzt hinter dem Compose-Profil `images` und ist damit
-      # aus dem Standard-Stack heraus. Behebbare CRITICALs im ausgelieferten
-      # Stack danach: 6 statt 32. Die Schwelle ist damit ERFUELLBAR -- genau
-      # der Einwand, an dem sie hier scheiterte.
+      # aus dem Standard-Stack heraus. Zahlen und Einordnung (Upstream-
+      # Rechnung, gebautes Image wird nicht gescannt): ADR-0003. Die Schwelle
+      # ist erst erfuellbar, wenn zusaetzlich die apt-Schicht fuer den
+      # Anonymizer und das Postgres-Update umgesetzt sind; DATENSCHLE-83
+      # allein genuegt nicht.
       - name: Trivy ${{ matrix.name }} -- CRITICAL-Auszug (nur Meldung)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -147,7 +149,7 @@ jobs:
       # WARUM: Schritt 1 und 2 schreiben eine Tabelle ins Job-Log -- sonst
       # nichts. Kein Artefakt, keine Benachrichtigung. Der woechentliche Lauf
       # endet mit fuenf gruenen Haken, obwohl darunter tausende Funde liegen.
-      # Ein gruener Haken ueber 3847 Befunden ist kein neutrales, sondern ein
+      # Ein gruener Haken ueber tausenden Befunden ist kein neutrales, sondern ein
       # aktiv irrefuehrendes Signal. Und GitHub loescht Job-Logs nach 90 Tagen:
       # Wer im Januar wissen will, was wir im August ausgeliefert haben, findet
       # nichts mehr.

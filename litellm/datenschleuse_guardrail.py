@@ -832,7 +832,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Policy statt stillem Default, weil beide Enden gefaehrlich sind: ohne
         # Redactor-Container waere "durchlassen" ein stilles Leck und "blocken"
         # ein hartes Verhaltensbruch. Deshalb explizit:
-        #   redact = schwaerzen, Fehler => Block (empfohlen, braucht den Dienst)
+        #   redact = schwaerzen, Fehler => Block (braucht den Dienst)
         #   block  = Bilder grundsaetzlich ablehnen (sicher ohne Extra-Dienst)
         #   pass   = altes Verhalten, Bilder gehen UNGEPRUEFT raus (bewusste Luecke)
         self.image_redactor_url = (
@@ -843,6 +843,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
         ).rstrip("/")
         policy = (kwargs.pop("image_policy", None) or image_policy or os.getenv("DATENSCHLEUSE_IMAGE_POLICY") or "").strip().lower()
         if not policy:
+            # Code-Default (ohne gesetzte Policy): haengt von der URL ab. Der
+            # Compose-/Coolify-Standard ist dagegen `block` -- docker-compose.yml
+            # setzt DATENSCHLEUSE_IMAGE_POLICY explizit auf block.
             # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
             # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
             policy = "redact" if self.image_redactor_url else "block"

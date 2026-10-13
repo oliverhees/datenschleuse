@@ -83,6 +83,9 @@ class TestImageDocs(unittest.TestCase):
         self.assertNotIn("--profile images down", deploy)
         self.assertIn("Compose-/Coolify-Standard", deploy)
         self.assertIn("Code-Default", deploy)
+        self.assertIn("Nicht verifiziert (kein Docker-Test)", deploy)
+        self.assertIn("redact", deploy)
+        self.assertIn("standardmaessig blockiert", deploy)
 
     def test_deploy_doc_never_recommends_compose_down_for_cleanup(self):
         deploy = _read("docs/DEPLOY.md")
@@ -102,9 +105,6 @@ class TestImageDocs(unittest.TestCase):
         src = _read("litellm/datenschleuse_guardrail.py")
         self.assertNotIn("(empfohlen, braucht den Dienst)", src)
         self.assertIn("Code-Default", src)
-        self.assertIn("Nicht verifiziert (kein Docker-Test)", deploy)
-        self.assertIn("redact", deploy)
-        self.assertIn("standardmaessig blockiert", deploy)
 
     def test_eigene_muster_does_not_recommend_block_as_switch(self):
         text = " ".join(_read("docs/EIGENE-MUSTER.md").split())
