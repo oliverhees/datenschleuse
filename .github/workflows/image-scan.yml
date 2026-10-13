@@ -121,8 +121,8 @@ jobs:
       # (Gesetz 12; Status "vorgeschlagen"). Kurz: Die urspruengliche
       # Begruendung "wir koennen die Zahl nicht senken" traegt nicht. Gemessen
       # am 2026-08-20 entfernt ein `apt-get upgrade` in unserer EIGENEN Schicht
-      # ALLE behebbaren CRITICALs (Analyzer 5->0, Anonymizer 5->0,
-      # Image-Redactor 21->0) und senkt die Gesamtbefunde um 62-76 %.
+      # ALLE behebbaren CRITICALs (Messwerte pro Image: ADR-0003) und senkt
+      # die Gesamtbefunde deutlich.
       # Umgesetzt fuer den Analyzer in DATENSCHLE-83; dort liegt auch der
       # Image-Redactor jetzt hinter dem Compose-Profil `images` und ist damit
       # aus dem Standard-Stack heraus. Zahlen und Einordnung (Upstream-

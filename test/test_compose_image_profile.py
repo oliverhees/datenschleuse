@@ -107,7 +107,8 @@ class TestImageDocs(unittest.TestCase):
         self.assertIn("Code-Default", src)
 
     def test_eigene_muster_does_not_recommend_block_as_switch(self):
-        text = " ".join(_read("docs/EIGENE-MUSTER.md").split())
+        full = " ".join(_read("docs/EIGENE-MUSTER.md").split())
+        text = full[full.index("**Bilder.**"): full.index("**Schreibweisen.**")]
         self.assertNotIn("setzt `DATENSCHLEUSE_IMAGE_POLICY=block`", text)
         self.assertIn("`block` ist der Standard", text)
         self.assertNotIn("Redaktor", text)

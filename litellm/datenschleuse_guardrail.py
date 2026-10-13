@@ -1105,7 +1105,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "images, start the compose profile `images` "
                 "(`docker compose --profile images up -d`) and set "
                 "DATENSCHLEUSE_IMAGE_POLICY=redact (Docker Compose self-hosting "
-                "only). See docs/DEPLOY.md, section image policy."
+                "only). See docs/DEPLOY.md, section "
+                "'Bilder: Policy und Compose-Profil `images`'."
             )
             raise DatenschleuseBlocked(
                 "Bild-Anhaenge sind blockiert. Bitte den Betreiber kontaktieren."

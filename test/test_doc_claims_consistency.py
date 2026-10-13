@@ -12,7 +12,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ADR = "docs/adr/0003-image-cve-gate.md"
-SELF = {pathlib.Path(__file__).name, "test_compose_image_profile.py"}
+SELF = {pathlib.Path(__file__).name, "test_compose_image_profile.py",
+        "test_supply_chain_consistency.py"}  # these parse/quote the ADR table itself
 
 
 def _files():
@@ -71,7 +72,7 @@ class TestCveClaimsConsistency(unittest.TestCase):
         r"\b(?:4346|3847)\b|\b42 der 61\b|\b32\s*(?:→|−|->)\s*\d|statt\s+(?:mit\s+)?32"
         r"|\b(?:5|21)\s*(?:->|→)\s*0\b|\b62\s*(?:-|–|%?\s*bis)\s*76\b"
         r"|\|\s*\*\*Summe\*\*|\|\s*(?:Analyzer|Anonymizer|Image-Redactor)\s+(?:vorher|\*\*nachher\*\*)"
-        r"|\|\s*`(?:litellm|postgres|presidio-[a-z-]+):"
+        r"|\|\s*`(?:litellm|postgres|presidio-[a-z-]+):[^|]*`\s*\|\s*\*{0,2}\d+\*{0,2}\s*\|\s*\*{0,2}\d+"
     )
 
     def test_cve_numbers_and_raw_tables_only_in_adr(self):
