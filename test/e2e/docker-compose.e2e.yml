@@ -30,6 +30,9 @@ services:
   # Die Datenschleuse selbst: dasselbe Image wie produktiv, dieselbe
   # Guardrail-Datei (read-only aus dem Arbeitsbaum gemountet).
   ds-e2e-litellm:
+    # ANNAHME: dieses lokale Tag wurde aus litellm/Dockerfile gebaut
+    # (`docker compose build datenschleuse` im Repo-Root). Nach Dockerfile-
+    # Aenderungen (z.B. neues COPY) das Image neu bauen, sonst fehlt das Modul.
     image: datenschleuse-datenschleuse:latest
     container_name: ds-e2e-litellm
     depends_on:
@@ -40,10 +43,21 @@ services:
       - ../../litellm/qi_generalization.py:/app/qi_generalization.py:ro
       - ../../litellm/qi_state.py:/app/qi_state.py:ro
       - ../../litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
+      - ../../litellm/de_stopwords.py:/app/de_stopwords.py:ro
+      - ../../litellm/custom_rules.py:/app/custom_rules.py:ro
       - ../../presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+      # DATENSCHLE-82: Wortliste + Recognizer-Config. Dieselbe Host-Datei, die
+      # der produktive Analyzer mountet (F3). Der Analyzer dieses Stacks ist
+      # der externe Produktiv-Analyzer; ob er dieselbe Datei geladen hat, ist
+      # aus dieser Datei nicht ableitbar.
+      - ../../presidio/de-stopwords.yml:/app/config/de-stopwords.yml:ro
+      - ../../presidio/recognizers-config.yml:/app/config/recognizers-config.yml:ro
     environment:
       - PYTHONPATH=/app
       - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      - DATENSCHLEUSE_STOPWORDS_PATH=/app/config/de-stopwords.yml
+      - DATENSCHLEUSE_RECOGNIZERS_PATH=/app/config/recognizers-config.yml
+      - DATENSCHLEUSE_CUSTOM_RULES_PATH=/app/rules/custom-rules.yml
       # Frisch erzeugt in run-e2e-roundtrip.sh -- niemals aus .env gelesen.
       - DATENSCHLEUSE_MASTER_KEY=${DS_E2E_MASTER_KEY:?DS_E2E_MASTER_KEY fehlt -- test/run-e2e-roundtrip.sh benutzen}
       - E2E_UPSTREAM_KEY=${DS_E2E_UPSTREAM_KEY:-sk-e2e-local-ollama}

@@ -67,6 +67,14 @@ services:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
       - SENSITIVITY_KEYWORDS_PATH=/mnt/presidio-src/sensitivity-keywords.yml
+      # de_stopwords.py (DATENSCHLE-82): das Modul kommt per COPY ins Image, die
+      # beiden YAML-Dateien aus dem Verzeichnis-Mount /mnt/presidio-src (kein
+      # Einzeldatei-Mount, s.o.). INVARIANTE (F3): derselbe Host-Ordner
+      # ../../presidio ist unten im Dienst presidio-analyzer als /conf gemountet,
+      # Guardrail und Analyzer lesen also dieselbe recognizers-config.yml.
+      - DATENSCHLEUSE_STOPWORDS_PATH=/mnt/presidio-src/de-stopwords.yml
+      - DATENSCHLEUSE_RECOGNIZERS_PATH=/mnt/presidio-src/recognizers-config.yml
+      - DATENSCHLEUSE_CUSTOM_RULES_PATH=/app/rules/custom-rules.yml
       # Upstream-Key fuer eurouter.ai (Single-Tenant: gehoert dem Instanz-Betreiber).
       - EUROUTER_API_KEY=${EUROUTER_API_KEY:?EUROUTER_API_KEY muss gesetzt sein (dein eurouter.ai-Key)}
       # Master-Key, mit dem Clients die Datenschleuse ansprechen (LiteLLM erwartet

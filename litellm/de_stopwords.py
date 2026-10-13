@@ -143,9 +143,21 @@ def default_stopwords_path() -> str:
     """Pfad der Wortliste: ENV vor Repo-Layout.
 
     Das Repo-Layout (``litellm/`` und ``presidio/`` sind Geschwister) stimmt
-    im Image NICHT -- dort ist ``/app`` flach. docker-compose.yml mountet die
-    Datei deshalb nach ``/app/config/`` und setzt die ENV-Variable; derselbe
-    Weg wie bei ``SENSITIVITY_KEYWORDS_PATH``.
+    im Image NICHT -- dort ist ``/app`` flach, und die YAML-Dateien liegen
+    nicht im Image. Die Compose-Dateien liefern sie deshalb per Mount und
+    setzen die ENV-Variable (derselbe Weg wie bei
+    ``SENSITIVITY_KEYWORDS_PATH``):
+
+    * ``docker-compose.yml`` und ``test/e2e/docker-compose.e2e.yml``:
+      Einzeldatei-Mount nach ``/app/config/``.
+    * ``deploy/coolify/docker-compose.yaml``: Verzeichnis-Mount
+      ``/mnt/presidio-src`` (dort sind Einzeldatei-Mounts ausgeschlossen).
+
+    Das Modul selbst steht per ``COPY`` in ``litellm/Dockerfile``. Ohne ENV
+    faellt der Lader auf das Repo-Layout zurueck; im Container existiert
+    dieser Pfad nicht, der Dienst bricht dann mit ``StopwordConfigError`` ab
+    (fail-closed). ``test/test_deploy_layout.py`` simuliert das Layout aus
+    diesen Dateien; ein echter Container-Start ist damit NICHT ersetzt.
     """
     return os.getenv("DATENSCHLEUSE_STOPWORDS_PATH") or os.path.normpath(
         os.path.join(_HERE, "..", "presidio", "de-stopwords.yml")
