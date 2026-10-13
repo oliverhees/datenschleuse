@@ -72,6 +72,7 @@ Bindend festgehalten in ``docs/foundation/erkennungsziel.md`` §7 und
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import regex
@@ -219,6 +220,16 @@ def _parse_stopwords(doc: Any, path: str) -> Tuple[List[str], int]:
             f"Stoppwortliste {path}: 'regex_flags' muss eine Ganzzahl sein "
             f"(gefunden: {regex_flags!r})."
         )
+    if regex_flags != 0:
+        # Die Muster sind auf Flags 0 ausgelegt: Case-Insensitivitaet steckt
+        # gekapselt im Muster selbst ((?i:...)), die Vollspan-Anker \A/\z
+        # sind flag-unabhaengig. Jeder andere Wert aendert, was die Muster
+        # bedeuten (MULTILINE=8, IGNORECASE=2, Analyzer-Default=26).
+        raise StopwordConfigError(
+            f"Stoppwortliste {path}: 'regex_flags' muss 0 sein "
+            f"(gefunden: {regex_flags!r}). Die Muster kapseln Case-"
+            f"Insensitivitaet selbst und verankern mit \\A...\\z."
+        )
 
     entries = doc.get("entries")
     if not isinstance(entries, list) or not entries:
@@ -230,9 +241,74 @@ def _parse_stopwords(doc: Any, path: str) -> Tuple[List[str], int]:
             raise StopwordConfigError(
                 f"Stoppwortliste {path}: entries[{idx}] hat kein String-Feld 'pattern'."
             )
+        _assert_absolutely_anchored(entry["pattern"], idx, path)
         patterns.append(entry["pattern"])
 
     return patterns, regex_flags
+
+
+_SCOPED_GROUP = re.compile(r"\(\?[a-zA-Z]+:(.*)\)", re.DOTALL)
+
+
+def _has_top_level_alternation(body: str) -> bool:
+    """True, wenn ``body`` ein ``|`` ausserhalb jeder Gruppe/Zeichenklasse hat
+    oder die Klammern nicht ausgeglichen sind (dann ist die Struktur nicht
+    sicher als EIN verankerter Ausdruck lesbar)."""
+    depth = 0
+    in_class = False
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+        elif ch == "[":
+            in_class = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return True
+        elif ch == "|" and depth == 0:
+            return True
+        i += 1
+    return depth != 0 or in_class
+
+
+def _assert_absolutely_anchored(pattern: str, idx: int, path: str) -> None:
+    """Jeder Eintrag muss die Form ``\\A...\\z`` bzw. ``(?i:\\A...\\z)`` haben.
+
+    Der Analyzer ruft ``search`` auf dem gejointen Ausdruck auf. Ein Eintrag
+    wie ``(?i:meier)`` unterdrueckt dann jeden Span, der das Wort NUR ENTHAELT
+    ("Herr Meier"), und entfernt damit echte Namen ohne jede Meldung. Der
+    Lader prueft deshalb nicht nur die Struktur der Datei, sondern jedes
+    einzelne Muster -- auch fuer Dateien, die der Betreiber ueber
+    ``DATENSCHLEUSE_STOPWORDS_PATH`` einhaengt. Ein Top-Level-``|`` im Koerper
+    ist verboten: ``\\Aa|b\\z`` verankert nur je eine Seite.
+    """
+    m = _SCOPED_GROUP.fullmatch(pattern)
+    inner = m.group(1) if m else pattern
+    ok = len(inner) >= 4 and inner.startswith("\\A") and inner.endswith("\\z")
+    if ok:
+        # \\z am Ende darf kein escapter Backslash + 'z' sein: die Folge der
+        # Backslashes vor dem 'z' muss ungerade lang sein.
+        run = len(inner[:-1]) - len(inner[:-1].rstrip("\\"))
+        ok = run % 2 == 1
+    if ok:
+        ok = not _has_top_level_alternation(inner[2:-2])
+    if not ok:
+        raise StopwordConfigError(
+            f"Stoppwortliste {path}: entries[{idx}] ist nicht absolut "
+            f"verankert: `{pattern}`. Erlaubt sind nur Muster der Form "
+            f"\\A...\\z, optional gekapselt als (?i:\\A...\\z), ohne "
+            f"Top-Level-'|'. Presidio nutzt search(): ein unverankertes "
+            f"Muster unterdrueckt jeden Span, der das Wort nur enthaelt, "
+            f"und entfernt damit echte Namen."
+        )
 
 
 def _compile_joined(patterns: List[str], regex_flags: int, path: str) -> "regex.Pattern[str]":
@@ -272,6 +348,15 @@ def _deny_list_terms(path: str) -> List[Tuple[str, str]]:
     return terms
 
 
+def _case_variants(term: str) -> List[str]:
+    """Original, klein, gross, Title und capitalize (ohne Duplikate)."""
+    out: List[str] = []
+    for v in (term, term.lower(), term.upper(), term.title(), term.capitalize()):
+        if v not in out:
+            out.append(v)
+    return out
+
+
 def _assert_operator_precedence(
     matcher: "regex.Pattern[str]",
     deny_terms: List[Tuple[str, str]],
@@ -283,7 +368,15 @@ def _assert_operator_precedence(
     ``search`` und nicht ``fullmatch``, weil der Analyzer selbst ``search``
     aufruft -- die Muster verankern sich mit ``\\A...\\z`` selbst.
     """
-    kollisionen = [(name, term) for name, term in deny_terms if matcher.search(term)]
+    # Presidios deny_list matcht case-INSENSITIV. Ein case-sensitives Muster
+    # (z.B. \\Abuergermeister\\z bei flags 0) trifft den Term in seiner
+    # konfigurierten Schreibweise nicht, unterdrueckt aber den Treffer, den die
+    # deny_list fuer "buergermeister" erzeugt. Deshalb mehrere Schreibweisen.
+    kollisionen = [
+        (name, term)
+        for name, term in deny_terms
+        if any(matcher.search(v) for v in _case_variants(term))
+    ]
     if not kollisionen:
         return
     beschreibung = ", ".join(f"{term!r} ({name})" for name, term in kollisionen)
