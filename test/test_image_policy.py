@@ -18,6 +18,7 @@ import base64
 import os
 import sys
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _LITELLM_DIR = os.path.normpath(os.path.join(_HERE, "..", "litellm"))
@@ -353,66 +354,51 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
 # ===========================================================================
 class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
     """Seit DATENSCHLE-83 ist der Image-Redactor NICHT mehr Teil des
-    Standard-Stacks: er bringt allein 42 der 61 kritischen und 3847 der rund
-    4344 Gesamtbefunde mit (CI-Run 32253275837). Er liegt jetzt hinter dem
+    Standard-Stacks: er bringt allein 42 der 61 kritischen und 3847 der
+    4346 Gesamtbefunde mit (CI-Run 32253275837). Er liegt jetzt hinter dem
     Compose-Profil ``images``, und die Standard-Policy ist ``block``.
 
-    Damit veraendert sich, wer die Block-Meldung liest: vorher war ein Block
-    die Ausnahme fuer bewusst reduzierte Setups, jetzt ist er der Normalfall
-    fuer jeden, der ``docker compose up`` tippt und ein Bild schickt. Die
-    Meldung muss deshalb nicht nur sagen DASS blockiert wurde, sondern WIE der
-    Betreiber den Dienst einschaltet -- sonst steht er vor einer Sackgasse.
+    Entscheidung (Oliver, DATENSCHLE-89, Option B): Die Meldung an den
+    API-Client ist NEUTRAL -- sie sagt nur, dass Bild-Anhaenge blockiert sind
+    und der Betreiber kontaktiert werden soll. Die Aktivierungsanleitung
+    steht im Server-Log (ohne jeden Client-/Bildinhalt) mit Verweis auf
+    docs/DEPLOY.md. Betreiber finden sie dort und in der Doku."""
 
-    Bewusst NICHT getestet: der genaue Wortlaut. Verankert ist der Befehl, den
-    der Betreiber abtippen koennen muss."""
+    FORBIDDEN_IN_CLIENT_MESSAGE = (
+        "docker", "compose", "profile", "images", "datenschleuse_image_policy",
+        "redact", "pass", "datenschle-", "cve", "ticket",
+    )
 
-    ACTIVATION_HINT = "docker compose --profile images up"
-
-    async def test_block_message_names_the_activation_command(self):
-        """Die Meldung muss den konkreten Befehl enthalten, mit dem der
-        Image-Redactor nachgestartet wird."""
+    async def _block(self, data):
         guard = dg.DatenschleuseGuardrail(image_policy="block")
-        data = {"messages": [image_message()]}
         with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
             await guard.async_pre_call_hook(
                 user_api_key_dict=None, cache=None, data=data, call_type="completion"
             )
-        message = str(ctx.exception)
-        self.assertIn(
-            self.ACTIVATION_HINT, message,
-            "Block-Meldung muss den Aktivierungsbefehl nennen, sonst ist der "
-            "Betreiber in einer Sackgasse",
-        )
+        return str(ctx.exception)
 
-    async def test_block_message_names_the_policy_switch(self):
-        """Neben dem Profil muss auch die Stellschraube auftauchen, sonst
-        sucht der Betreiber den Schalter im Compose-File statt in der .env."""
+    async def test_client_message_is_neutral(self):
+        message = await self._block({"messages": [image_message()]})
+        low = message.lower()
+        self.assertIn("bild", low)
+        self.assertIn("betreiber", low)
+        for term in self.FORBIDDEN_IN_CLIENT_MESSAGE:
+            self.assertNotIn(term, low, f"Client-Meldung darf {term!r} nicht nennen")
+
+    async def test_server_log_has_activation_hint_and_doc_reference(self):
         guard = dg.DatenschleuseGuardrail(image_policy="block")
         data = {"messages": [image_message()]}
-        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
-            await guard.async_pre_call_hook(
-                user_api_key_dict=None, cache=None, data=data, call_type="completion"
-            )
-        message = str(ctx.exception)
-        self.assertIn("DATENSCHLEUSE_IMAGE_POLICY", message)
+        with self.assertLogs("datenschleuse", level="WARNING") as logs:
+            with self.assertRaises(dg.DatenschleuseBlocked):
+                await guard.async_pre_call_hook(
+                    user_api_key_dict=None, cache=None, data=data, call_type="completion"
+                )
+        joined = "\n".join(logs.output)
+        self.assertIn("docker compose --profile images up", joined)
+        self.assertIn("DATENSCHLEUSE_IMAGE_POLICY=redact", joined)
+        self.assertIn("docs/DEPLOY.md", joined)
 
-    async def test_block_message_has_no_internal_or_misleading_content(self):
-        """Die Meldung geht an den Client: keine Ticket-ID, keine CVE-Aussage,
-        kein Hinweis auf die Policy `pass` (die Anleitung gehoert in die Doku)."""
-        guard = dg.DatenschleuseGuardrail(image_policy="block")
-        data = {"messages": [image_message()]}
-        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
-            await guard.async_pre_call_hook(
-                user_api_key_dict=None, cache=None, data=data, call_type="completion"
-            )
-        message = str(ctx.exception)
-        self.assertNotIn("DATENSCHLE-", message)
-        self.assertNotIn("CVE", message)
-        self.assertNotIn("pass", message.lower().replace("passwort", ""))
-        self.assertIn("DATENSCHLEUSE_IMAGE_POLICY=redact", message)
-
-    async def test_block_logs_doc_reference_without_content(self):
-        """Server-seitig wird ein Verweis auf die Doku geloggt -- ohne Bildinhalt."""
+    async def test_log_leaks_no_image_content(self):
         guard = dg.DatenschleuseGuardrail(image_policy="block")
         secret = b"streng-geheimes-bild-mit-pii"
         data = {"messages": [image_message(url=data_url(raw=secret))]}
@@ -422,21 +408,14 @@ class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
                     user_api_key_dict=None, cache=None, data=data, call_type="completion"
                 )
         joined = "\n".join(logs.output)
-        self.assertIn("docs/DEPLOY.md", joined)
         self.assertNotIn("streng-geheimes", joined)
         self.assertNotIn(base64.b64encode(secret).decode("ascii"), joined)
 
     async def test_block_message_leaks_no_image_content(self):
         """Fail-closed heisst auch: die Meldung selbst darf nie Bilddaten
         transportieren. Sie geht an den Client zurueck und potenziell ins Log."""
-        guard = dg.DatenschleuseGuardrail(image_policy="block")
         secret = b"streng-geheimes-bild-mit-pii"
-        data = {"messages": [image_message(url=data_url(raw=secret))]}
-        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
-            await guard.async_pre_call_hook(
-                user_api_key_dict=None, cache=None, data=data, call_type="completion"
-            )
-        message = str(ctx.exception)
+        message = await self._block({"messages": [image_message(url=data_url(raw=secret))]})
         self.assertNotIn("streng-geheimes", message)
         self.assertNotIn(
             base64.b64encode(secret).decode("ascii"), message,
@@ -463,15 +442,32 @@ class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
     async def test_block_is_the_default_without_redactor_service(self):
         """Regressionsanker fuer die Compose-Aenderung: ohne konfigurierten
         Redactor-Dienst -- also im neuen Standard-Stack -- ist 'block' die
-        Policy, und sie fuehrt zu einer handlungsleitenden Meldung."""
-        guard = dg.DatenschleuseGuardrail()
+        Policy. Umgebung isoliert, sonst haengt der Test an der CI-/Dev-Env."""
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PRESIDIO_IMAGE_REDACTOR_API_BASE", None)
+            os.environ.pop("DATENSCHLEUSE_IMAGE_POLICY", None)
+            guard = dg.DatenschleuseGuardrail()
         self.assertEqual(guard.image_policy, "block")
-        data = {"messages": [image_message()]}
-        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+        with self.assertRaises(dg.DatenschleuseBlocked):
             await guard.async_pre_call_hook(
-                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+                user_api_key_dict=None, cache=None,
+                data={"messages": [image_message()]}, call_type="completion",
             )
-        self.assertIn(self.ACTIVATION_HINT, str(ctx.exception))
+
+    async def test_url_set_with_explicit_block_stays_block(self):
+        """Die reale Compose-Kombination: URL gesetzt, Policy `block`."""
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PRESIDIO_IMAGE_REDACTOR_API_BASE", None)
+            os.environ["DATENSCHLEUSE_IMAGE_POLICY"] = "block"
+            guard = dg.DatenschleuseGuardrail(
+                image_redactor_url="http://presidio-image-redactor:3000"
+            )
+        self.assertEqual(guard.image_policy, "block")
+        with self.assertRaises(dg.DatenschleuseBlocked):
+            await guard.async_pre_call_hook(
+                user_api_key_dict=None, cache=None,
+                data={"messages": [image_message()]}, call_type="completion",
+            )
 
 
 if __name__ == "__main__":

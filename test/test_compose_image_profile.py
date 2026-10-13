@@ -73,8 +73,17 @@ class TestImageDocs(unittest.TestCase):
 class TestSupplyChainHonesty(unittest.TestCase):
     def test_dockerfile_does_not_claim_built_image_is_scanned(self):
         text = _read("presidio/Dockerfile.analyzer")
-        self.assertNotIn("Ergebnis wird in CI gescannt", text)
-        self.assertIn("NICHT", text)
+        flat = " ".join(
+            l.lstrip().lstrip("#").strip()
+            for l in text.splitlines()
+            if l.lstrip().startswith("#")
+        )
+        flat = " ".join(flat.split())
+        self.assertIn("gebaute Image wird derzeit NICHT in der CI gescannt", flat)
+        self.assertIn("bis dahin ist Drift nicht gemessen", flat)
+        self.assertNotIn("Ergebnis wird in CI gescannt", flat)
+        self.assertNotIn("Ergebnis wird in der CI gescannt", flat)
+        self.assertNotIn("Drift wird gemessen", flat)
 
     def test_supply_chain_states_built_image_not_scanned(self):
         text = _read("docs/foundation/supply-chain.md")
