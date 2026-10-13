@@ -354,8 +354,9 @@ class TestImagePolicyInPreCall(unittest.IsolatedAsyncioTestCase):
 # ===========================================================================
 class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
     """Seit DATENSCHLE-83 ist der Image-Redactor NICHT mehr Teil des
-    Standard-Stacks: er bringt allein 42 der 61 kritischen und 3847 der
-    4346 Gesamtbefunde mit (CI-Run 32253275837). Er liegt jetzt hinter dem
+    Standardstarts: er bringt allein 42 der 61 kritischen und 3847 der
+    4346 Gesamtbefunde der gescannten Upstream-Images (CI-Matrix) mit
+    (CI-Run 32253275837). Er liegt jetzt hinter dem
     Compose-Profil ``images``, und die Standard-Policy ist ``block``.
 
     Entscheidung (Oliver, DATENSCHLE-89, Option B): Die Meldung an den
