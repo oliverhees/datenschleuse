@@ -50,9 +50,12 @@ class TestCveClaimsConsistency(unittest.TestCase):
         for f in _files():
             flat = _flat(f)
             for m in pat.finditer(flat):
-                ctx = flat[max(0, m.start() - 400): m.end() + 400]
-                self.assertTrue("Anonymizer" in ctx and "Postgres" in ctx,
-                                f"{_rel(f)}: 'erfuellbar' without Anonymizer/Postgres: ...{ctx[300:520]}...")
+                # The qualifier must stand in the SAME sentence as the claim.
+                start = max(flat.rfind(". ", 0, m.start()), flat.rfind(": ", 0, m.start())) + 1
+                ends = [e for e in (flat.find(". ", m.end()), len(flat)) if e != -1]
+                sentence = flat[start: min(ends)]
+                self.assertTrue("Anonymizer" in sentence and "Postgres" in sentence,
+                                f"{_rel(f)}: 'erfuellbar' without Anonymizer/Postgres in same sentence: {sentence!r}")
 
     def test_no_shipped_stack_claim_next_to_finding_numbers(self):
         pat = re.compile(r"ausgelieferten\s+(?:Standard-)?Stacks?\b")
@@ -64,16 +67,27 @@ class TestCveClaimsConsistency(unittest.TestCase):
                 self.assertIsNone(nums.search(ctx),
                                   f"{_rel(f)}: finding numbers scoped to the shipped stack")
 
-    def test_cve_numbers_outside_adr_only_with_adr_reference(self):
-        pat = re.compile(r"\b(?:4346|3847)\b|\b42 der 61\b|\b32\s*(?:→|−|->)\s*\d|statt\s+(?:mit\s+)?32")
+    RAW = re.compile(
+        r"\b(?:4346|3847)\b|\b42 der 61\b|\b32\s*(?:→|−|->)\s*\d|statt\s+(?:mit\s+)?32"
+        r"|\b(?:5|21)\s*(?:->|→)\s*0\b|\b62\s*(?:-|–|%?\s*bis)\s*76\b"
+        r"|\|\s*\*\*Summe\*\*|\|\s*(?:Analyzer|Anonymizer|Image-Redactor)\s+(?:vorher|\*\*nachher\*\*)"
+        r"|\|\s*`(?:litellm|postgres|presidio-[a-z-]+):"
+    )
+
+    def test_cve_numbers_and_raw_tables_only_in_adr(self):
+        # STRICT (Oliver): raw measurement numbers/tables live only in ADR-0003.
         for f in _files():
             if _rel(f) == ADR:
                 continue
             flat = _flat(f)
-            for m in pat.finditer(flat):
-                ctx = flat[max(0, m.start() - 600): m.end() + 600]
-                self.assertTrue("ADR-0003" in ctx or "0003-image-cve-gate" in ctx,
-                                f"{_rel(f)}: number '{m.group(0)}' without reference to ADR-0003")
+            raw = "\n".join(l.strip() for l in f.read_text(encoding="utf-8").splitlines())
+            for text in (flat, raw):
+                m = self.RAW.search(text)
+                self.assertIsNone(m, f"{_rel(f)}: raw CVE number/table outside ADR-0003: {m and m.group(0)!r}")
+
+    def test_supply_chain_and_image_scan_refer_to_adr(self):
+        for rel in ("docs/foundation/supply-chain.md", ".github/workflows/image-scan.yml"):
+            self.assertIn("ADR-0003", _flat(ROOT / rel), rel)
 
     def test_adr_states_numbers_are_upstream_calculation(self):
         flat = _flat(ROOT / ADR)

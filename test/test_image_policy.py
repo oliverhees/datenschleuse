@@ -401,6 +401,11 @@ class TestBlockMessageGuidesOperator(unittest.IsolatedAsyncioTestCase):
         self.assertIn("docker compose --profile images up", joined)
         self.assertIn("DATENSCHLEUSE_IMAGE_POLICY=redact", joined)
         self.assertIn("docs/DEPLOY.md", joined)
+        heading = "Bilder: Policy und Compose-Profil `images`"
+        self.assertIn(heading, joined)
+        deploy = open(os.path.join(os.path.dirname(__file__), "..", "docs", "DEPLOY.md"),
+                      encoding="utf-8").read()
+        self.assertIn("## " + heading, deploy)
 
     async def test_log_leaks_no_image_content(self):
         guard = dg.DatenschleuseGuardrail(image_policy="block")

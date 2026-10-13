@@ -110,6 +110,9 @@ class TestImageDocs(unittest.TestCase):
         text = " ".join(_read("docs/EIGENE-MUSTER.md").split())
         self.assertNotIn("setzt `DATENSCHLEUSE_IMAGE_POLICY=block`", text)
         self.assertIn("`block` ist der Standard", text)
+        self.assertNotIn("Redaktor", text)
+        self.assertNotIn("noetig", text)
+        self.assertIn("nötig", text)
 
     def test_env_example_documents_policy(self):
         self.assertIn("DATENSCHLEUSE_IMAGE_POLICY", _read(".env.example"))

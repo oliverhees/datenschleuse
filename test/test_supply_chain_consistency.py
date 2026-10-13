@@ -6,7 +6,8 @@ Three things must never drift apart again:
      presidio/Dockerfile.analyzer,
   2. the CVE-ID set listed in the Dockerfile comment equals the one in ADR-0003
      (and supply-chain.md),
-  3. the total finding count is the same everywhere (and equals the table sum).
+  3. the total finding count equals the ADR table sum; the raw table exists
+     only in ADR-0003.
 """
 import pathlib
 import re
@@ -88,12 +89,15 @@ class TestCveIdsConsistent(unittest.TestCase):
 
 class TestTotalFindingCountConsistent(unittest.TestCase):
     def test_tables_sum_matches_stated_total(self):
-        totals = set()
-        for doc in ("docs/adr/0003-image-cve-gate.md", "docs/foundation/supply-chain.md"):
-            stated, computed = _table_total(doc)
-            self.assertEqual(stated, computed, doc)
-            totals.add(stated)
-        self.assertEqual(len(totals), 1)
+        # The raw table lives only in ADR-0003 (strict, DATENSCHLE-89).
+        stated, computed = _table_total("docs/adr/0003-image-cve-gate.md")
+        self.assertTrue(stated)
+        self.assertEqual(stated, computed)
+
+    def test_supply_chain_has_no_raw_table(self):
+        stated, computed = _table_total("docs/foundation/supply-chain.md")
+        self.assertIsNone(stated)
+        self.assertEqual(computed, 0)
 
     def test_compose_and_test_docstring_refer_to_adr_instead_of_numbers(self):
         # Structure principle (DATENSCHLE-89): totals live only in ADR-0003.
