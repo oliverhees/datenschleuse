@@ -119,6 +119,14 @@ class TestSupplyChainHonesty(unittest.TestCase):
         self.assertIn("4346 Gesamtbefunde der gescannten Upstream-Images", text)
         self.assertNotIn("ausgelieferten Stacks", text)
 
+    def test_test_docstrings_do_not_overclaim_totals_scope(self):
+        pat = re.compile(r"(ausgelieferten|Standard-)\s*Stacks?\b.{0,200}?Gesamtbefund", re.S)
+        for f in sorted((ROOT / "test").glob("*.py")):
+            if f.name == pathlib.Path(__file__).name:
+                continue
+            flat = " ".join(f.read_text(encoding="utf-8").split())
+            self.assertIsNone(pat.search(flat), f"{f.name}: totals scoped to the shipped stack")
+
     def test_supply_chain_states_built_image_not_scanned(self):
         text = _read("docs/foundation/supply-chain.md")
         self.assertIn("gebaute Image wird derzeit nicht gescannt", text)
