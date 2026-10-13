@@ -62,7 +62,7 @@ class TestImageDocs(unittest.TestCase):
         self.assertIn("--profile images", deploy)
         self.assertIn("DATENSCHLEUSE_IMAGE_POLICY", deploy)
         self.assertIn("docker compose --profile images down", deploy)
-        self.assertIn("nicht verifiziert", deploy)
+        self.assertIn("Nicht verifiziert (kein Docker-Test)", deploy)
         self.assertIn("redact", deploy)
         self.assertIn("standardmaessig blockiert", deploy)
 

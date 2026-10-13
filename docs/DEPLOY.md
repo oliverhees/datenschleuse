@@ -85,6 +85,36 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
 
 ---
 
+## Bilder: Policy und Compose-Profil `images`
+
+- **Standard ist `block`:** Bild-Anhaenge werden abgelehnt (fail-closed). Das gilt
+  fuer `docker compose up` und fuer Coolify.
+- **`redact` (Bilder schwaerzen)** braucht den optionalen Dienst
+  `presidio-image-redactor`. Er liegt hinter dem Compose-Profil `images` und
+  startet nur so:
+
+  ```bash
+  # .env: DATENSCHLEUSE_IMAGE_POLICY=redact
+  docker compose --profile images up -d
+  ```
+
+- **`pass`** laesst Bilder ungeprueft durch — eine bewusste Datenschutzluecke,
+  nur setzen, wenn du das willst.
+- **Coolify:** Bilder sind dort standardmaessig blockiert. `redact` ist auf
+  Coolify nicht vorgesehen: `deploy/coolify/docker-compose.yaml` enthaelt weder
+  den Redactor-Dienst noch die Variable `DATENSCHLEUSE_IMAGE_POLICY`
+  (deshalb steht sie auch nicht in `coolify-template.json`).
+- **Upgrade fuer Bestandsinstallationen:** Wer den Stack vor dieser Aenderung
+  gestartet hat, hat evtl. noch einen laufenden alten Redactor-Container
+  (`datenschleuse-image-redactor`). Er wird durch ein neues `docker compose up`
+  nicht entfernt. Abraeumen mit
+  `docker compose --profile images down` bzw.
+  `docker rm -f datenschleuse-image-redactor`.
+  *Nicht verifiziert (kein Docker-Test)* — der Containername stammt aus
+  `docker-compose.yml`, die Befehle wurden nicht ausgefuehrt.
+
+---
+
 ## Ehrliche Hinweise
 
 - **Live gegen eine echte Coolify-Instanz getestet und verifiziert** (2026-07-23).

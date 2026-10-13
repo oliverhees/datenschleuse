@@ -415,8 +415,11 @@ einer gewissen Spannung zum Digest-Pinning aus Abschnitt 1 — wir nageln den
 
 Aufgelöst wird die Spannung dadurch, wo Reproduzierbarkeit für Betreiber
 tatsächlich hängt: am Digest des **Ergebnis**-Images, nicht am Rezept. Der Input
-ist über `FROM …@sha256:` festgenagelt, das Ergebnis wird in der CI gescannt.
-Drift wird damit gemessen statt geglaubt. Echte Bit-Reproduzierbarkeit bräuchte
+ist über `FROM …@sha256:` festgenagelt. **Das gebaute Image wird derzeit nicht gescannt:**
+`image-scan.yml` scannt nur die Upstream-Images (Matrix: `ref:` zeigt auf
+`mcr.microsoft.com/presidio-analyzer:…`, nicht auf unseren Build). Drift ist damit
+noch *nicht* gemessen; ein CI-Scan des gebauten Images ist ein offenes Folge-Item.
+Echte Bit-Reproduzierbarkeit bräuchte
 `snapshot.debian.org` als Paketquelle — eigene Infrastruktur-Entscheidung,
 eigenes Work Item.
 
@@ -443,6 +446,18 @@ ein Merge-Konflikt mit Ansage (Gesetz 8). Umgesetzt sind dort:
 
 Die verbleibende `1` ist `postgres:16.15-alpine` (Alpine, kein `apt`; dort wäre
 der Weg ein Digest-Update, sobald Upstream nachzieht).
+
+**Einschränkung zu diesen Zahlen (Korrektur, DATENSCHLE-89):** „32 → 6" ist eine
+Rechnung auf den **Upstream-Images** der CI-Matrix (32 − 5 Analyzer − 21 Redactor
+= 6), plus lokale Einzelmessungen am Basis-Image mit `apt upgrade`-Schicht. Für
+das tatsächlich **ausgelieferte, gebaute** Analyzer-Image ist die Zahl in der CI
+nicht belegt, weil dieses Image dort nicht gescannt wird (siehe oben). Ebenfalls
+offen: Der Kommentar in `presidio/Dockerfile.analyzer` nennt „2 CVEs in 3
+Paketen", die Tabelle oben zählt 3 CVE-IDs in 3 Paketen, die Messung „5 behebbare
+CRITICALs" ist eine Trivy-Zählung pro Befund. Dass und warum diese Zahlen
+unterschiedlich zählen, lässt sich aus den Dateien nicht belegen (keine
+Befundliste pro Paket abgelegt) — **offen**, zu klären mit dem Folge-Item
+„CI-Scan des gebauten Images".
 
 #### Zu entscheiden hat das Oliver, nicht ein Agent
 
