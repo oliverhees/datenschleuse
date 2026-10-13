@@ -429,6 +429,13 @@ Der Guardrail-Lauf ist mit dem Benchmark-Lauf mit Liste bis auf die
 Zeitstempel-Felder deckungsgleich — die Verbesserung kommt vollständig im
 laufenden Dienst an, und sie kostet keinen Recall.
 
+Reichweite dieser Messung: „Guardrail-Pfad" meint den Python-Codepfad des
+Guardrails gegen einen laufenden Analyzer (lokal ohne Docker gestartet, mit
+der Repo-Konfiguration aus `presidio/*.yml`). Dass die Compose-Dateien dem
+Dienst Modul, Wortliste und Recognizer-Config tatsächlich liefern, belegt die
+Layout-Simulation in `test/test_deploy_layout.py` aus den Dateien selbst. Ein
+echter Image-Build und Container-Start wurde **nicht** ausgeführt.
+
 Abgesichert durch
 `test/test_de_stopwords.py::WirkungImAusgelieferbenPfad`, das beide Seiten im
 selben Lauf misst und vergleicht, statt eine Zahl fest zu verdrahten. Bei
@@ -535,6 +542,34 @@ pflegen ihre `recognizers-config.yml` selbst. Deshalb gilt, beides umgesetzt:
    „nicht prüfbar" heißt nicht „dann eben nicht prüfen": auch das ist ein
    Startfehler.
 3. Der zugehörige Test ist Teil der Änderung, nicht ein Nachtrag.
+
+**Invariante: Guardrail und Analyzer lesen DIESELBE `recognizers-config.yml`.**
+Die Vorrangsprüfung liest die Datei im **Guardrail-Container**; der Analyzer
+lädt seine eigene. Zeigten beide auf verschiedene Dateien, prüfte die
+Kollision eine Datei, die der Analyzer nie liest, und der Vorrang wäre nur
+scheinbar durchgesetzt. Deshalb mounten beide Container dieselbe Host-Datei
+(`presidio/recognizers-config.yml`):
+
+- `docker-compose.yml`: Einzeldatei-Mount im Dienst `datenschleuse`
+  (`/app/config/recognizers-config.yml`, ENV `DATENSCHLEUSE_RECOGNIZERS_PATH`)
+  und im Dienst `presidio-analyzer` (`/conf/recognizers-config.yml`).
+- `deploy/coolify/docker-compose.yaml`: derselbe Host-Ordner `../../presidio`
+  ist im Guardrail als `/mnt/presidio-src` und im Analyzer als `/conf`
+  gemountet (dort gelten ausschließlich Verzeichnis-Mounts).
+- `test/e2e/docker-compose.e2e.yml`: der Guardrail liest die Repo-Datei; der
+  Analyzer ist dort der externe Produktiv-Analyzer, seine Datei ist aus der
+  Compose-Datei nicht ableitbar.
+
+Erzwungen von `test/test_deploy_layout.py::TestRecognizersSameHostSource`
+(Gleichheit der Host-Quellen, soweit aus den Dateien ableitbar). Ein
+Laufzeit-Selbsttest, der den Analyzer selbst nach seiner Konfiguration fragt,
+existiert nicht und ist hier nicht Teil der Änderung.
+
+**Zusätzliche Ladeprüfungen (Audit-Härtung).** `de_stopwords.load()` verlangt
+`regex_flags == 0`, prüft **jeden** Eintrag auf absolute Verankerung
+(`\A...\z`, optional `(?i:...)`-gekapselt, kein Top-Level-`|`) und testet die
+`deny_list`-Terme der Vorrangsprüfung in mehreren Schreibweisen (original,
+klein, groß, Title), weil Presidios `deny_list` case-insensitiv matcht.
 
 `BetreiberVorrangZurLaufzeit` hängt an **keinem** Schalter mehr. Vorher schaltete
 sich die Klasse über einen Substring-Test auf den Quelltext des Guardrails
