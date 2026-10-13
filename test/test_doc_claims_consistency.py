@@ -1,5 +1,11 @@
 """Repo-wide guard against drifting CVE claims (DATENSCHLE-83 / -89).
 
+LIMIT OF THE SWEEP (known, documented): it is a heuristic over digit counts
+next to severity words, "N of M" phrases, percent ranges / number arrows near
+finding words, and long digit runs (CI run/job IDs). Number WORDS ("zweiunddreissig"),
+abbreviations such as "crit", and phrasings outside those patterns are NOT
+detected. ISA.md (archive) is excluded on purpose.
+
 Structure principle: the CVE numbers and the "6 instead of 32" calculation
 live ONLY in docs/adr/0003-image-cve-gate.md, explicitly as an upstream
 calculation (the built image is not scanned). Everywhere else the repo
@@ -21,7 +27,9 @@ def _files():
     for pattern in ("docs/**/*.md", ".github/**/*.yml", ".github/**/*.yaml",
                     "presidio/*", "test/*.py"):
         out.extend(ROOT.glob(pattern))
-    out.extend([ROOT / "docker-compose.yml", ROOT / "README.md", ROOT / "CONTEXT.md"])
+    # ISA.md stays out on purpose (historical archive).
+    out.extend([ROOT / n for n in ("docker-compose.yml", "README.md", "CONTEXT.md",
+                                   "KONZEPT.md", "PROJEKT-STATUS.md")])
     return [f for f in sorted(set(out)) if f.is_file() and f.name not in SELF]
 
 
@@ -86,13 +94,42 @@ class TestCveClaimsConsistency(unittest.TestCase):
                 m = self.RAW.search(text)
                 self.assertIsNone(m, f"{_rel(f)}: raw CVE number/table outside ADR-0003: {m and m.group(0)!r}")
 
+    ADR_PATH_RE = re.compile(r"docs/adr/[\w.-]+\.md")
+
+    def _check_adr_refs(self, label, text):
+        self.assertIn("ADR-0003", text, label)
+        self.assertIn(ADR, text, f"{label}: must reference the path {ADR}")
+        self.assertTrue((ROOT / ADR).is_file())
+        for path in self.ADR_PATH_RE.findall(text):
+            self.assertTrue((ROOT / path).is_file(), f"{label}: references non-existent {path}")
+
     def test_supply_chain_and_image_scan_refer_to_adr(self):
-        self.assertIn("ADR-0003", _flat(ROOT / ".github/workflows/image-scan.yml"))
+        self._check_adr_refs("image-scan.yml", _flat(ROOT / ".github/workflows/image-scan.yml"))
         text = (ROOT / "docs/foundation/supply-chain.md").read_text(encoding="utf-8")
         start = text.index("### Der Presidio-Altbestand")
         m = re.search(r"\n### (?!#)", text[start + 5:])
         section = text[start: start + 5 + m.start()] if m else text[start:]
-        self.assertIn("ADR-0003", section, "section 'Der Presidio-Altbestand' must refer to ADR-0003")
+        self._check_adr_refs("section 'Der Presidio-Altbestand'", " ".join(section.split()))
+
+    def test_relative_references_point_the_right_way(self):
+        text = (ROOT / "docs/foundation/supply-chain.md").read_text(encoding="utf-8")
+        block = text.index("libgnutls30t64  CVE-")
+        refs = list(re.finditer(r"CVE-ID-Codeblock\s+weiter\s+(oben|unten)", text))
+        self.assertTrue(refs, "expected the reference to the CVE-ID code block")
+        for m in refs:
+            expected = "oben" if block < m.start() else "unten"
+            self.assertEqual(m.group(1), expected, "reference direction does not match block position")
+
+    def test_dockerfile_comment_quote_does_not_wrap_mid_quote(self):
+        text = (ROOT / "docs/foundation/supply-chain.md").read_text(encoding="utf-8")
+        self.assertIn("„gebaute Image wird derzeit NICHT in der CI gescannt\"", text)
+
+    def test_old_pin_claim_has_no_unbacked_green_statement(self):
+        sc = " ".join((ROOT / "docs/foundation/supply-chain.md").read_text(encoding="utf-8").split())
+        self.assertNotIn("und er lief grün", sc)
+        adr = " ".join((ROOT / ADR).read_text(encoding="utf-8").split())
+        self.assertIn("a9c7b0f0", adr)
+        self.assertNotIn("früheren Lauf", adr)
 
     # --- generalized sweep (DATENSCHLE-89, QA-F1): the CLASS of error ----------
     # Any CVE measurement (counts next to severity words, "N of M", percent
