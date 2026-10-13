@@ -123,7 +123,11 @@ services:
   # 1b. Postgres fuer das LiteLLM-Admin-UI (Spend-Logs, Guardrail-Metadaten,
   # NIE Message-Content). Rein intern -- kein Host-Port.
   datenschleuse-db:
-    image: postgres:16-alpine
+    # Versions-Tag PLUS Digest (DATENSCHLE-59, docs/foundation/supply-chain.md §1).
+    # Vorher `postgres:16-alpine` -- ein rollender Tag. Dieser Compose-File ist
+    # der Deploy-Weg der gehosteten Instanz; ausgerechnet dort rollte die
+    # Version weiter, waehrend das lokale docker-compose.yml gepinnt war.
+    image: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       - POSTGRES_USER=${DATENSCHLEUSE_DB_USER:-datenschleuse}
       - POSTGRES_PASSWORD=${DATENSCHLEUSE_DB_PASSWORD:?DATENSCHLEUSE_DB_PASSWORD muss gesetzt sein (starkes Passwort)}
@@ -159,7 +163,10 @@ services:
 
   # 3. Presidio-Anonymizer (Teil des Standard-Stacks; rein intern).
   presidio-anonymizer:
-    image: mcr.microsoft.com/presidio-anonymizer:latest
+    # Versions-Tag PLUS Digest (DATENSCHLE-59). `:latest` ist hier besonders
+    # heikel: Zwei Coolify-Deploys am selben Tag konnten unterschiedliche
+    # Anonymizer-Versionen starten, ohne dass es jemand haette nachweisen koennen.
+    image: mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483
     restart: unless-stopped
     networks:
       - datenschleuse-net
