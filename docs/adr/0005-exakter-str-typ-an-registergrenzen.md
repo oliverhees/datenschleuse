@@ -1,4 +1,4 @@
-# ADR-0004: Nur exaktes `str` passiert Register, Allowlists und Textfelder
+# ADR-0005: Nur exaktes `str` passiert Register, Allowlists und Textfelder
 
 - Status: akzeptiert
 - Datum: 2026-08-20
