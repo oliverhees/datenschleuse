@@ -165,6 +165,17 @@ Bedingung 1 ohne Bedingung 2 wertlos, und deshalb ist der bare Kopf gesperrt.
 
 Beides erzwingt `test/test_de_stopwords.py`.
 
+**Aufnahmebedingung für Namen mit erlaubtem Kopf (Audit F2).** Reale
+Nachnamen, die auf einem erlaubten Kopf-Morphem enden, bestehen Bedingung 1
+formal — `art` ist ein erlaubter Kopf, `Gebhart`, `Burkhart`, `Eckart`,
+`Reinhart` und `Bernhart` enden darauf. Ein Eintrag `(?i:\Agebhart\z)` würde
+„Herr Gebhart" lautlos entfernen. Deshalb stehen genau diese Namen als
+Kontroll- und Verbotsspans in `test/test_de_stopwords.py`
+(`_RECALL_KONTROLLEN`, `_VERBOTENE_SPANS`): Ein Eintrag, dessen Muster einen
+davon trifft, macht den Test rot. Wer einen neuen Term mit erlaubtem Kopf
+aufnimmt, nimmt zugleich die real existierenden Nachnamen dieser Endung in
+die Kontrollen auf — der Kopf-Filter ist keine Namensausschlussregel.
+
 Die Regel ist bewusst eng. Sie schließt Terme aus, die sehr wahrscheinlich
 harmlos wären (`aendere`, `pruefe`) — aber „sehr wahrscheinlich" ist genau die
 Kategorie, die das Audit ausgehebelt hat.
@@ -225,14 +236,26 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
 
 **Schwerer / zu beachten für künftige Work Items:**
 
-1. **Die Liste wirkt noch nicht in Produktion.** Der Guardrail sendet die
-   `allow_list` nicht. Spezifikation in `docs/foundation/erkennungsziel.md` §7.
-   **Kritisch dabei:** `_analyze()` bedient auch den Verifikationsdurchlauf.
-   Wird die Liste nur im Maskierungspfad gesetzt, blockt der
-   Verifikationsdurchlauf fail-closed **jeden** Request, der einen
-   Stoppwort-Term enthält.
+1. **Die Liste wirkt in Produktion (seit DATENSCHLE-82).** Der Guardrail lädt
+   sie über `litellm/de_stopwords.py` beim Start und sendet sie an jeden
+   `/analyze`-Aufruf. Gesetzt wird sie in `_presidio_analyze()` — der einen
+   Stelle, durch die **beide** Durchläufe laufen. Das ist kein Detail: Würde
+   die Liste nur im Maskierungspfad wirken, blockte der Verifikationsdurchlauf
+   fail-closed **jeden** Request, der einen Stoppwort-Term enthält.
 
-2. **Bekannte Grenze — der Betreiber-Vorrang ist nicht durchgesetzt.**
+   Die Wirkung ist im ausgelieferten Pfad gemessen, nicht gefolgert — 81,2 %
+   → 37,5 % Störquote, 67,5 % → 81,8 % Precision, Recall unverändert 100 %.
+   Der Lauf durch den Guardrail ist mit dem Benchmark-Lauf mit Liste
+   deckungsgleich. Beleg: `test/guardrail-benchmark.py` und
+   `test/test_de_stopwords.py::WirkungImAusgelieferbenPfad`.
+
+   Grenze dieses Belegs: „ausgeliefert" heißt hier der Codepfad des Guardrails
+   gegen einen laufenden Analyzer sowie die Verdrahtung in den
+   Compose-Dateien (Simulation des `/app`-Layouts in
+   `test/test_deploy_layout.py`). Ein echter Image-Build und Container-Start
+   ist damit **nicht** belegt.
+
+2. **Der Betreiber-Vorrang ist durchgesetzt (seit DATENSCHLE-82).**
    Presidios `allow_list` wirkt **nach** der Erkennung und entfernt jeden
    Treffer, dessen Span sie matcht — auch einen, der aus einer `deny_list` in
    `presidio/recognizers-config.yml` stammt. Live belegt: `"Der Bürgermeister
@@ -246,19 +269,44 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
    überstimmen — sonst entfernt ein Datenschleuse-Update lautlos Schutz, den
    der Betreiber selbst konfiguriert hat.
 
-   **Heute folgenlos**, aus zwei Gründen: die Liste ist nicht verdrahtet, und
-   es gibt keine Überschneidung. Beides ist ein Zustand, kein Mechanismus —
-   deshalb gilt ab jetzt als bindende Anforderung:
+   Dass es heute keine Überschneidung gibt, ist ein Zustand, kein Mechanismus
+   — und Betreiber pflegen ihre `recognizers-config.yml` selbst. Deshalb gilt
+   als bindende Anforderung, beides umgesetzt:
 
    - **Datenebene:** Kein Muster aus `de-stopwords.yml` darf einen Term einer
      `deny_list` aus `recognizers-config.yml` matchen. Erzwungen von
      `test/test_de_stopwords.py::BetreiberVorrang` — ab sofort, ohne
      Guardrail-Anschluss.
-   - **Laufzeit:** Sobald der Guardrail die Liste sendet (§7), muss er die
-     Überschneidung beim Laden prüfen und bei einem Treffer **fail-closed**
-     starten — nicht die Liste stillschweigend beschneiden und nicht still
-     weiterlaufen. Ein Betreiber, der beides konfiguriert, hat einen
-     Konflikt, den nur er auflösen kann.
+   - **Laufzeit:** `de_stopwords.load()` prüft die Überschneidung beim Laden
+     und wirft bei einem Treffer `StopwordConfigError`; der Guardrail fängt
+     sie nicht, der Dienst startet also nicht. Die Meldung nennt den
+     kollidierenden Term — auflösen kann den Konflikt nur der Betreiber. Die
+     Liste wird ausdrücklich **nicht** stillschweigend beschnitten, und es
+     wird nicht still weitergelaufen. Ist die Betreiber-Config nicht lesbar,
+     ist der Vorrang nicht prüfbar — auch das ist ein Startfehler. Erzwungen
+     von `test/test_de_stopwords.py::BetreiberVorrangZurLaufzeit`.
+
+   Zwei Härtungen aus dem Audit gehören dazu. Erstens matcht Presidios
+   `deny_list` case-insensitiv; die Kollisionsprüfung testet jeden
+   `deny_list`-Term deshalb in mehreren Schreibweisen (original, klein, groß,
+   Title/capitalize) — ein case-sensitives Muster `\Abürgermeister\z` wird
+   abgelehnt. Zweitens muss der Guardrail-Container **dieselbe**
+   `recognizers-config.yml` lesen wie der Analyzer, sonst prüft die Kollision
+   eine Datei, die der Analyzer nie lädt: Beide Compose-Dateien mounten
+   dieselbe Host-Datei (Invariante, erzwungen von
+   `test/test_deploy_layout.py`; Details: `docs/DEPLOY.md`).
+
+   Der Lader weist außerdem **offensichtliche** Fehlformen zurück: ein
+   Eintrag ohne `\A...\z`-Rahmen (optional `(?i:...)`-gekapselt), mit
+   Alternation auf oberster Ebene oder bei `regex_flags != 0` lässt den Dienst
+   nicht starten. Eine **vollständige** Verankerungs- oder Semantikprüfung
+   beliebiger regulärer Ausdrücke leistet der Lader **nicht**; im Security-Audit
+   gab es akzeptierte Umgehungen (verschachtelte oder gequantelte Anker,
+   Wildcards innerhalb der Anker, globale Inline-Flags). Das ist eine bekannte
+   Grenze, kein Versprechen: Die über `DATENSCHLEUSE_STOPWORDS_PATH`
+   eingehängte Betreiber-Datei gilt als vertrauenswürdige Konfiguration. Die
+   ausgelieferte Liste enthält ausschließlich Literale und ist durch die
+   Strukturtests (Aufnahmebedingung, Gegenkontrollen) gesichert.
 
    Die vier Gegenkontrollen decken diese Frage nicht ab: sie schützen die
    Erkennung des Modells vor der Liste, nicht die Konfiguration des

@@ -81,6 +81,12 @@ import sensitivity_classifier as sc
 # Kuerzel), findet die generische Erkennung prinzipbedingt nicht.
 import custom_rules as cur
 
+# Deutsche Nicht-PII-Wortliste (DATENSCHLE-82). Unterdrueckt gemessene
+# Fehlzuendungen des spaCy-NER ueber Presidios allow_list. Laedt fail-closed
+# und erzwingt den Vorrang der Betreiber-Konfiguration -- Begruendung und
+# Fehlermodi im Modul-Docstring von de_stopwords.py.
+import de_stopwords as ds
+
 
 # ---------------------------------------------------------------------------
 # Basisklasse: in Produktion die echte LiteLLM-CustomGuardrail, im Test-/
@@ -1232,6 +1238,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
         qi_state_ttl_seconds: Optional[int] = None,
         qi_store: Any = None,
         custom_rules_path: Optional[str] = None,
+        stopwords_path: Optional[str] = None,
+        recognizers_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         # Analyzer-URL: Prioritaet Argument > ENV > Docker-Default.
@@ -1256,7 +1264,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # Policy statt stillem Default, weil beide Enden gefaehrlich sind: ohne
         # Redactor-Container waere "durchlassen" ein stilles Leck und "blocken"
         # ein hartes Verhaltensbruch. Deshalb explizit:
-        #   redact = schwaerzen, Fehler => Block (empfohlen, braucht den Dienst)
+        #   redact = schwaerzen, Fehler => Block (braucht den Dienst)
         #   block  = Bilder grundsaetzlich ablehnen (sicher ohne Extra-Dienst)
         #   pass   = altes Verhalten, Bilder gehen UNGEPRUEFT raus (bewusste Luecke)
         self.image_redactor_url = (
@@ -1280,6 +1288,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
             or ""
         ).strip().lower()
         if not policy:
+            # Code-Default (ohne gesetzte Policy): haengt von der URL ab. Der
+            # Compose-/Coolify-Standard ist dagegen `block` -- docker-compose.yml
+            # setzt DATENSCHLEUSE_IMAGE_POLICY explizit auf block.
             # Kein expliziter Wunsch: mit Dienst schwaerzen, ohne Dienst
             # ablehnen. Nie stillschweigend durchlassen — das war die Luecke.
             policy = "redact" if self.image_redactor_url else "block"
@@ -1312,6 +1323,23 @@ class DatenschleuseGuardrail(_GuardrailBase):
         # hochkommt -- blind klassifizieren waere gefaehrlicher als nicht
         # starten. Siehe docs/SENSITIVITY-INTEGRATION.md.
         self.classifier = sc.SensitivityClassifier()
+
+        # --- Deutsche Nicht-PII-Wortliste (DATENSCHLE-82) -------------------
+        # Presidios eigener Unterdrueckungs-Mechanismus, einmalig beim START
+        # geladen und ab hier an JEDEN /analyze-Aufruf gehaengt. Vorher wirkte
+        # die Liste nur im Benchmark -- gemessen wurde damit der erreichbare,
+        # nicht der ausgelieferte Zustand (docs/foundation/erkennungsziel.md
+        # §6/§7).
+        #
+        # Fail-closed wie der Klassifizierer darueber, und aus demselben
+        # Grund: eine fehlende oder kollidierende Liste aendert das
+        # Erkennungsverhalten gegenueber dem Gemessenen. Ein Dienst, der das
+        # still tut, ist gefaehrlicher als einer, der nicht startet.
+        # StopwordConfigError wird deshalb bewusst NICHT gefangen.
+        self.allow_list = ds.load(
+            stopwords_path=stopwords_path or kwargs.pop("stopwords_path", None),
+            recognizers_path=recognizers_path or kwargs.pop("recognizers_path", None),
+        )
 
         # --- Eigene Begriffe und Muster (DATENSCHLE-7) ----------------------
         # Anders als der Klassifizierer daneben startet dieser Layer NIE
@@ -1447,6 +1475,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         payload: Dict[str, Any] = {"text": text, "language": self.language}
         if self.score_threshold > 0:
             payload["score_threshold"] = self.score_threshold
+        # Nicht-PII-Wortliste (DATENSCHLE-82). Hier und nirgends sonst: durch
+        # diese Stelle laufen BEIDE Durchlaeufe -- die Maskierung und der
+        # Verifikationsdurchlauf, der das fertig maskierte Ergebnis erneut
+        # prueft und bei Restbefund fail-closed blockt.
+        #
+        # Wuerde die Liste nur im Maskierungspfad wirken, waere der Selbstblock
+        # garantiert: Die Maskierung ueberspringt 'bestellnummer', die
+        # Verifikation findet es im maskierten Ergebnis weiterhin als LOCATION
+        # -- und blockt jeden Request, der einen Stoppwort-Term enthaelt. Aus
+        # einem Precision-Fix wuerde eine Verfuegbarkeitsstoerung. Beide
+        # Durchlaeufe muessen dieselbe Erkennungskonfiguration sehen.
+        #
+        # allow_list_match und regex_flags gehoeren untrennbar dazu (siehe
+        # de_stopwords.AllowList.as_payload).
+        if len(self.allow_list):
+            payload.update(self.allow_list.as_payload())
         try:
             async with httpx.AsyncClient(timeout=self.request_timeout) as client:
                 resp = await client.post(f"{self.analyzer_url}/analyze", json=payload)
@@ -1538,10 +1582,22 @@ class DatenschleuseGuardrail(_GuardrailBase):
         if self.image_policy == "pass":
             return
         if self.image_policy == "block":
+            # Bewusst OHNE jeden Bildinhalt: die Meldung geht an den Client
+            # zurueck und landet potenziell im Log. Ein Base64-Fragment darin
+            # waere genau das Leck, das die Policy verhindern soll.
+            # Entscheidung (Oliver, DATENSCHLE-89): Die Client-Meldung ist
+            # NEUTRAL (keine Infrastruktur-Details an API-Clients). Die
+            # Aktivierungsanleitung steht nur im Server-Log, ohne Inhalt.
+            _LOG.warning(
+                "image part blocked (image_policy=block). Operator: to process "
+                "images, start the compose profile `images` "
+                "(`docker compose --profile images up -d`) and set "
+                "DATENSCHLEUSE_IMAGE_POLICY=redact (Docker Compose self-hosting "
+                "only). See docs/DEPLOY.md, section "
+                "'Bilder: Policy und Compose-Profil `images`'."
+            )
             raise DatenschleuseBlocked(
-                "Bild-Anhaenge sind blockiert (image_policy='block'). Die "
-                "Datenschleuse maskiert Text; Bilder muessten geschwaerzt "
-                "werden, wofuer der Image-Redactor-Dienst noetig ist."
+                "Bild-Anhaenge sind blockiert. Bitte den Betreiber kontaktieren."
             )
         url = _image_part_url(part)
         if not url:

@@ -26,6 +26,7 @@ services:
       - datenschleuse-qi-state:/app/state
       - ./litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
       - ./litellm/custom_rules.py:/app/custom_rules.py:ro
+      - ./litellm/de_stopwords.py:/app/de_stopwords.py:ro
       # Eigene Begriffe und Muster (DATENSCHLE-7). BEWUSST beschreibbar
       # gemountet (kein :ro): die Regeldatei ist das einzige Artefakt, das der
       # Anwender im Betrieb aendert -- ueber `datenschleuse-rules add` auf dem
@@ -43,10 +44,24 @@ services:
       # ist flach, kein Geschwister-presidio/-Verzeichnis). Deshalb die YAML
       # explizit mounten und den Pfad per ENV ueberschreiben (siehe unten).
       - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+      # Nicht-PII-Wortliste (DATENSCHLE-82) und Recognizer-Config. INVARIANTE
+      # (F3): recognizers-config.yml kommt hier aus DERSELBEN Host-Datei wie im
+      # Dienst presidio-analyzer unten. Die Vorrangspruefung (Wortliste darf
+      # keine deny_list-Terme unterdruecken) liest die Datei im Guardrail-
+      # Container; wuerde der Analyzer eine andere laden, pruefte sie eine
+      # Datei, die der Analyzer nie liest. test/test_deploy_layout.py erzwingt
+      # die Gleichheit der Host-Quellen.
+      - ./presidio/de-stopwords.yml:/app/config/de-stopwords.yml:ro
+      - ./presidio/recognizers-config.yml:/app/config/recognizers-config.yml:ro
     environment:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
       - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      # Pfade fuer de_stopwords.py (DATENSCHLE-82). Ohne diese ENVs fiele der
+      # Lader auf das Repo-Layout (../presidio/) zurueck, das im Image nicht
+      # existiert -> fail-closed StopwordConfigError, Dienst startet nicht.
+      - DATENSCHLEUSE_STOPWORDS_PATH=/app/config/de-stopwords.yml
+      - DATENSCHLEUSE_RECOGNIZERS_PATH=/app/config/recognizers-config.yml
       # Regeldatei der eigenen Begriffe/Muster (DATENSCHLE-7). Explizit
       # gesetzt statt auf den Modul-Default zu vertrauen, damit der Pfad an
       # einer Stelle sichtbar ist und mit dem Volume-Mount oben zusammenpasst.
@@ -59,12 +74,19 @@ services:
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
-      # Bild-Parts: mit gesetztem Redactor schwaerzt die Guardrail sie, ohne
-      # lehnt sie sie ab. Nie stillschweigend durchlassen -- 'pass' waere ein
-      # bewusster Verzicht und muss ueber DATENSCHLEUSE_IMAGE_POLICY gesetzt
-      # werden (siehe Guardrail-Konstruktor).
+      # Bild-Parts: Standard ist seit DATENSCHLE-83 'block' -- der
+      # Image-Redactor ist nicht mehr Teil des Standard-Stacks (ADR-0003:
+      # er trug den Grossteil der CVE-Befunde). Wer Bilder verarbeiten
+      # will, startet ihn bewusst mit `--profile images` und setzt
+      # DATENSCHLEUSE_IMAGE_POLICY=redact.
+      #
+      # Die URL bleibt gesetzt: sie ist nur eine Adresse, kein Startzwang.
+      # Damit funktioniert `--profile images` + POLICY=redact ohne weitere
+      # Aenderung, und der Konstruktor-Guard ("redact ohne URL = Blindflug")
+      # greift weiterhin. Nie stillschweigend durchlassen -- 'pass' ist eine
+      # bewusste Luecke und muss explizit gesetzt werden.
       - PRESIDIO_IMAGE_REDACTOR_API_BASE=http://presidio-image-redactor:3000
-      - DATENSCHLEUSE_IMAGE_POLICY=${DATENSCHLEUSE_IMAGE_POLICY:-redact}
+      - DATENSCHLEUSE_IMAGE_POLICY=${DATENSCHLEUSE_IMAGE_POLICY:-block}
       # Fernet-Schluessel fuer den verschluesselten Quasi-Identifier-State.
       # PFLICHT sobald der QI-Layer aktiv ist (qi_risk_preset in config.yaml
       # gesetzt) -- der :?-Guard bricht `docker compose up` hart ab, wenn die
@@ -88,8 +110,13 @@ services:
         condition: service_started
       presidio-anonymizer:
         condition: service_started
-      presidio-image-redactor:
-        condition: service_started
+      # KEIN depends_on auf presidio-image-redactor (DATENSCHLE-83): der Dienst
+      # liegt hinter dem Profil `images` und existiert im Standardstart gar
+      # nicht. Ein depends_on auf einen Dienst ausserhalb des aktiven Profils
+      # laesst `docker compose up` mit einem Fehler abbrechen -- der ganze
+      # Stack kaeme nicht hoch. Die Reihenfolge ist hier ohnehin unkritisch:
+      # der Guardrail spricht den Redactor erst zur Request-Zeit an (HTTP),
+      # nicht beim Start, und faellt bei Nichterreichbarkeit fail-closed.
       datenschleuse-db:
         condition: service_healthy
     networks:
@@ -167,14 +194,30 @@ services:
   # ``type == "text"``-Parts. Ohne diesen Dienst lehnt die Guardrail Bilder ab
   # (image_policy-Default 'block'), statt sie still durchzulassen.
   #
-  # OPTIONAL: Wer keine Bilder schickt, kann den Dienst weglassen; dann bleibt
-  # es beim Block. 'pass' (altes Durchlassen) muss man bewusst konfigurieren.
+  # NICHT IM STANDARDSTART (DATENSCHLE-83, ADR-0003): Der Dienst liegt hinter
+  # dem Compose-Profil `images` und kommt bei `docker compose up` NICHT hoch.
+  # Grund ist gemessen, nicht geschaetzt -- er allein trug den Grossteil
+  # der CVE-Befunde der gescannten Upstream-Images (CI-Matrix; Zahlen und
+  # Einordnung: ADR-0003, docs/adr/0003-image-cve-gate.md). Ein Proxy fuer LLM-TEXTanfragen soll dieses
+  # CVE-Profil nicht ungefragt mitliefern.
+  #
+  # EINSCHALTEN (bewusste Entscheidung, uebernimmt das CVE-Profil):
+  #   docker compose --profile images up -d
+  #   # zusaetzlich in der .env: DATENSCHLEUSE_IMAGE_POLICY=redact
+  # Ohne beides bleibt es beim Block. Die Client-Meldung ist bewusst neutral
+  # (nur "blockiert, Betreiber kontaktieren"); diese Anleitung steht im
+  # Server-Log des Proxys und in docs/DEPLOY.md.
   #
   # GRENZE: Der Dienst bringt seine eigene Presidio-Instanz samt Tesseract-OCR
   # mit und kennt die deutschen Custom-Recognizer aus
   # presidio/recognizers-config.yml NICHT -- im Bild greifen nur die
-  # eingebauten Typen. Siehe _redact_image() im Guardrail.
+  # eingebauten Typen. Siehe _redact_image() im Guardrail. Er laeuft zudem
+  # ueber einen EIGENEN Codepfad, den unser Fuzz-Test nicht erfasst; die
+  # Schutzaussagen des Projekts gelten dort also nur eingeschraenkt.
   presidio-image-redactor:
+    # Optionaler Dienst -- siehe Block oben. Ein Service mit `profiles` startet
+    # ausschliesslich, wenn das Profil explizit angefordert wird.
+    profiles: ["images"]
     # Versions-Tag PLUS Digest (DATENSCHLE-59), siehe datenschleuse-db.
     # Achtung: der Image-Redactor hat eine EIGENE Versionsreihe (0.0.x), nicht
     # die 2.2.x der uebrigen Presidio-Dienste. `latest` == `0.0.58` am

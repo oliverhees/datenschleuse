@@ -85,6 +85,76 @@ Admin-UI (Spend-Logs ohne Message-Content): `https://<deine-domain>/ui`
 
 ---
 
+## Bilder: Policy und Compose-Profil `images`
+
+- **Compose-/Coolify-Standard ist `block`:** Bild-Anhaenge werden abgelehnt
+  (fail-closed). Das gilt fuer `docker compose up` (Compose setzt die Variable
+  explizit) und fuer Coolify. Der **Code-Default** des Guardrails (ohne gesetzte
+  Policy) haengt dagegen von `PRESIDIO_IMAGE_REDACTOR_API_BASE` ab: ist die URL
+  gesetzt, waehlt er `redact`, sonst `block`.
+- **`redact` (Bilder schwaerzen)** braucht den optionalen Dienst
+  `presidio-image-redactor`. Er liegt hinter dem Compose-Profil `images` und
+  startet nur so:
+
+  ```bash
+  # .env: DATENSCHLEUSE_IMAGE_POLICY=redact
+  docker compose --profile images up -d
+  ```
+
+- **Was der Client sieht:** nur "Bild-Anhaenge sind blockiert. Bitte den
+  Betreiber kontaktieren." Die Aktivierungsanleitung (Profil `images` plus
+  `DATENSCHLEUSE_IMAGE_POLICY=redact`, nur Docker-Compose-Self-Hosting) steht
+  im Server-Log des Proxys (`docker compose logs datenschleuse`) und in diesem
+  Abschnitt. Das Log enthaelt keinen Bild- oder Client-Inhalt.
+- **`pass`** laesst Bilder ungeprueft durch — eine bewusste Datenschutzluecke,
+  nur setzen, wenn du das willst.
+- **Coolify:** Bilder sind dort standardmaessig blockiert. `redact` ist auf
+  Coolify nicht vorgesehen: `deploy/coolify/docker-compose.yaml` enthaelt weder
+  den Redactor-Dienst noch die Variable `DATENSCHLEUSE_IMAGE_POLICY`
+  (deshalb steht sie auch nicht in `coolify-template.json`).
+- **Upgrade fuer Bestandsinstallationen:** Wer den Stack vor dieser Aenderung
+  gestartet hat, hat evtl. noch einen laufenden alten Redactor-Container
+  (`datenschleuse-image-redactor`). Er wird durch ein neues `docker compose up`
+  nicht entfernt. Gezielt abraeumen mit
+  `docker compose --profile images rm -sf presidio-image-redactor` bzw.
+  `docker rm -f datenschleuse-image-redactor`.
+  **Nicht `docker compose down` verwenden:** `down` stoppt den GANZEN Stack,
+  nicht nur den Redactor.
+  *Nicht verifiziert (kein Docker-Test)* — der Containername stammt aus
+  `docker-compose.yml`, die Befehle wurden nicht ausgefuehrt.
+
+---
+
+## Nicht-PII-Wortliste und Recognizer-Config (DATENSCHLE-82)
+
+Der Guardrail laedt beim Start `de-stopwords.yml` und prueft sie gegen die
+`deny_list`-Terme aus `recognizers-config.yml` (Betreiber-Vorrang). Beides
+muss im Container ankommen, sonst startet der Dienst bewusst nicht
+(`StopwordConfigError`, fail-closed):
+
+- Das Modul `de_stopwords.py` kommt per `COPY` ins Image
+  (`litellm/Dockerfile`).
+- `docker-compose.yml`: beide YAML-Dateien werden aus `./presidio/` nach
+  `/app/config/` gemountet, `DATENSCHLEUSE_STOPWORDS_PATH` und
+  `DATENSCHLEUSE_RECOGNIZERS_PATH` zeigen darauf.
+- Coolify: Verzeichnis-Mount `../../presidio` nach `/mnt/presidio-src`, die
+  beiden ENVs zeigen auf Dateien darin (kein Einzeldatei-Mount, s.o.).
+
+**Invariante: Guardrail und Analyzer muessen DIESELBE
+`recognizers-config.yml` lesen.** Die Vorrangspruefung liest die Datei im
+Guardrail-Container, der Analyzer laedt seine eigene. Beide Container mounten
+deshalb dieselbe Host-Datei (in Compose und in Coolify). Wer die Datei fuer
+einen der beiden Dienste an eine andere Stelle legt, verliert den Vorrang
+unbemerkt. `test/test_deploy_layout.py` prueft die Gleichheit der Host-Quellen
+und simuliert das Container-Layout aus den Dateien.
+
+Ehrlich zur Reichweite: Das ist eine Simulation aus den Compose- und
+Dockerfile-Dateien. Ein echter Image-Build und Container-Start wurde fuer
+diese Aenderung **nicht** ausgefuehrt, und die Coolify-Live-Verifikation
+(siehe unten) stammt aus der Zeit davor.
+
+---
+
 ## Ehrliche Hinweise
 
 - **Live gegen eine echte Coolify-Instanz getestet und verifiziert** (2026-07-23).

@@ -387,9 +387,13 @@ Behauptungs-Kultur, gegen die dieses Dokument gerichtet ist.
 # Rohzustand des Analyzers
 python3 test/corpus-benchmark.py
 
-# Mit Stoppwortliste — der ERREICHBARE Zustand (nicht der ausgelieferte:
-# der Guardrail sendet die Liste noch nicht, siehe "Offen" unten und §7)
+# Mit Stoppwortliste — seit DATENSCHLE-82 zugleich der AUSGELIEFERTE Zustand:
+# der Guardrail sendet dieselbe Liste an jeden /analyze-Aufruf (§7)
 python3 test/corpus-benchmark.py --stopwords presidio/de-stopwords.yml
+
+# Gegenprobe durch den ausgelieferten Pfad selbst
+# (async_pre_call_hook -> _analyze -> echter Analyzer), gleiche Auswertung:
+PYTHONPATH=litellm python3 test/guardrail-benchmark.py
 ```
 
 **Gate maschinell prüfen** (Exit-Code 1 bei Verfehlung):
@@ -411,29 +415,66 @@ gelaufen, 2 = technischer Fehler); der bisherige Vertrag bleibt unverändert.
 nachher, beide Seiten vergleichen. Eine Precision-Verbesserung ohne
 Recall-Nachweis ist kein Ergebnis, sondern eine unbelegte Behauptung.
 
-**Offen:** Der Guardrail sendet die `allow_list` noch nicht. Solange das nicht
-umgesetzt ist, wirkt die Liste im Benchmark, aber nicht in Produktion. Die
-Zahlen dieses Dokuments beschreiben insoweit den erreichbaren, nicht den
-ausgelieferten Zustand.
+**Erledigt (DATENSCHLE-82):** Der Guardrail sendet die `allow_list`. Die Zahlen
+dieses Dokuments beschreiben damit den ausgelieferten Zustand — und das ist
+gemessen, nicht gefolgert:
+
+| Lauf (gleicher Analyzer, gleicher Korpus, gleiche Auswertung) | Störquote | Precision | Recall |
+|---|---|---|---|
+| Benchmark **ohne** Liste | 81,2 % (26/32) | 67,5 % | 100 % |
+| Benchmark **mit** Liste | 37,5 % (12/32) | 81,8 % | 100 % |
+| **Guardrail-Pfad** (`async_pre_call_hook`) | **37,5 % (12/32)** | **81,8 %** | **100 %** |
+
+Guardrail-Lauf und Benchmark-Lauf mit Liste unterscheiden sich in den
+Metadaten (Zeitstempel, URL sowie die Felder `layer` und `transport`); die
+Messwerte sind identisch — die Verbesserung kommt vollständig im
+laufenden Dienst an, und sie kostet keinen Recall.
+
+Reichweite dieser Messung: „Guardrail-Pfad" meint den Python-Codepfad des
+Guardrails gegen einen laufenden Analyzer (lokal ohne Docker gestartet, mit
+der Repo-Konfiguration aus `presidio/*.yml`). Dass die Compose-Dateien dem
+Dienst Modul, Wortliste und Recognizer-Config tatsächlich liefern, belegt die
+Layout-Simulation in `test/test_deploy_layout.py` aus den Dateien selbst. Ein
+echter Image-Build und Container-Start wurde **nicht** ausgeführt.
+
+Abgesichert durch
+`test/test_de_stopwords.py::WirkungImAusgelieferbenPfad`, das beide Seiten im
+selben Lauf misst und vergleicht, statt eine Zahl fest zu verdrahten. Bei
+entfernter Verdrahtung fällt der Guardrail-Pfad nachweislich auf 81,2 %
+zurück, und der Test wird rot — **sofern ein Analyzer erreichbar ist**: Die
+Presidio-gebundenen Tests sind per `skipUnless` bedingt und laufen in der CI
+nicht. Dort schützen nur die Payload-Tests (kein Analyzer nötig) gegen das
+Abklemmen der Verdrahtung.
 
 ---
 
-## 7. Erforderliche Guardrail-Änderung (Spezifikation, nicht umgesetzt)
+## 7. Guardrail-Anschluss (umgesetzt, DATENSCHLE-82)
 
-`litellm/datenschleuse_guardrail.py` lag außerhalb des Scopes dieses Work Items
-(parallele Lanes). Die nötige Änderung ist klein und an genau einer Stelle:
+Dieser Abschnitt war die Spezifikation der Änderung und ist jetzt ihre
+Beschreibung. Er bleibt in dieser Ausführlichkeit stehen, weil die Begründungen
+darunter — Konsistenz beider Durchläufe, fail-closed, Betreiber-Vorrang — die
+Bedingungen sind, unter denen die Verdrahtung richtig bleibt.
 
-**Ort:** `DatenschleuseGuardrail._analyze()` — die einzige Stelle, an der
-`POST /analyze` aufgerufen wird.
+**Ort:** `DatenschleuseGuardrail._presidio_analyze()` — die einzige Stelle, an
+der `POST /analyze` aufgerufen wird; sie liegt unter `_analyze()`, das beide
+Durchläufe bedient.
 
-**Änderung:** Die Muster aus `presidio/de-stopwords.yml` einmalig im
-Konstruktor laden und in `_analyze` an das Payload hängen:
+**Umsetzung:** `litellm/de_stopwords.py` lädt die Muster aus
+`presidio/de-stopwords.yml` einmalig im Konstruktor; `_presidio_analyze` hängt
+sie an jedes Payload:
 
 ```python
-if self.allow_list:                       # aus de-stopwords.yml, entries[].pattern
-    payload["allow_list"] = self.allow_list
-    payload["allow_list_match"] = "regex"
+if len(self.allow_list):
+    payload.update(self.allow_list.as_payload())
+# -> allow_list, allow_list_match="regex", regex_flags
 ```
+
+`regex_flags` gehört untrennbar dazu und wird **explizit** gesendet: Ohne den
+Wert defaultet die REST-Schicht auf `DOTALL|MULTILINE|IGNORECASE`, und unter
+`MULTILINE` werden aus den `\A...\z`-Vollspan-Ankern Zeilen-Anker — genau
+daran ist die erste Fassung der Liste gescheitert (Security-Finding F1).
+Nachgewiesen am tatsächlich gebauten Payload, nicht am Kommentar:
+`allow_list_match="regex"`, `regex_flags=0`, 14 Muster.
 
 ### Der kritische Punkt: Konsistenz mit dem Verifikationsdurchlauf
 
@@ -486,20 +527,68 @@ ausdrückliche Anweisung nicht still überstimmen — sonst nimmt ein
 Datenschleuse-Update lautlos Schutz weg, den der Betreiber selbst konfiguriert
 hat, und niemand erfährt davon.
 
-Heute ist das folgenlos: die Liste ist nicht verdrahtet, und es gibt keine
-Überschneidung. Beides ist ein Zustand, kein Mechanismus. Deshalb gilt:
+Seit die Liste verdrahtet ist, ist das nicht mehr folgenlos. Dass es heute
+keine Überschneidung gibt, ist ein Zustand, kein Mechanismus — und Betreiber
+pflegen ihre `recognizers-config.yml` selbst. Deshalb gilt, beides umgesetzt:
 
-1. **Datenebene, ab sofort erzwungen.** Kein Muster aus `de-stopwords.yml` darf
-   einen `deny_list`-Term aus `recognizers-config.yml` matchen —
+1. **Datenebene, erzwungen.** Kein Muster aus `de-stopwords.yml` darf einen
+   `deny_list`-Term aus `recognizers-config.yml` matchen —
    `test/test_de_stopwords.py::BetreiberVorrang`, ohne laufenden Container und
    ohne Guardrail-Anschluss.
-2. **Laufzeit, Bedingung für diese Änderung.** Der Guardrail muss die
-   Überschneidung beim Laden prüfen und bei einem Treffer **fail-closed
-   starten** — analog zur fehlerhaften Datei unten. Ausdrücklich **nicht**
-   zulässig: den kollidierenden Eintrag still überspringen oder ihn wirken
-   lassen. Ein Betreiber, der beides konfiguriert hat, hat einen Konflikt, den
-   nur er auflösen kann; der Dienst darf ihn nicht für ihn entscheiden.
+2. **Laufzeit, erzwungen.** `de_stopwords.load()` prüft die Überschneidung beim
+   Laden und wirft bei einem Treffer `StopwordConfigError`; der Guardrail fängt
+   sie nicht, der Dienst startet also nicht. Die Meldung nennt den
+   kollidierenden Term — auflösen kann den Konflikt nur der Betreiber.
+   Ausdrücklich **nicht** zulässig und bewusst nicht implementiert: den
+   kollidierenden Eintrag still überspringen oder ihn wirken lassen.
+   Nachgewiesen von `test/test_de_stopwords.py::BetreiberVorrangZurLaufzeit`.
+   Ist die Betreiber-Config nicht lesbar, ist der Vorrang nicht prüfbar — und
+   „nicht prüfbar" heißt nicht „dann eben nicht prüfen": auch das ist ein
+   Startfehler.
 3. Der zugehörige Test ist Teil der Änderung, nicht ein Nachtrag.
+
+**Invariante: Guardrail und Analyzer lesen DIESELBE `recognizers-config.yml`.**
+Die Vorrangsprüfung liest die Datei im **Guardrail-Container**; der Analyzer
+lädt seine eigene. Zeigten beide auf verschiedene Dateien, prüfte die
+Kollision eine Datei, die der Analyzer nie liest, und der Vorrang wäre nur
+scheinbar durchgesetzt. Deshalb mounten beide Container dieselbe Host-Datei
+(`presidio/recognizers-config.yml`):
+
+- `docker-compose.yml`: Einzeldatei-Mount im Dienst `datenschleuse`
+  (`/app/config/recognizers-config.yml`, ENV `DATENSCHLEUSE_RECOGNIZERS_PATH`)
+  und im Dienst `presidio-analyzer` (`/conf/recognizers-config.yml`).
+- `deploy/coolify/docker-compose.yaml`: derselbe Host-Ordner `../../presidio`
+  ist im Guardrail als `/mnt/presidio-src` und im Analyzer als `/conf`
+  gemountet (dort gelten ausschließlich Verzeichnis-Mounts).
+- `test/e2e/docker-compose.e2e.yml`: der Guardrail liest die Repo-Datei; der
+  Analyzer ist dort der externe Produktiv-Analyzer, seine Datei ist aus der
+  Compose-Datei nicht ableitbar.
+
+Erzwungen von `test/test_deploy_layout.py::TestRecognizersSameHostSource`
+(Gleichheit der Host-Quellen, soweit aus den Dateien ableitbar). Ein
+Laufzeit-Selbsttest, der den Analyzer selbst nach seiner Konfiguration fragt,
+existiert nicht und ist hier nicht Teil der Änderung.
+
+**Zusätzliche Ladeprüfungen (Audit-Härtung).** `de_stopwords.load()` verlangt
+`regex_flags == 0`, weist **offensichtliche** Fehlformen zurück (kein
+`\A...\z`-Rahmen, optional `(?i:...)`-gekapselt; Alternation auf oberster
+Ebene) und testet die `deny_list`-Terme der Vorrangsprüfung in mehreren
+Schreibweisen (original, klein, groß, Title), weil Presidios `deny_list`
+case-insensitiv matcht.
+
+**Grenze:** Eine vollständige Verankerungs- oder Semantikprüfung beliebiger
+Muster leistet der Lader nicht; der Security-Audit zeigte akzeptierte
+Umgehungen (verschachtelte oder gequantelte Anker, Wildcards innerhalb der
+Anker, globale Inline-Flags). Betreiber-Dateien gelten als vertrauenswürdige
+Konfiguration. Die ausgelieferte Liste enthält nur Literale und ist durch die
+Strukturtests (Aufnahmebedingung, Gegenkontrollen) gesichert.
+
+`BetreiberVorrangZurLaufzeit` hängt an **keinem** Schalter mehr. Vorher schaltete
+sich die Klasse über einen Substring-Test auf den Quelltext des Guardrails
+selbst scharf; das war in beide Richtungen falsch — ein Rückbau der Verdrahtung
+hätte den Test nicht rot gemacht, sondern stillschweigend abgeschaltet, und ein
+bloßer Kommentar mit dem Wort hätte ihn scharf geschaltet. Geprüft wird jetzt
+das tatsächlich gebaute `/analyze`-Payload.
 
 ### Abnahme
 

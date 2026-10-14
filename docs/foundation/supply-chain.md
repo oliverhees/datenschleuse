@@ -158,7 +158,8 @@ annotiertes Tag-Objekt ist **nicht** unsicherer im Sinne der Integrität. Git is
 content-addressed; Commits, Trees, Blobs *und* Tag-Objekte sind unveränderlich.
 `git tag -f` erzeugt ein **neues** Objekt mit **neuer** ID — verschiebbar ist der
 Ref-*Name* `refs/tags/v0.36.0`, niemals die ID `a9c7b0f0`. Der alte Pin war
-weder kaputt noch manipulierbar, und er lief grün (Run `32253275837`).
+weder kaputt noch manipulierbar; der Lauf mit diesem Pin ist in ADR-0003
+(`docs/adr/0003-image-cve-gate.md`) vermerkt.
 
 Die echten Gründe sind andere:
 
@@ -332,35 +333,11 @@ Begründung im Einzelnen:
 ### Der Presidio-Altbestand — Entscheidungsvorlage für Oliver
 
 Der erste echte Lauf des Image-Scans hat die ursprünglich geplante Schwelle
-„CRITICAL mit Fix blockiert" sofort widerlegt. Die Zahlen stammen aus
-Run `32253275837` (head `947bd36`, 2026-08-19) und sind einzeln aus den
-Job-Logs abgelesen, nicht geschätzt:
-
-| Image | CRITICAL gesamt | davon **mit Fix** | HIGH | MEDIUM | Befunde gesamt |
-|-------|-----------------|-------------------|------|--------|----------------|
-| `litellm:v1.97.0` | 0 | 0 | 0 | 2 | 2 |
-| `postgres:16.15-alpine` | 1 | 1 | 21 | 21 | 43 |
-| `presidio-analyzer:2.2.362` | 9 | 5 | 66 | 151 | 226 (+20 Python) |
-| `presidio-anonymizer:2.2.362` | 9 | 5 | 68 | 151 | 228 (+18 Python) |
-| `presidio-image-redactor:0.0.58` | **42** | **21** | 705 | 3100 | **3847** (+38 Python) |
-| **Summe** | **61** | **32** | 860 | 3425 | 4346 |
-
-Nachprüfbar mit:
-
-```bash
-gh api repos/oliverhees/datenschleuse/actions/jobs/96069004036/logs \
-  | grep -E "Total: [0-9]+ \("
-```
-
-**Zwei Dinge, die eine frühere Fassung dieser Tabelle falsch darstellte** und
-die für eine Entscheidungsvorlage genau die falschen zwei sind:
-
-1. Die Spalte hieß „CRITICAL (mit Fix)" und trug für Analyzer/Anonymizer je `9`
-   ein. `9` ist die **Gesamtzahl**; mit Fix sind es je `5`. Deshalb stehen
-   „gesamt" und „mit Fix" jetzt getrennt.
-2. Die Zeile des Image-Redactors war **leer** („vorhanden | —"). Das schlechteste
-   Image des Stacks war das einzige ohne Zahlen. Eine Vorlage, die die
-   schlechteste Zahl auslässt, ist keine Vorlage.
+„CRITICAL mit Fix blockiert" sofort widerlegt. Die Messdaten (Run-Angaben, Zahlen pro Image,
+Summen, die Abruf-Anleitung und die Einordnung als Upstream-Rechnung) stehen
+vollständig und ausschließlich in **ADR-0003**
+(`docs/adr/0003-image-cve-gate.md`). Hier steht bewusst keine eigene Zahl; das
+gebaute Image wird in der CI nicht gescannt.
 
 #### Die These „wir können sie nicht senken" trägt nicht — gemessen
 
@@ -380,24 +357,12 @@ Wir bauen den Analyzer **selbst** — `presidio/Dockerfile.analyzer` setzt mit
 `FROM` auf und legt eine eigene Schicht darauf. Ein `apt-get upgrade` in genau
 dieser Schicht behebt sie. Wir brauchen Microsoft dafür nicht.
 
-**Gemessen am 2026-08-20** (lokal, Trivy 0.70.0, Basis-Image vs. Basis + eigene
-`apt upgrade`-Schicht). Die Absolutzahlen liegen über denen des CI-Laufs vom
-Vortag, weil die Schwachstellen-DB einen Tag jünger ist — verglichen wird
-deshalb *vorher gegen nachher mit derselben DB*, nicht gegen die Tabelle oben:
-
-| Image | CRITICAL mit Fix | CRITICAL gesamt | HIGH | Befunde (OS) |
-|-------|------------------|-----------------|------|--------------|
-| Analyzer vorher | 5 | 9 | 93 | 253 |
-| Analyzer **nachher** | **0** | 4 | 22 | 96 |
-| Anonymizer vorher | 5 | 9 | 95 | 255 |
-| Anonymizer **nachher** | **0** | 4 | 22 | 96 |
-| Image-Redactor vorher | 21 | 42 | 743 | 3835 |
-| Image-Redactor **nachher** | **0** | 21 | 218 | 933 |
-
-Das Ergebnis ist in allen drei Fällen dasselbe: **alle behebbaren CRITICALs
-verschwinden**, die Gesamtbefunde fallen um 62 % bis 76 %. Übrig bleibt genau
-das, wofür es upstream keinen Fix gibt — also genau das, was `ignore-unfixed`
-ohnehin ausblendet.
+**Gemessen am 2026-08-20** (lokal, Basis-Image gegen Basis + eigene
+`apt upgrade`-Schicht, jeweils mit derselben Schwachstellen-DB): Das Ergebnis
+ist in allen drei Fällen (Analyzer, Anonymizer, Image-Redactor) dasselbe — alle
+behebbaren CRITICALs verschwinden, und übrig bleibt, wofür es upstream keinen
+Fix gibt, also genau das, was `ignore-unfixed` ohnehin ausblendet. Die
+Messwerte pro Image stehen in ADR-0003.
 
 Gegengeprüft, dass die Schicht nichts kaputt macht:
 
@@ -415,8 +380,11 @@ einer gewissen Spannung zum Digest-Pinning aus Abschnitt 1 — wir nageln den
 
 Aufgelöst wird die Spannung dadurch, wo Reproduzierbarkeit für Betreiber
 tatsächlich hängt: am Digest des **Ergebnis**-Images, nicht am Rezept. Der Input
-ist über `FROM …@sha256:` festgenagelt, das Ergebnis wird in der CI gescannt.
-Drift wird damit gemessen statt geglaubt. Echte Bit-Reproduzierbarkeit bräuchte
+ist über `FROM …@sha256:` festgenagelt. **Das gebaute Image wird derzeit nicht gescannt:**
+`image-scan.yml` scannt nur die Upstream-Images (Matrix: `ref:` zeigt auf
+`mcr.microsoft.com/presidio-analyzer:…`, nicht auf unseren Build). Drift ist damit
+noch *nicht* gemessen; ein CI-Scan des gebauten Images ist ein offenes Folge-Item.
+Echte Bit-Reproduzierbarkeit bräuchte
 `snapshot.debian.org` als Paketquelle — eigene Infrastruktur-Entscheidung,
 eigenes Work Item.
 
@@ -430,19 +398,23 @@ ein Merge-Konflikt mit Ansage (Gesetz 8). Umgesetzt sind dort:
   diese eine Schicht und anschließendem Zurückschalten auf UID 1001.
 - Der Image-Redactor liegt hinter dem Compose-Profil `images` und startet bei
   `docker compose up` **nicht** mehr mit; die Bildpolitik steht per Default auf
-  `block`. Damit ist das mit Abstand schlechteste Image (42 CRITICAL, 3847
-  Befunde) aus dem Standard-Stack heraus.
+  `block`. Damit ist das mit Abstand schlechteste Image (Zahlen: ADR-0003)
+  aus dem Standard-Stack heraus.
 
-**Was das für den ausgelieferten Standard-Stack bedeutet:**
+**Was das für den Standard-Stack bedeutet:** Die Zahlen und die
+Upstream-Rechnung (Redactor optional, Analyzer aufgerüstet, Anonymizer und
+Postgres noch offen) stehen ausschließlich in
+`docs/adr/0003-image-cve-gate.md` (ADR-0003). Das gebaute Image wird in der CI
+nicht gescannt (siehe oben); hier wird bewusst keine eigene Zahl behauptet.
 
-| | behebbare CRITICALs |
-|---|---|
-| vorher (alle fünf Images) | **32** |
-| nach DATENSCHLE-83 (Redactor optional, Analyzer upgraded) | **6** |
-| zusätzlich mit `apt`-Schicht für den Anonymizer | **1** |
-
-Die verbleibende `1` ist `postgres:16.15-alpine` (Alpine, kein `apt`; dort wäre
-der Weg ein Digest-Update, sobald Upstream nachzieht).
+Der Kommentar in `presidio/Dockerfile.analyzer` führt dieselben CVE-IDs je Paket
+auf wie der CVE-ID-Codeblock weiter oben (3 CVE-IDs in 3 Paketen) und hält
+fest, das
+„gebaute Image wird derzeit NICHT in der CI gescannt". Ebenfalls offen: Die
+Trivy-Messung (Zahl in ADR-0003) zählt pro Befund und damit anders als die
+CVE-IDs. Warum, lässt sich aus den Dateien nicht belegen (keine Befundliste pro
+Paket abgelegt) — **offen**, zu klären mit dem Folge-Item `CI-Scan des gebauten
+Images`.
 
 #### Zu entscheiden hat das Oliver, nicht ein Agent
 
@@ -452,7 +424,7 @@ Item. Die vollständige Vorlage steht in
 
 **Wichtig für die Form der Vorlage:** Oliver hat bereits entschieden, dass
 **nichts freigegeben wird, was behebbar ist**. Die Vorlage bittet deshalb nicht
-um Genehmigung der 32 behebbaren CRITICALs — sie sind Arbeit, keine Ausnahme.
+um Genehmigung der behebbaren CRITICALs (Zahl: ADR-0003) — sie sind Arbeit, keine Ausnahme.
 Zur Entscheidung steht nur, was **nach** allen Maßnahmen übrig bleibt: die Funde
 ohne Upstream-Fix. Die behebbaren werden behoben (Redactor-Profil und
 Analyzer-`apt`-Schicht in DATENSCHLE-83; Anonymizer als Folge-Item).
@@ -470,9 +442,10 @@ Kurzfassung der Optionen:
    benannte Build-Zeit-Abhängigkeit.
 
 Sobald das entschieden ist, wird `image-scan.yml` Schritt 2 wieder auf
-`exit-code: "1"` gestellt. Der Schalter steht dort kommentiert. Nach Option 4
-wäre diese Schwelle für den Standard-Stack erfüllbar — genau das war der
-Einwand, an dem sie ursprünglich scheiterte.
+`exit-code: "1"` gestellt. Der Schalter steht dort kommentiert. Die Schwelle
+ist für den Standard-Stack erst erfüllbar, wenn zusätzlich die `apt`-Schicht für
+den Anonymizer und das Postgres-Update umgesetzt sind; DATENSCHLE-83 allein
+genügt nicht (ADR-0003).
 
 ### Wo die Scans hängen — und warum getrennt
 
@@ -509,7 +482,7 @@ Das ist ein Behelf, kein Lockfile. Siehe Abschnitt 4.
 Bis zum Security-Audit von DATENSCHLE-59 schrieben beide Workflows **nur eine
 Tabelle ins Job-Log**. Kein SARIF, kein Artefakt, keine Benachrichtigung. Der
 wöchentliche Lauf endete mit fünf grünen Haken, während darunter tausende Funde
-lagen. Ein grüner Haken über 3847 Befunden ist kein neutrales Signal, sondern ein
+lagen. Ein grüner Haken über tausenden Befunden ist kein neutrales Signal, sondern ein
 **aktiv irreführendes**. Dazu löscht GitHub Job-Logs nach 90 Tagen: Wer in einem
 halben Jahr belegen will, was wir heute ausgeliefert haben, findet nichts mehr —
 womit der Zweck aus der Einleitung („nachträglich feststellbar, welche Software
