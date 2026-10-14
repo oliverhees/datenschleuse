@@ -142,3 +142,66 @@ class TestNoStaleUnwiredClaims(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------- loader-anchoring claims
+class TestNoBlanketAnchoringClaim(unittest.TestCase):
+    """DATENSCHLE-88 round 2 (Sec-L1): the loader is NOT a complete regex analysis.
+
+    Docs must not say that a file with an unanchored pattern "does not start" /
+    "is rejected" across the board. A sentence that makes that claim must also
+    carry a qualifier (obvious/naive forms, no complete check, trusted operator
+    configuration) within the same window.
+
+    LIMIT (documented): regex heuristic over flattened text. Paraphrases that
+    avoid the trigger words are not detected; it guards the known wording in
+    ADR-0002, erkennungsziel.md, CONTEXT.md and README.md only.
+    """
+
+    _CLAIM = re.compile(
+        r"unverankert\w*\s+(?:\S+\s+){0,3}?(?:muster|pattern|eintr)\w*"
+        r"[^.]{0,120}?(?:startet\s+nicht|wird\s+abgelehnt|werden\s+abgelehnt|abgelehnt)"
+        r"|pr(?:ü|ue)ft\s+\*{0,2}jeden\*{0,2}\s+eintrag\s+auf\s+absolute\s+verankerung",
+        re.I,
+    )
+    _QUALIFIER = re.compile(
+        r"offensichtlich|naive|nicht\s+vollst(?:ä|ae)ndig|keine\s+vollst(?:ä|ae)ndige"
+        r"|vertrauenswürdig|vertrauenswuerdig",
+        re.I,
+    )
+    _WINDOW = 400
+    FILES = (
+        "docs/adr/0002-nicht-pii-wortliste.md",
+        "docs/foundation/erkennungsziel.md",
+        "CONTEXT.md",
+        "README.md",
+    )
+
+    @classmethod
+    def _violations(cls, flat):
+        out = []
+        for m in cls._CLAIM.finditer(flat):
+            ctx = flat[max(0, m.start() - cls._WINDOW): m.end() + cls._WINDOW]
+            if not cls._QUALIFIER.search(ctx):
+                out.append(m.group(0))
+        return out
+
+    def test_docs_do_not_claim_blanket_rejection(self):
+        for name in self.FILES:
+            with self.subTest(file=name):
+                flat = _flat((ROOT / name).read_text(encoding="utf-8"))
+                self.assertEqual(
+                    self._violations(flat), [],
+                    f"{name}: blanket claim that an unanchored pattern is rejected / "
+                    "does not start, without the limitation of the loader check",
+                )
+
+    def test_detector_catches_the_old_wording(self):
+        old = ("eine über DATENSCHLEUSE_STOPWORDS_PATH eingehängte Datei mit "
+               "unverankertem Muster startet nicht.")
+        self.assertTrue(self._violations(old))
+
+    def test_detector_accepts_a_qualified_sentence(self):
+        ok = ("Offensichtlich unverankerte Muster werden abgelehnt; eine "
+              "vollständige Prüfung leistet der Lader nicht.")
+        self.assertEqual(self._violations(ok), [])
