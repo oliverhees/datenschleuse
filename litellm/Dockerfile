@@ -58,6 +58,12 @@ COPY sensitivity_classifier.py /app/sensitivity_classifier.py
 # custom_rules.py = eigene Deny-Listen/Regex-Muster des Anwenders
 # (DATENSCHLE-7). Reine Logik; braucht PyYAML und `regex` (s.o.).
 COPY custom_rules.py /app/custom_rules.py
+# de_stopwords.py = Lader der Nicht-PII-Wortliste (DATENSCHLE-82). Der Guardrail
+# importiert es auf Modulebene OHNE Fallback: fehlt diese Zeile, startet der
+# Dienst mit ModuleNotFoundError. Braucht PyYAML und `regex` (s.o.). Die YAML-
+# Dateien (de-stopwords.yml, recognizers-config.yml) liegen NICHT im Image,
+# sondern kommen per Mount + ENV (docker-compose.yml, deploy/coolify/).
+COPY de_stopwords.py /app/de_stopwords.py
 
 # 3. Verzeichnis fuer den lokalen, verschluesselten QI-Session-State (SQLite).
 #    Wird per Volume in docker-compose.yml persistiert (DATENSCHLEUSE_STATE_DB).

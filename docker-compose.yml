@@ -26,6 +26,7 @@ services:
       - datenschleuse-qi-state:/app/state
       - ./litellm/sensitivity_classifier.py:/app/sensitivity_classifier.py:ro
       - ./litellm/custom_rules.py:/app/custom_rules.py:ro
+      - ./litellm/de_stopwords.py:/app/de_stopwords.py:ro
       # Eigene Begriffe und Muster (DATENSCHLE-7). BEWUSST beschreibbar
       # gemountet (kein :ro): die Regeldatei ist das einzige Artefakt, das der
       # Anwender im Betrieb aendert -- ueber `datenschleuse-rules add` auf dem
@@ -43,10 +44,24 @@ services:
       # ist flach, kein Geschwister-presidio/-Verzeichnis). Deshalb die YAML
       # explizit mounten und den Pfad per ENV ueberschreiben (siehe unten).
       - ./presidio/sensitivity-keywords.yml:/app/config/sensitivity-keywords.yml:ro
+      # Nicht-PII-Wortliste (DATENSCHLE-82) und Recognizer-Config. INVARIANTE
+      # (F3): recognizers-config.yml kommt hier aus DERSELBEN Host-Datei wie im
+      # Dienst presidio-analyzer unten. Die Vorrangspruefung (Wortliste darf
+      # keine deny_list-Terme unterdruecken) liest die Datei im Guardrail-
+      # Container; wuerde der Analyzer eine andere laden, pruefte sie eine
+      # Datei, die der Analyzer nie liest. test/test_deploy_layout.py erzwingt
+      # die Gleichheit der Host-Quellen.
+      - ./presidio/de-stopwords.yml:/app/config/de-stopwords.yml:ro
+      - ./presidio/recognizers-config.yml:/app/config/recognizers-config.yml:ro
     environment:
       # Import der Guardrail-Klasse: /app muss auf dem PYTHONPATH liegen.
       - PYTHONPATH=/app
       - SENSITIVITY_KEYWORDS_PATH=/app/config/sensitivity-keywords.yml
+      # Pfade fuer de_stopwords.py (DATENSCHLE-82). Ohne diese ENVs fiele der
+      # Lader auf das Repo-Layout (../presidio/) zurueck, das im Image nicht
+      # existiert -> fail-closed StopwordConfigError, Dienst startet nicht.
+      - DATENSCHLEUSE_STOPWORDS_PATH=/app/config/de-stopwords.yml
+      - DATENSCHLEUSE_RECOGNIZERS_PATH=/app/config/recognizers-config.yml
       # Regeldatei der eigenen Begriffe/Muster (DATENSCHLE-7). Explizit
       # gesetzt statt auf den Modul-Default zu vertrauen, damit der Pfad an
       # einer Stelle sichtbar ist und mit dem Volume-Mount oben zusammenpasst.
