@@ -42,6 +42,7 @@ Aufruf:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -103,6 +104,34 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 
 # Gültige Werte für `expected_recall` im Korpus.
 VALID_EXPECTED_RECALL = {"must_detect", "known_gap"}
+
+# Korpus-Split (DATENSCHLE-94). `dev` darf zum Abstimmen benutzt werden
+# (Wortlisten, Recognizer); `holdout` nie. Tuning-Läufe fahren mit `--split dev`,
+# der Hold-out wird getrennt ausgewiesen.
+VALID_SPLITS = {"dev", "holdout"}
+DEFAULT_SPLIT = "dev"
+
+# Kategorie der v1-Cases (84 Stück, vor DATENSCHLE-94). Sie tragen kein
+# `category`-Feld und sind von den strengen Annotationsregeln A1-A6 ausgenommen
+# (historischer Bestand, unverändert). Alles andere ist "v2" und wird streng
+# validiert.
+V1_CATEGORY = "v1"
+V2_ID_PREFIX = "v2-"
+
+# A1: Anreden/Titel gehören nie in einen PERSON-Span.
+PERSON_TITLE_TOKENS = frozenset(
+    {
+        "Herr", "Herrn", "Frau", "Fräulein", "Frl.", "Fr.", "Hr.", "Dr.", "Prof.",
+        "Dipl.", "Dipl.-Ing.", "Ing.", "Mag.", "Doktor", "Professor", "Professorin",
+    }
+)
+
+# A6: E-Mail-Adressen im v2-Korpus liegen ausschließlich auf reservierten
+# Domains (RFC 2606/6761), damit nie eine echte Adresse im Repo steht.
+_RESERVED_EMAIL_RE = regex.compile(
+    r"@(?:[^\s@]+\.)?(?:example(?:\.(?:com|org|net|de))?|invalid|test|localhost)$",
+    regex.IGNORECASE,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -223,6 +252,9 @@ class GroundTruthEntity:
     start: int
     end: int
     occurrences: int  # wie oft `value` im Text vorkommt (>1 => Offset-Unschärfe)
+    # Nur bei Positiv-Kontrollen (`control: true`): ob die Baseline (current main
+    # zum Zeitpunkt der Korpus-Härtung) diese Entität gemessen erkannt hat.
+    baseline_detected: Optional[bool] = None
 
     @property
     def ambiguous_offset(self) -> bool:
@@ -246,6 +278,9 @@ class Case:
     case_id: str
     text: str
     ground_truth: list[GroundTruthEntity]
+    split: str = DEFAULT_SPLIT
+    category: str = V1_CATEGORY
+    control: bool = False
 
     @property
     def is_negative(self) -> bool:
@@ -340,9 +375,112 @@ def load_corpus(path: Path) -> list[Case]:
             for raw_entity in raw_entities
         ]
 
-        cases.append(Case(case_id=case_id, text=text, ground_truth=ground_truth))
+        category = raw_case.get("category", V1_CATEGORY)
+        if not isinstance(category, str) or not category.strip():
+            raise BenchmarkError(f"Case {case_id!r}: 'category' muss ein String sein.")
+        split = raw_case.get("split", DEFAULT_SPLIT)
+        if split not in VALID_SPLITS:
+            raise BenchmarkError(
+                f"Case {case_id!r}: ungültiger split {split!r} "
+                f"(erlaubt: {sorted(VALID_SPLITS)})."
+            )
+        control = raw_case.get("control", False)
+        if not isinstance(control, bool):
+            raise BenchmarkError(f"Case {case_id!r}: 'control' muss true/false sein.")
+
+        case = Case(
+            case_id=case_id,
+            text=text,
+            ground_truth=ground_truth,
+            split=split,
+            category=category,
+            control=control,
+        )
+        _validate_case_rules(case)
+        cases.append(case)
 
     return cases
+
+
+def _validate_case_rules(case: Case) -> None:
+    """Erzwingt die maschinenprüfbaren Annotationsregeln (Korpus-Header A1-A6).
+
+    Gilt nur für v2-Cases. Die 84 v1-Cases bleiben als historischer Bestand
+    unverändert und unterliegen nur dem Basis-Schema.
+    """
+    if case.category == V1_CATEGORY:
+        if case.split != DEFAULT_SPLIT or case.control:
+            raise BenchmarkError(
+                f"Case {case.case_id!r}: v1-Cases haben weder Hold-out-Split noch "
+                "Kontroll-Flag (beides gibt es nur im v2-Bestand)."
+            )
+        for gt in case.ground_truth:
+            if gt.baseline_detected is not None:
+                raise BenchmarkError(
+                    f"Case {case.case_id!r}: baseline_detected nur in v2-Kontrollfällen."
+                )
+        return
+
+    if not case.case_id.startswith(V2_ID_PREFIX):
+        raise BenchmarkError(
+            f"Case {case.case_id!r}: v2-Cases (category {case.category!r}) brauchen "
+            f"die id-Präfix {V2_ID_PREFIX!r}."
+        )
+    if case.is_negative and case.control:
+        raise BenchmarkError(
+            f"Case {case.case_id!r}: ein Negativ-Fall kann keine Positiv-Kontrolle sein."
+        )
+
+    spans: list[tuple[int, int, str]] = []
+    for gt in case.ground_truth:
+        where = f"Case {case.case_id!r}, {gt.entity_type} {gt.value!r}"
+        if gt.occurrences != 1:
+            raise BenchmarkError(
+                f"{where}: Value kommt {gt.occurrences}x im Text vor — A1 verlangt "
+                "einen eindeutigen Span (sonst ist der Offset geraten)."
+            )
+        edge = gt.value[0] + gt.value[-1]
+        if (
+            gt.value != gt.value.strip()
+            or gt.value[-1] in ",;:!?"
+            or (gt.entity_type == "PERSON" and gt.value.endswith("."))
+            or edge.strip() != edge
+        ):
+            raise BenchmarkError(
+                f"{where}: A1 — der Span ist nicht getrimmt (Whitespace/Satzzeichen am Rand)."
+            )
+        if gt.entity_type == "PERSON":
+            tokens = set(gt.value.split())
+            if tokens & PERSON_TITLE_TOKENS:
+                raise BenchmarkError(
+                    f"{where}: A1 — Anrede/Titel gehören nicht in den PERSON-Span."
+                )
+        if gt.entity_type == "EMAIL_ADDRESS" and not _RESERVED_EMAIL_RE.search(gt.value):
+            raise BenchmarkError(
+                f"{where}: A6 — E-Mail-Adressen im v2-Korpus nur auf reservierten "
+                "Domains (example.*, .invalid, .test)."
+            )
+        if gt.baseline_detected is not None and gt.expected_recall != "must_detect":
+            raise BenchmarkError(f"{where}: baseline_detected nur bei must_detect.")
+        if case.control and gt.expected_recall == "must_detect" and gt.baseline_detected is None:
+            raise BenchmarkError(
+                f"{where}: Kontrollfall braucht baseline_detected (true/false) an jeder "
+                "must_detect-Entität."
+            )
+        if not case.control and gt.baseline_detected is not None:
+            raise BenchmarkError(
+                f"{where}: baseline_detected nur in Fällen mit control: true."
+            )
+        for s0, e0, t0 in spans:
+            # Ein Quasi-Identifier-Span umfasst per Definition die Namen, aus
+            # denen er sich zusammensetzt (A5) — nur dort ist Überlappung erlaubt.
+            if "QUASI_IDENTIFIER_COMBO" in (t0, gt.entity_type):
+                continue
+            if gt.start < e0 and s0 < gt.end:
+                raise BenchmarkError(
+                    f"{where}: A1 — überlappt einen anderen annotierten Span."
+                )
+        spans.append((gt.start, gt.end, gt.entity_type))
 
 
 def _build_ground_truth_entity(
@@ -379,6 +517,12 @@ def _build_ground_truth_entity(
         )
     occurrences = text.count(value)
 
+    baseline_detected = raw_entity.get("baseline_detected")
+    if baseline_detected is not None and not isinstance(baseline_detected, bool):
+        raise BenchmarkError(
+            f"Case {case_id!r}: baseline_detected von {value!r} muss true/false sein."
+        )
+
     return GroundTruthEntity(
         case_id=case_id,
         entity_type=entity_type,
@@ -387,6 +531,7 @@ def _build_ground_truth_entity(
         start=start,
         end=start + len(value),
         occurrences=occurrences,
+        baseline_detected=baseline_detected,
     )
 
 
@@ -630,6 +775,9 @@ class CaseMatch:
     unmatched_pred_indices: list[int]
     ground_truth: list[GroundTruthEntity]
     predictions: list[PredictedEntity]
+    split: str = DEFAULT_SPLIT
+    category: str = V1_CATEGORY
+    control: bool = False
 
 
 def match_case(
@@ -671,6 +819,9 @@ def match_case(
         unmatched_pred_indices=unmatched_pred,
         ground_truth=case.ground_truth,
         predictions=predictions,
+        split=case.split,
+        category=case.category,
+        control=case.control,
     )
 
 
@@ -714,6 +865,10 @@ class BenchmarkResult:
     known_gap_detail: list[dict[str, Any]] = field(default_factory=list)
     case_details: list[dict[str, Any]] = field(default_factory=list)
 
+    # Die Matches, aus denen dieses Ergebnis aggregiert wurde. Report und JSON
+    # brauchen sie für Split-Ausweisung und Kontroll-Abweichungen.
+    matches: list["CaseMatch"] = field(default_factory=list, repr=False)
+
 
 def _tally_for(bucket: dict[str, Tally], entity_type: str) -> Tally:
     if entity_type not in bucket:
@@ -724,6 +879,7 @@ def _tally_for(bucket: dict[str, Tally], entity_type: str) -> Tally:
 def aggregate(matches: list[CaseMatch], overlap_min_ratio: float) -> BenchmarkResult:
     """Aggregiert alle Case-Matches zu Recall/Precision-Kennzahlen."""
     result = BenchmarkResult()
+    result.matches = list(matches)
 
     # Precision-FP kommt ausschließlich aus Negativ-Fällen (siehe Modul-Docstring).
     negative_fp_by_type: dict[str, int] = {}
@@ -835,6 +991,144 @@ def aggregate(matches: list[CaseMatch], overlap_min_ratio: float) -> BenchmarkRe
     return result
 
 
+def aggregate_by_split(
+    matches: list[CaseMatch], overlap_min_ratio: float
+) -> dict[str, BenchmarkResult]:
+    """Aggregiert jeden Split (dev / holdout) für sich.
+
+    Ein gepoolter Wert kann einen Hold-out-Einbruch hinter guten dev-Zahlen
+    verstecken — und genau dafür gibt es den Hold-out. Splits ohne Cases
+    erscheinen nicht im Ergebnis.
+    """
+    grouped: dict[str, list[CaseMatch]] = {}
+    for match in matches:
+        grouped.setdefault(match.split, []).append(match)
+    return {
+        split: aggregate(group, overlap_min_ratio)
+        for split, group in sorted(grouped.items())
+    }
+
+
+def control_deviations(matches: list[CaseMatch]) -> list[dict[str, Any]]:
+    """Positiv-Kontrollen, deren Erkennung von der Baseline abweicht.
+
+    Eine Kontrolle hält fest, ob die Baseline (main zum Zeitpunkt der Härtung)
+    die Entität erkannt hat (`baseline_detected`). Weicht der aktuelle Lauf ab,
+    ist das entweder ein Rückschritt (true -> nicht mehr erkannt) oder ein
+    Fortschritt (false -> jetzt erkannt) — beides wird ausgewiesen, nichts
+    verschwindet in der Gesamtzahl.
+    """
+    out: list[dict[str, Any]] = []
+    for match in matches:
+        if not match.control:
+            continue
+        for gi, gt in enumerate(match.ground_truth):
+            if gt.expected_recall != "must_detect" or gt.baseline_detected is None:
+                continue
+            detected = gi in match.matched_gt_indices
+            if detected != gt.baseline_detected:
+                out.append(
+                    {
+                        "case_id": match.case_id,
+                        "entity_type": gt.entity_type,
+                        "value": gt.value,
+                        "baseline_detected": gt.baseline_detected,
+                        "detected_now": detected,
+                    }
+                )
+    return out
+
+
+def must_detect_misses(matches: list[CaseMatch]) -> list[dict[str, Any]]:
+    """Alle verfehlten must_detect-Entitäten (Fehlalarm-Gegenstück: Offenders).
+
+    Ohne diese Liste ist ein Recall-Wert nicht überprüfbar: man sähe nur die
+    Zahl, nicht welche Annotation sie trägt.
+    """
+    out: list[dict[str, Any]] = []
+    for match in matches:
+        for gi, gt in enumerate(match.ground_truth):
+            if gt.expected_recall == "must_detect" and gi not in match.matched_gt_indices:
+                out.append(
+                    {
+                        "case_id": match.case_id,
+                        "split": match.split,
+                        "category": match.category,
+                        "entity_type": gt.entity_type,
+                        "value": gt.value,
+                    }
+                )
+    return out
+
+
+def category_summary(matches: list[CaseMatch]) -> dict[str, dict[str, Any]]:
+    """Je Kategorie: must_detect TP/FN und Negativ-Fälle mit Fehlalarm."""
+    cats: dict[str, dict[str, Any]] = {}
+    for match in matches:
+        c = cats.setdefault(
+            match.category,
+            {"cases": 0, "tp": 0, "fn": 0, "negative_cases": 0, "negative_cases_with_fp": 0},
+        )
+        c["cases"] += 1
+        for gi, gt in enumerate(match.ground_truth):
+            if gt.expected_recall != "must_detect":
+                continue
+            c["tp" if gi in match.matched_gt_indices else "fn"] += 1
+        if match.is_negative:
+            c["negative_cases"] += 1
+            if match.unmatched_pred_indices:
+                c["negative_cases_with_fp"] += 1
+    return dict(sorted(cats.items()))
+
+
+def v1_case_hash(case: Case) -> str:
+    """SHA-256 über Text und Entitäten eines Falls (Inhalts-Pin für v1).
+
+    Die ids allein bewachen nicht, dass ein v1-Fall unverändert bleibt: ein
+    Fall lässt sich in place umschreiben, ohne dass Anzahl oder id sich ändern.
+    """
+    payload = {
+        "text": case.text,
+        "entities": [
+            [gt.entity_type, gt.value, gt.expected_recall] for gt in case.ground_truth
+        ],
+    }
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def v1_hash_mismatches(cases: list[Case], manifest: dict[str, Any]) -> list[str]:
+    """ids der v1-Fälle, deren Inhalt vom gepinnten Hash abweicht oder fehlt."""
+    pinned: dict[str, str] = manifest.get("v1_sha256", {})
+    have = {c.case_id: v1_case_hash(c) for c in cases if c.category == V1_CATEGORY}
+    bad = {cid for cid, h in pinned.items() if have.get(cid) != h}
+    bad |= {cid for cid in have if cid not in pinned}
+    return sorted(bad)
+
+
+def build_manifest(cases: list[Case]) -> dict[str, Any]:
+    """Manifest aller Case-ids samt Split (No-Shrink-Anker).
+
+    Reihenfolge-unabhängig und deterministisch. Ein Case darf nur verschwinden
+    (oder den Split wechseln), indem das eingecheckte Manifest im selben Commit
+    sichtbar geändert wird.
+    """
+    return {
+        "version": 2,
+        "v1_sha256": {
+            c.case_id: v1_case_hash(c)
+            for c in sorted(cases, key=lambda c: c.case_id)
+            if c.category == V1_CATEGORY
+        },
+        "note": (
+            "No-Shrink-Anker (DATENSCHLE-94). Erzeugt mit "
+            "`python3 test/corpus-benchmark.py --write-manifest`. Ein Case darf nur "
+            "durch eine sichtbare Änderung dieser Datei verschwinden."
+        ),
+        "cases": {c.case_id: c.split for c in sorted(cases, key=lambda c: c.case_id)},
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Report-Ausgabe (stdout)
 # --------------------------------------------------------------------------- #
@@ -900,6 +1194,25 @@ def render_stdout_report(
             "wurden von IRGENDEINER Presidio-Entität überlappt."
         )
 
+    # --- verfehlte must_detect-Entitäten ---
+    if result.matches:
+        misses = must_detect_misses(result.matches)
+        print()
+        print(f"  VERFEHLTE MUST_DETECT-ENTITÄTEN ({len(misses)})")
+        for m in misses:
+            print(
+                f"    - [{m['case_id']}] ({m['split']}) {m['entity_type']} {m['value']!r}"
+            )
+        print()
+        print("  JE KATEGORIE (must_detect TP/FN | Negativ-Fälle mit Fehlalarm)")
+        for cat, c in category_summary(result.matches).items():
+            neg = (
+                f" | Negativ {c['negative_cases_with_fp']}/{c['negative_cases']}"
+                if c["negative_cases"]
+                else ""
+            )
+            print(f"    {cat:<22} TP={c['tp']:<3} FN={c['fn']:<3}{neg}")
+
     # --- Negativ-Fälle / False Positives ---
     print()
     print("  NEGATIV-FÄLLE — FALSE POSITIVES")
@@ -922,6 +1235,36 @@ def render_stdout_report(
                 f"{d['entity_type']}:{d['span']!r}" for d in offender["detections"]
             )
             print(f"      - [{offender['case_id']}] {treffer}")
+
+    # --- Split-Ausweisung (dev / holdout) ---
+    if result.matches:
+        by_split = aggregate_by_split(result.matches, overlap_min_ratio)
+        if len(by_split) > 1 or "holdout" in by_split:
+            print()
+            print("  SPLITS (dev = darf zum Tunen dienen, holdout = nie)")
+            for split_name, res in by_split.items():
+                m = res.must_detect_overall
+                print(
+                    f"    {split_name:<8} Recall {_fmt_rate(m.recall)} "
+                    f"(TP={m.tp} FN={m.fn}) | Precision {_fmt_rate(m.precision)} "
+                    f"(FP={m.fp}) | Störquote {_fmt_rate(res.stoerquote)} "
+                    f"({res.negative_cases_with_fp}/{res.negative_case_count})"
+                )
+        deviations = control_deviations(result.matches)
+        controls = [m for m in result.matches if m.control]
+        if controls:
+            print()
+            print("  POSITIV-KONTROLLEN (baseline_detected)")
+            print(
+                f"    {len(controls)} Kontrollfälle, "
+                f"{len(deviations)} Abweichung(en) von der Baseline"
+            )
+            for d in deviations:
+                richtung = "RÜCKSCHRITT" if d["baseline_detected"] else "Fortschritt"
+                print(
+                    f"      - [{d['case_id']}] {d['entity_type']} {d['value']!r}: "
+                    f"{richtung}"
+                )
 
     # --- Erkennungsziel-Gate ---
     print()
@@ -989,6 +1332,36 @@ def _tally_to_dict(tally: Tally) -> dict[str, Any]:
         "support": tally.support,
         "recall": None if tally.recall is None else round(tally.recall, 4),
         "precision": None if tally.precision is None else round(tally.precision, 4),
+    }
+
+
+def _corpus_summary(matches: list[CaseMatch]) -> dict[str, Any]:
+    """Zusammensetzung des gemessenen Korpus: Split x Positiv/Negativ, Kategorien."""
+    by_category: dict[str, int] = {}
+    by_split: dict[str, dict[str, int]] = {}
+    for m in matches:
+        by_category[m.category] = by_category.get(m.category, 0) + 1
+        bucket = by_split.setdefault(m.split, {"positive": 0, "negative": 0})
+        bucket["negative" if m.is_negative else "positive"] += 1
+    return {
+        "by_split": dict(sorted(by_split.items())),
+        "by_category": dict(sorted(by_category.items())),
+    }
+
+
+def _split_summary(res: BenchmarkResult) -> dict[str, Any]:
+    return {
+        "must_detect": _tally_to_dict(res.must_detect_overall),
+        "must_detect_by_type": {
+            etype: _tally_to_dict(t) for etype, t in sorted(res.must_detect_by_type.items())
+        },
+        "known_gap": _tally_to_dict(res.known_gap_overall),
+        "negative_cases": {
+            "count": res.negative_case_count,
+            "cases_with_false_positive": res.negative_cases_with_fp,
+            "false_positives_total": res.negative_fp_total,
+            "stoerquote": None if res.stoerquote is None else round(res.stoerquote, 4),
+        },
     }
 
 
@@ -1064,6 +1437,19 @@ def build_json_report(
         },
         "positive_case_unmatched_detections": result.positive_case_unmatched,
         "offset_ambiguities": result.ambiguities,
+        "corpus": _corpus_summary(result.matches),
+        "splits": {
+            split_name: _split_summary(res)
+            for split_name, res in aggregate_by_split(
+                result.matches, overlap_min_ratio
+            ).items()
+        },
+        "must_detect_misses": must_detect_misses(result.matches),
+        "by_category": category_summary(result.matches),
+        "baseline_control": {
+            "control_cases": sum(1 for m in result.matches if m.control),
+            "deviations": control_deviations(result.matches),
+        },
     }
 
 
@@ -1127,6 +1513,20 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "die Qualität (Default-Vertrag bleibt unverändert).",
     )
     parser.add_argument(
+        "--split",
+        choices=("all", "dev", "holdout"),
+        default="all",
+        help="Welche Korpus-Teilmenge gemessen wird (Default: all). Tuning-Läufe "
+        "(Wortliste, Recognizer) fahren mit --split dev; der Hold-out darf nie "
+        "zum Abstimmen dienen und wird immer getrennt ausgewiesen.",
+    )
+    parser.add_argument(
+        "--write-manifest",
+        action="store_true",
+        help="Schreibt corpus-manifest.json (No-Shrink-Anker) neben den Korpus "
+        "und beendet sich ohne Analyzer-Lauf.",
+    )
+    parser.add_argument(
         "--stopwords",
         type=Path,
         default=None,
@@ -1159,6 +1559,10 @@ def run_benchmark(args: argparse.Namespace) -> tuple[BenchmarkResult, int]:
         raise BenchmarkError(f"--timeout muss > 0 sein, bekommen: {args.timeout}")
 
     cases = load_corpus(args.corpus)
+    if args.split != "all":
+        cases = [c for c in cases if c.split == args.split]
+        if not cases:
+            raise BenchmarkError(f"Split {args.split!r} enthält keine Cases.")
 
     if args.stopwords:
         allow_list, regex_flags = load_stopwords(args.stopwords)
@@ -1176,9 +1580,26 @@ def run_benchmark(args: argparse.Namespace) -> tuple[BenchmarkResult, int]:
     return aggregate(matches, args.overlap_ratio), len(cases)
 
 
+def write_manifest(corpus_path: Path) -> Path:
+    """Schreibt corpus-manifest.json neben den Korpus (ohne Analyzer)."""
+    manifest = build_manifest(load_corpus(corpus_path))
+    target = corpus_path.parent / "corpus-manifest.json"
+    write_json_report(manifest, target)
+    return target
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    if args.write_manifest:
+        try:
+            target = write_manifest(args.corpus)
+        except BenchmarkError as exc:
+            print(f"FEHLER: {exc}", file=sys.stderr)
+            return 2
+        print(f"  Manifest geschrieben: {target}")
+        return 0
 
     try:
         result, case_count = run_benchmark(args)

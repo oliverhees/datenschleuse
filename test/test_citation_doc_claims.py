@@ -204,11 +204,17 @@ class MeasurementStateDatedTest(unittest.TestCase):
         self.assertIn("known_gap", window)
 
     def test_claim_matches_benchmark_results(self):
+        # The checked-in artifact is the v2 run (DATENSCHLE-94). The dated
+        # claim is about the 84 v1 cases, which the artifact reports as the
+        # category "v1" -- so the claim stays verifiable, not just quoted.
         r = json.loads(_read("test/corpus/benchmark-results.json"))
-        self.assertEqual(r["case_count"], 84)
-        self.assertEqual(r["must_detect"]["overall"]["support"], 54)
-        self.assertEqual(r["must_detect"]["overall"]["fn"], 0)
-        self.assertEqual(r["known_gap"]["overall"]["support"], 4)
+        v1 = r["by_category"]["v1"]
+        self.assertEqual(v1["cases"], 84)
+        self.assertEqual(v1["tp"], 54)
+        self.assertEqual(v1["fn"], 0)
+        v1_gap = [d for d in r["known_gap"]["detail"]
+                  if not d["case_id"].startswith("v2-")]
+        self.assertEqual(len(v1_gap), 4)
 
 
 class TestDocstringTest(unittest.TestCase):

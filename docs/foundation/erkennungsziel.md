@@ -54,9 +54,12 @@ Korpus hat seither 84 Fälle: zwei neue Fälle der Kategorie `known_gap`
 (`titel-001`, `titel-002`) sind dazugekommen. Die Werte der Spalte „mit
 Stoppwortliste“ (54/54, 81,8 %, 37,5 %) gelten unverändert auch für 84 Fälle,
 weil `known_gap`-Fälle weder in `must_detect` noch in die Negativ-Fälle
-eingehen; belegt in `test/corpus/benchmark-results.json` (`case_count` 84,
-`must_detect` 54/54 bei 12 False Positives, `known_gap` mit Support 4).
-Die Tabelle selbst bleibt als historischer Messstand unverändert.
+eingehen; belegt am v1-Anteil von `test/corpus/benchmark-results.json`
+(`by_category.v1`: 84 Fälle, `must_detect` 54/54; `known_gap` v1 mit Support
+4) und am 2026-10-14 mit dem alten Korpus gegen den aktuellen Stand
+reproduziert (54/54, 12 False Positives, 37,5 %). Seit DATENSCHLE-94 enthält
+das Artefakt den Lauf über den gehärteten Korpus v2 (§1.4). Die Tabelle selbst
+bleibt als historischer Messstand unverändert.
 
 Die mittlere Spalte ist die ehrliche Ausgangslage: **vier von fünf PII-freien
 Texten wurden gestört.**
@@ -89,6 +92,110 @@ ist gegen diesen Effekt immun und beantwortet die Frage, die für die Nutzbarkei
 zählt: *Wie oft zerschießt die Datenschleuse einen Text, in dem gar nichts zu
 finden ist?* Sie ist damit die Kennzahl, die ein Anwender tatsächlich erlebt,
 und wird gleichrangig zur Precision geführt.
+
+### 1.4 Korpus v2 — die erste Messung, die etwas misst (DATENSCHLE-94)
+
+Der Befund aus §1.1 galt auch nach der Erweiterung auf 84 Fälle: 100 % Recall
+auf einem Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
+Evaluationsmenge (§5), ist eine Aussage über den Korpus, nicht über die
+Erkennung. DATENSCHLE-94 härtet den Korpus (ohne eine Zeile Filtercode zu
+ändern) und misst den unveränderten Stand von `main`.
+
+Was neu ist: 241 v2-Fälle (159 mit erwarteten Spans, 82 PII-freie Negativ-Texte),
+darunter Nachnamen, die Alltagswörter sind (`Menge`, `Fuege`, `Koch`, `Bauer`),
+Nachnamen mit Kopf-Morphemen (`Erhart`, `Lienhart`), Namen ohne Anrede,
+Adressen und Organisationen im Fließtext und mehrzeilig, deutsche JSON-Schlüssel
+neben echten Werten, Quasi-Identifier, Titel in Dateinamen-Form, satzinitiale
+Verben und Substantive in ASCII- und Umlautschreibung als Negative. Dazu ein
+**Hold-out-Split** (37 Positiv-, 30 Negativ-Fälle), der nie zum Abstimmen
+dient und zu dev namens-disjunkt ist (maschinell geprüft, Umfang s. u.), und Annotationsregeln A1–A6 im Korpus-Header. Der Korpus kann nicht mehr
+still schrumpfen (`test/corpus/corpus-manifest.json`,
+`test/test_corpus_v2.py`).
+
+Messung am 2026-10-14, Analyzer = Presidio 2.2.362 mit `de_core_news_lg` 3.8.0
+und der Repo-Konfiguration (`presidio/*.yml`), lokal ohne Docker gestartet,
+mit Nicht-PII-Wortliste (ausgelieferte Konfiguration):
+
+| Kennzahl | v1-Korpus (84 Fälle) | v2-Korpus gesamt (325 Fälle) | v2 dev | v2 Hold-out |
+|---|---|---|---|---|
+| Recall (`must_detect`) | 100,0 % (54/54) | **92,9 %** (261/281) | 93,1 % (217/233) | **91,7 %** (44/48) |
+| Precision | 81,8 % | **89,4 %** | 89,3 % | 89,8 % |
+| Störquote | 37,5 % (12/32) | **26,3 %** (30/114) | 29,8 % (25/84) | 16,7 % (5/30) |
+| Recall PERSON | 100,0 % | **89,1 %** (123/138) | | |
+| Recall ORGANIZATION | n/a | **50,0 %** (3/6) | | |
+| `known_gap` erkannt | 0/4 | 3/24 | 3/18 | 0/6 |
+
+Rohzustand ohne Wortliste über den v2-Korpus: Recall 92,9 %, Precision 83,1 %,
+Störquote 42,1 % (48/114). Die Wortliste ändert den Recall nicht und senkt die
+Störquote um 16 Prozentpunkte.
+
+Wie die Zahlen zu lesen sind:
+
+- **Der Recall wird rot.** Gesamt 92,9 % < 95 %, PERSON 89,1 % < 90 %,
+  ORGANIZATION 50,0 % < 75 %. Die Fehlstellen sind benannt, nicht pauschal:
+  13 der 20 verfehlten Entitäten sind Nachnamen, die Alltagswörter sind
+  (`Bauer`, `Koch`, `Menge`, `Vogel`, `Hahn`, …) — in Fließtext wie in
+  JSON-Werten. Die Kopf-Morphem-Wächter (`Erhart`, `Lienhart`, …) und alle
+  Positiv-Kontrollen werden dagegen erkannt (0 Abweichungen von der Baseline).
+- **Die Störquote sinkt auf dem größeren Korpus, ohne dass die Erkennung besser
+  wurde.** Die gemischte Quote verdünnt: Fließtext-Negative stören kaum (1 von
+  22), satzinitiale Verben und Substantive dagegen weiterhin (15 von 46).
+  Maßgeblich bleibt daher die Quote je Kategorie
+  (`by_category` in `benchmark-results.json`).
+- **Hold-out vs. dev:** Recall 91,7 % (Hold-out) gegen 93,1 % (dev). Der
+  Hold-out ist klein (48 Entitäten, ein Treffer = 2,1 Prozentpunkte). Ein
+  früherer Zwischenstand lag bei 85,4 % (41/48); beim Herstellen der
+  Disjunktheit wurden drei damals verfehlte Hold-out-Namen (`Sommer`, `Berg`,
+  `Wittkopp`, alle mit dev-Verwandten) durch frische Namen ersetzt, die erkannt
+  werden. Das ist ein Nebeneffekt des Austauschs und kein besseres Modell — es
+  zeigt, wie stark der Hold-out-Recall an einzelnen Wörtern hängt. Auch der
+  spätere Austausch der vier `-hart`/`-hardt`-Namen im Hold-out
+  (`Everhardt`, `Wallhardt`, `Gernhart`, `Reichhart` → `Lambertz`, `Anselm`,
+  `Gottfried`, `Theobald`, Kopf-Morpheme `-bert`, `-helm`, `-fried`, `-bald`)
+  ließ die Zahlen unverändert: alte wie neue Namen werden erkannt. Änderungen
+  des Hold-out-Recalls sind Zusammensetzungseffekte, keine Verbesserung der
+  Erkennung. Die `-hart`-Wächter (`Erhart`, `Lienhart`, …) bleiben in dev. Die
+  Kategorie-Zusammensetzung der Negative unterscheidet sich außerdem
+  (Hold-out: 14 von 30 satzinitial), die Störquoten sind daher nicht direkt
+  vergleichbar. Frisches Vokabular im Hold-out (`Gliedere`, `Skizziere`,
+  `Retoure`) wird trotzdem fehlalarmiert, wo die Liste es nicht kennt.
+- **Was „namens-disjunkt“ genau abdeckt** (`HoldoutDisjointTest`): Jedes Token
+  jeder PERSON-, LOCATION-, ORGANIZATION- und DE_FIRMA-Entität im Hold-out wird
+  gegen alle solchen dev-Entitäten (v1 zählt zu dev) **und** gegen die groß
+  geschriebenen Wörter in dev-Quasi-Identifier-Spans geprüft, typübergreifend
+  (Nachname gegen Firmenname zählt). Zusätzlich gilt eine Stammregel für Tokens
+  ab 4 Zeichen: eines ist Präfix des anderen oder beide teilen ≥ 5 Zeichen
+  Präfix (nach Umlaut-Faltung `ae/oe/ue/ss`). Zwei weitere Variantenregeln
+  fangen Abwandlungen im Wortinneren: Editierdistanz ≤ 1 für Tokens ab 6
+  Zeichen (`Gernhart`/`Gerhart`) und die Familie `-hart`/`-hardt`/`-hard`
+  (ein Hold-out-Name dieser Familie kollidiert mit jedem dev-Namen der Familie,
+  auch bei Distanz 2 wie `Everhardt`/`Eberhart`). Bewusst erlaubt bleiben
+  generische Paare mit Distanz ≥ 2 (`Ostermann`/`Mustermann`, `Dietmar`/`Dieter`,
+  `Petra`/`Peter`). Rechtsform-Tokens (`GmbH`, …),
+  Zahlen, Datumsangaben und reine Kennungen (IBAN, Telefon) sind ausgenommen.
+  Eine Ausnahmeliste existiert (max. 3 Einträge, begründet, test-geprüft) und
+  ist leer. **Nicht** geprüft: groß geschriebene Nicht-Anfangswörter in
+  Negativ-Texten — die teilt der Hold-out mit dev; ebenso Berufsbezeichnungen
+  (`Bürgerverein` gegen `Bürgermeister` wurde dennoch vorsorglich getauscht).
+- **Hold-out-Störquote ist teilweise geschönt.** Die ausgelieferte Wortliste
+  (`presidio/de-stopwords.yml`, 14 Schema-Schlüssel) kennt Wörter, die in
+  Hold-out-Negativen vorkommen: zwei der 30 Hold-out-Negativ-Texte
+  (`v2-negativ-schema-013`, `-014`) enthalten gelistete Schlüssel
+  (`kundennummer`, `rechnungsnummer`, `zahlungsart`, `sendungsnummer`). Ohne
+  diese beiden liegt die Hold-out-Störquote bei 17,9 % (5/28) statt 16,7 %. In
+  dev sind es 22 von 84 Negativ-Texten, die Listen-Wörter enthalten. Die Liste
+  wurde allerdings nicht am Hold-out abgestimmt (sie entstand vor diesem Korpus).
+- **Interimsziele (Entscheidung Oliver):** Z1 = kein Recall-Verlust, Störquote
+  ≤ 20 %, Precision ≥ 85 %, Gate bleibt rot; Z2 = ≤ 10 % / ≥ 90 %. Gegen Z1:
+  Precision erfüllt (89,4 %), Störquote verfehlt (26,3 %). Der Recall-Vergleich
+  gegen die v1-Baseline ist auf dem neuen Korpus neu zu ziehen: **v2 ist die
+  Baseline.** Regel R2 und der Umgang mit JSON-Schlüsseln werden erst nach
+  dieser Messung entschieden.
+
+Reichweite: Gemessen ist der Analyzer-Codepfad (gleiche Python-Pakete und
+Konfiguration wie im Image), nicht ein gebauter Container. Die Zahlen sind eine
+Messung, kein Tuning-Ergebnis; keine Filter-, Recognizer- oder Listenänderung
+ist Teil dieser Arbeit.
 
 ---
 
@@ -133,8 +240,12 @@ Deshalb braucht das Ziel zwei Zahlen, nicht eine.
 | **Precision** (aus Negativ-Fällen) | **≥ 90 %** | V1 blockierend |
 | Recall bei `known_gap` | keine Vorgabe | nur berichtet |
 
-**Aktueller Stand gegen dieses Ziel:** Recall 100 %, Precision 81,8 %,
-Störquote 37,5 % — **zwei Gates verfehlt** (Precision, Störquote).
+**Aktueller Stand gegen dieses Ziel** (Korpus v2, §1.4, mit Wortliste):
+Recall 92,9 %, Precision 89,4 %, Störquote 26,3 % — **fünf Gates verfehlt**
+(Recall gesamt, Recall PERSON, Recall ORGANIZATION, Precision, Störquote).
+Auf dem alten v1-Korpus (84 Fälle) standen Recall 100 %, Precision 81,8 % und
+Störquote 37,5 % — zwei Gates verfehlt; der v1-Recall war ein Artefakt des zu
+leichten Korpus.
 
 Das ist beabsichtigt so ausgewiesen. Die Verfehlung hat genau eine Ursache:
 DATENSCHLE-70 (ASCII-umschriebene Wörter) ist über den `allow_list`-Mechanismus
@@ -360,6 +471,10 @@ Daraus folgt zweierlei:
    sondern den **Korpus zu härten**, bis er das Modell tatsächlich fordert.
    Erst dann misst der Recall etwas. Eigenes Work Item.
 
+**Umgesetzt in DATENSCHLE-94 (§1.4):** Auf dem gehärteten Korpus v2 fällt der
+Recall auf 92,9 % (PERSON 89,1 %). Damit liegt PERSON im Bereich der
+Modell-Metadaten (92,02 %) statt darüber — erstmals misst der Recall etwas.
+
 ### Warum die Recall-Ziele nach Mechanismus gestaffelt sind
 
 Aus derselben Tabelle folgt, dass ein pauschales Per-Typ-Ziel nicht
@@ -427,6 +542,8 @@ Recall-Nachweis ist kein Ergebnis, sondern eine unbelegte Behauptung.
 **Erledigt (DATENSCHLE-82):** Der Guardrail sendet die `allow_list`. Die Zahlen
 dieses Dokuments beschreiben damit den ausgelieferten Zustand — und das ist
 gemessen, nicht gefolgert:
+
+Stand v1-Korpus (84 Fälle), historisch; der Lauf über den Korpus v2 steht in §1.4.
 
 | Lauf (gleicher Analyzer, gleicher Korpus, gleiche Auswertung) | Störquote | Precision | Recall |
 |---|---|---|---|
