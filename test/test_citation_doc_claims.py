@@ -200,7 +200,7 @@ class MeasurementStateDatedTest(unittest.TestCase):
         i = flat.index("Messung nach Erweiterung des Korpus")
         window = flat[i:i + 1800]
         self.assertIn("DATENSCHLE-65", window)
-        self.assertIn("84", window)
+        self.assertIn("84 Fälle", window)
         self.assertIn("known_gap", window)
 
     def test_claim_matches_benchmark_results(self):
