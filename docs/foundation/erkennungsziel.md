@@ -49,6 +49,15 @@ Security-Audit (zweizeiliges Label-Wert-Paar, „Nachname, Vorname").
 | False Positives | 0 | 26 | **12** |
 | Störquote | (nicht erhoben) | 81,2 % (26/32) | **37,5 % (12/32)** |
 
+**Datierter Messstand:** Diese Tabelle ist der Stand vor DATENSCHLE-65. Der
+Korpus hat seither 84 Fälle: zwei neue Fälle der Kategorie `known_gap`
+(`titel-001`, `titel-002`) sind dazugekommen. Die Werte der Spalte „mit
+Stoppwortliste“ (54/54, 81,8 %, 37,5 %) gelten unverändert auch für 84 Fälle,
+weil `known_gap`-Fälle weder in `must_detect` noch in die Negativ-Fälle
+eingehen; belegt in `test/corpus/benchmark-results.json` (`case_count` 84,
+`must_detect` 54/54 bei 12 False Positives, `known_gap` mit Support 4).
+Die Tabelle selbst bleibt als historischer Messstand unverändert.
+
 Die mittlere Spalte ist die ehrliche Ausgangslage: **vier von fünf PII-freien
 Texten wurden gestört.**
 

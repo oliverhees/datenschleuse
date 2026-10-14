@@ -74,9 +74,14 @@ durch den Masker. Ob dabei ein Personenname gefunden wird, entscheidet die
 Erkennung, und die ist eine pragmatische Heuristik. Gemessen mit einem lokalen
 Analyzer (Presidio 2.2.362, `de_core_news_lg`, Repo-Konfiguration):
 `Arztbrief_Mustermann.pdf` und `Arztbrief Max Mustermann.pdf` lieferten
-**keinen** Treffer, der Titel ginge unverändert an das Modell. Titel in
-Dateinamen-Form (Unterstrich- oder Punkt-getrennt) werden daher **nicht
-zuverlässig erkannt**. Das ist eine Erkennungslücke, keine Pfadlücke. Sie ist
+**keinen** Treffer, der Titel ginge unverändert an das Modell. Gemessen wurden
+Titel mit Dateiendung (hier `.pdf`); die beiden Beispiele sind eine Messung,
+keine vollständige Regel. Ob ein Name erkannt wird, hängt von Trennzeichen und
+Umfeld ab und ist nicht vorhersagbar: `Max.Mustermann.pdf` und
+`Arztbrief von Max Mustermann` wurden erkannt, `Arztbrief_Max_Mustermann.pdf`
+nur als ORGANIZATION über den ganzen String. Titel in Dateinamen-Form werden
+daher **nicht zuverlässig erkannt**. Das ist eine Erkennungslücke, keine
+Pfadlücke. Sie ist
 im Testkorpus als `known_gap` festgehalten (`titel-001`, `titel-002`; Recall
 dort nur berichtet, keine Vorgabe). Eine Behebung (Titel vor der Analyse
 auftrennen oder durch einen festen Platzhalter ersetzen) ändert das
@@ -201,7 +206,10 @@ Regeln dazu:
   `arguments`-String geht erneut durch den Analyzer; findet der dort noch
   Entitäten, wird blockiert. Alle anderen Prüfungen sind pfadgebunden —
   diese ist die einzige, die einen Wert unabhängig von seinem Weg noch
-  einmal ansieht. Sie ist deshalb ein zusätzliches Netz, keine Garantie:
+  einmal ansieht. Sie läuft auf `tool_calls[].function.arguments` und dem
+  Legacy-Feld `function_call.arguments` (beide über `_mask_function_payload`),
+  nicht auf Text-Parts und nicht auf Zitaten (`cited_text`, `document_title`);
+  für diese gilt die Erkennung des Masker-Pfads ohne zweite Prüfung. Sie ist deshalb ein zusätzliches Netz, keine Garantie:
   vor der Prüfung werden bekannte Platzhalter neutralisiert, und Treffer,
   die nachweislich erst durch diese Neutralisierung entstehen, werden
   verworfen (siehe „bekannte Grenzen").

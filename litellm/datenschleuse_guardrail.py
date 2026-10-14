@@ -312,12 +312,14 @@ IMAGE_URL_DETAILS = frozenset({"auto", "low", "high"})
 #
 # GRENZE (Security-Audit Sec-L1, mit lokalem Analyzer gemessen): Das Feld
 # geht nachweislich durch den Masker -- der PFAD ist geschlossen. Ob aber ein
-# Titel in Dateinamen-Form (Unterstrich/Punkt-getrennt, z. B.
-# "Arztbrief_Mustermann.pdf" oder "Arztbrief Max Mustermann.pdf") einen Namen
-# enthaelt, den die Erkennung findet, haengt allein von der Erkennung ab, und
-# die ist eine pragmatische Heuristik: beide Beispiele lieferten KEINEN
-# Treffer, der Titel ging unveraendert weiter. Solche Titel werden also nicht
-# zuverlaessig erkannt. Das ist eine Erkennungsluecke, keine Pfadluecke; sie
+# Titel in Dateinamen-Form einen Namen enthaelt, den die Erkennung findet,
+# haengt allein von der Erkennung ab, und die ist eine pragmatische Heuristik.
+# Gemessen wurden Titel mit Dateiendung (z. B. "Arztbrief_Mustermann.pdf" und
+# "Arztbrief Max Mustermann.pdf"): beide lieferten KEINEN Treffer, der Titel
+# ging unveraendert weiter. Das ist eine Messung, keine vollstaendige Regel;
+# ob ein Name erkannt wird, haengt von Trennzeichen und Umfeld ab und ist
+# nicht vorhersagbar ("Max.Mustermann.pdf" wurde erkannt). Solche Titel werden
+# also nicht zuverlaessig erkannt. Das ist eine Erkennungsluecke, keine Pfadluecke; sie
 # ist im Testkorpus als known_gap festgehalten (Fall-IDs titel-001/-002).
 #
 # Warum nicht BLOCKEN, sobald ``cited_text`` da ist: das Feld ist im
