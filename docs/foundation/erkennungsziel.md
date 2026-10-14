@@ -148,7 +148,13 @@ Wie die Zahlen zu lesen sind:
   Disjunktheit wurden drei damals verfehlte Hold-out-Namen (`Sommer`, `Berg`,
   `Wittkopp`, alle mit dev-Verwandten) durch frische Namen ersetzt, die erkannt
   werden. Das ist ein Nebeneffekt des Austauschs und kein besseres Modell — es
-  zeigt, wie stark der Hold-out-Recall an einzelnen Wörtern hängt. Die
+  zeigt, wie stark der Hold-out-Recall an einzelnen Wörtern hängt. Auch der
+  spätere Austausch der vier `-hart`/`-hardt`-Namen im Hold-out
+  (`Everhardt`, `Wallhardt`, `Gernhart`, `Reichhart` → `Lambertz`, `Anselm`,
+  `Gottfried`, `Theobald`, Kopf-Morpheme `-bert`, `-helm`, `-fried`, `-bald`)
+  ließ die Zahlen unverändert: alte wie neue Namen werden erkannt. Änderungen
+  des Hold-out-Recalls sind Zusammensetzungseffekte, keine Verbesserung der
+  Erkennung. Die `-hart`-Wächter (`Erhart`, `Lienhart`, …) bleiben in dev. Die
   Kategorie-Zusammensetzung der Negative unterscheidet sich außerdem
   (Hold-out: 14 von 30 satzinitial), die Störquoten sind daher nicht direkt
   vergleichbar. Frisches Vokabular im Hold-out (`Gliedere`, `Skizziere`,
@@ -159,7 +165,13 @@ Wie die Zahlen zu lesen sind:
   geschriebenen Wörter in dev-Quasi-Identifier-Spans geprüft, typübergreifend
   (Nachname gegen Firmenname zählt). Zusätzlich gilt eine Stammregel für Tokens
   ab 4 Zeichen: eines ist Präfix des anderen oder beide teilen ≥ 5 Zeichen
-  Präfix (nach Umlaut-Faltung `ae/oe/ue/ss`). Rechtsform-Tokens (`GmbH`, …),
+  Präfix (nach Umlaut-Faltung `ae/oe/ue/ss`). Zwei weitere Variantenregeln
+  fangen Abwandlungen im Wortinneren: Editierdistanz ≤ 1 für Tokens ab 6
+  Zeichen (`Gernhart`/`Gerhart`) und die Familie `-hart`/`-hardt`/`-hard`
+  (ein Hold-out-Name dieser Familie kollidiert mit jedem dev-Namen der Familie,
+  auch bei Distanz 2 wie `Everhardt`/`Eberhart`). Bewusst erlaubt bleiben
+  generische Paare mit Distanz ≥ 2 (`Ostermann`/`Mustermann`, `Dietmar`/`Dieter`,
+  `Petra`/`Peter`). Rechtsform-Tokens (`GmbH`, …),
   Zahlen, Datumsangaben und reine Kennungen (IBAN, Telefon) sind ausgenommen.
   Eine Ausnahmeliste existiert (max. 3 Einträge, begründet, test-geprüft) und
   ist leer. **Nicht** geprüft: groß geschriebene Nicht-Anfangswörter in

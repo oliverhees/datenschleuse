@@ -591,6 +591,39 @@ _LEGAL_FORMS = frozenset(
 _STEM_MIN_LEN = 4
 _SHARED_PREFIX = 5
 
+# Variant rule (QA F1b): the stem rule only sees shared PREFIXES. Near-variants
+# inside the word need two more rules. (a) Edit distance: tokens of length >=
+# _LEV_MIN_LEN with Levenshtein distance <= 1 on the folded forms
+# (Gernhart/Gerhart). (b) Head-morpheme family: tokens ending in -hart/-hardt/
+# -hard form ONE family; a hold-out name of that family conflicts with any dev
+# name of that family (Everhardt/Eberhart are distance 2). Accepted generic
+# pairs at distance >= 2 that stay allowed: Ostermann/Mustermann,
+# Dietmar/Dieter, Petra/Peter.
+_LEV_MIN_LEN = 6
+_LEV_MAX_DIST = 1
+_FAMILY_SUFFIXES = (("hardt", "hart"), ("hart", "hart"), ("hard", "hart"))
+
+
+def _lev(a, b, limit=_LEV_MAX_DIST):
+    """Levenshtein distance, capped at limit + 1 (early exit)."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb_ in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb_)))
+        prev = cur
+    return prev[-1]
+
+
+def _family(tok):
+    for suffix, fam in _FAMILY_SUFFIXES:
+        if len(tok) >= 6 and tok.endswith(suffix):
+            return fam
+    return None
+
+
 # Explicit, justified, test-checked exceptions: (hold-out token, dev token).
 # An exception that no longer matches a real conflict fails the test, so the
 # list cannot rot. Keep it small; prefer replacing the hold-out value.
@@ -641,6 +674,12 @@ def _entity_tokens(cases, types=_NAME_TYPES, with_quasi=False):
 def _variant(a, b):
     """True if tokens a and b are equal or stem variants (see thresholds)."""
     if a == b:
+        return True
+    fa = _family(a)
+    if fa is not None and fa == _family(b):
+        return True
+    if (len(a) >= _LEV_MIN_LEN and len(b) >= _LEV_MIN_LEN
+            and _lev(a, b) <= _LEV_MAX_DIST):
         return True
     if len(a) < _STEM_MIN_LEN or len(b) < _STEM_MIN_LEN:
         return False
@@ -700,9 +739,21 @@ class HoldoutDisjointTest(unittest.TestCase):
                      ("schwerin", "schweitzer")):
             with self.subTest(pair=(a, b)):
                 self.assertTrue(_variant(a, b))
-        for a, b in (("tag", "tagung"), ("anna", "annette"), ("ritter", "rotter"), ("jena", "gotha")):
+        for a, b in (("tag", "tagung"), ("anna", "annette"), ("jena", "gotha"),
+                     ("ostermann", "mustermann"), ("dietmar", "dieter"), ("petra", "peter"),
+                     ("hirsch", "herbst"), ("coburg", "gotha"), ("lambertz", "theobald")):
             with self.subTest(pair=(a, b)):
                 self.assertFalse(_variant(a, b))
+
+    def test_variant_rule_catches_inner_variants_and_the_hart_family(self):
+        # edit distance 1 (>= 6 chars) and family members (distance 2+)
+        for a, b in (("gernhart", "gerhart"), ("gernhart", "bernhart"),
+                     ("everhardt", "eberhart"), ("reichhart", "reinhart"),
+                     ("wallhardt", "lienhart"), ("wallhardt", "erhart")):
+            with self.subTest(pair=(a, b)):
+                self.assertTrue(_variant(a, b))
+        self.assertEqual(_lev("gernhart", "gerhart"), 1)
+        self.assertGreater(_lev("everhardt", "eberhart"), 1)
 
     def test_blind_spots_are_closed(self):
         """Cross-type (PERSON vs DE_FIRMA), quasi-span words and stems are seen."""

@@ -60,7 +60,11 @@ werden vom Loader streng validiert:
   von `HoldoutDisjointTest`. Umfang: Typen PERSON, LOCATION, ORGANIZATION und
   DE_FIRMA typübergreifend, plus die groß geschriebenen Wörter in dev-Quasi-
   Identifier-Spans; dazu eine Stammregel für Tokens ab 4 Zeichen (Präfix des
-  anderen oder ≥ 5 gemeinsame Präfix-Zeichen nach Umlaut-Faltung). Nicht
+  anderen oder ≥ 5 gemeinsame Präfix-Zeichen nach Umlaut-Faltung), Editierdistanz
+  ≤ 1 für Tokens ab 6 Zeichen und die Familie `-hart`/`-hardt`/`-hard` (ein
+  Hold-out-Name dieser Familie kollidiert mit jedem dev-Namen der Familie).
+  Die Kopf-Morphem-Wächter `Erhart`/`Lienhart` liegen in dev; der Hold-out
+  nutzt andere Familien (`-bert`, `-helm`, `-fried`, `-bald`). Nicht
   geprüft: groß geschriebene Nicht-Anfangswörter in Negativ-Texten (die teilt
   der Hold-out mit dev), Berufsbezeichnungen, Zahlen/Kennungen. Die ausgelieferte
   Wortliste kennt 14 Schema-Schlüssel; zwei Hold-out-Negative enthalten sie, die

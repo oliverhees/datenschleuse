@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-10-14T11:37:13.588420+00:00",
+  "timestamp_utc": "2026-10-14T12:56:17.196325+00:00",
   "presidio_url": "http://127.0.0.1:5811",
   "corpus_path": "/home/user/datenschleuse/.claude/worktrees/agent-ae9fd6ffcebbd67c2/test/corpus/de-pii-testkorpus.yaml",
   "case_count": 325,

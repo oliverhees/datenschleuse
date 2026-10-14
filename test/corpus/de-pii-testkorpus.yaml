@@ -84,8 +84,17 @@
 #      Validator messen statt die Erkennung. Telefonnummern, IBAN, Steuer-ID
 #      und Kartennummern sind Dokumentations-/Testwerte.
 #
-# HOLD-OUT-DISJUNKTHEIT: Kein Token einer PERSON/LOCATION/ORGANIZATION-Entitaet
-# im Hold-out darf in einer dev-Entitaet vorkommen (test_corpus_v2.py).
+# HOLD-OUT-DISJUNKTHEIT (test_corpus_v2.py::HoldoutDisjointTest): Kein Token
+# einer PERSON-, LOCATION-, ORGANIZATION- oder DE_FIRMA-Entitaet im Hold-out
+# darf in einer dev-Entitaet (v1 zaehlt zu dev) oder unter den gross
+# geschriebenen Woertern eines dev-QUASI_IDENTIFIER_COMBO-Spans vorkommen --
+# typuebergreifend. Dazu drei Variantenregeln: (1) Stammregel (Tokens ab 4
+# Zeichen: Praefix des anderen oder >= 5 gemeinsame Praefix-Zeichen, nach
+# Umlaut-Faltung ae/oe/ue/ss), (2) Editierdistanz <= 1 (Tokens ab 6 Zeichen),
+# (3) -hart/-hardt/-hard bilden EINE Familie. Ausgenommen: Rechtsform-Tokens,
+# Zahlen/Datum, reine Kennungen; nicht geprueft: gross geschriebene
+# Nicht-Anfangswoerter in Negativ-Texten und Berufsbezeichnungen. Eine
+# kleine, begruendete Ausnahmeliste existiert und ist leer.
 #
 # NO-SHRINK: corpus-manifest.json haelt alle ids samt Split fest, dazu je
 # v1-Fall einen Inhalts-Hash;
@@ -1118,30 +1127,30 @@ cases:
   - id: v2-nachname-kopf-011
     category: nachname-kopf
     split: holdout
-    text: "Frau Everhardt leitet das Team."
+    text: "Frau Lambertz leitet das Team."
     entities:
-      - {type: PERSON, value: "Everhardt", expected_recall: must_detect}
+      - {type: PERSON, value: "Lambertz", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-012
     category: nachname-kopf
     split: holdout
-    text: "Herr Wallhardt hat angerufen."
+    text: "Herr Anselm hat angerufen."
     entities:
-      - {type: PERSON, value: "Wallhardt", expected_recall: must_detect}
+      - {type: PERSON, value: "Anselm", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-013
     category: nachname-kopf
     split: holdout
-    text: "Dietmar Gernhart unterzeichnet den Vertrag."
+    text: "Dietmar Gottfried unterzeichnet den Vertrag."
     entities:
-      - {type: PERSON, value: "Dietmar Gernhart", expected_recall: must_detect}
+      - {type: PERSON, value: "Dietmar Gottfried", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-014
     category: nachname-kopf
     split: holdout
-    text: "Ansprechpartnerin: Petra Reichhart."
+    text: "Ansprechpartnerin: Petra Theobald."
     entities:
-      - {type: PERSON, value: "Petra Reichhart", expected_recall: must_detect}
+      - {type: PERSON, value: "Petra Theobald", expected_recall: must_detect}
 
   - id: v2-positiv-kontrolle-001
     category: positiv-kontrolle
