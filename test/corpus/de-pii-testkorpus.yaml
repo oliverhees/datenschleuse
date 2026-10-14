@@ -991,16 +991,16 @@ cases:
   - id: v2-nachname-wort-021
     category: nachname-wort
     split: holdout
-    text: "Herr Sommer hat sich telefonisch gemeldet."
+    text: "Herr Herbst hat sich telefonisch gemeldet."
     entities:
-      - {type: PERSON, value: "Sommer", expected_recall: must_detect}
+      - {type: PERSON, value: "Herbst", expected_recall: must_detect}
 
   - id: v2-nachname-wort-022
     category: nachname-wort
     split: holdout
-    text: "Frau Berg leitet das Projekt seit Januar."
+    text: "Frau Hirsch leitet das Projekt seit Januar."
     entities:
-      - {type: PERSON, value: "Berg", expected_recall: must_detect}
+      - {type: PERSON, value: "Hirsch", expected_recall: must_detect}
 
   - id: v2-nachname-wort-023
     category: nachname-wort
@@ -1125,9 +1125,9 @@ cases:
   - id: v2-nachname-kopf-012
     category: nachname-kopf
     split: holdout
-    text: "Herr Gebhardt hat angerufen."
+    text: "Herr Wallhardt hat angerufen."
     entities:
-      - {type: PERSON, value: "Gebhardt", expected_recall: must_detect}
+      - {type: PERSON, value: "Wallhardt", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-013
     category: nachname-kopf
@@ -1524,10 +1524,10 @@ cases:
   - id: v2-adresse-fliesstext-014
     category: adresse-fliesstext
     split: holdout
-    text: "Die Sendung wurde am Eichendorffweg 9 in Bamberg abgegeben."
+    text: "Die Sendung wurde am Eichendorffweg 9 in Coburg abgegeben."
     entities:
       - {type: DE_STRASSE, value: "Eichendorffweg 9", expected_recall: must_detect}
-      - {type: LOCATION, value: "Bamberg", expected_recall: must_detect}
+      - {type: LOCATION, value: "Coburg", expected_recall: must_detect}
 
   - id: v2-adresse-fliesstext-015
     category: adresse-fliesstext
@@ -1540,26 +1540,26 @@ cases:
   - id: v2-adresse-fliesstext-016
     category: adresse-fliesstext
     split: holdout
-    text: "Der Bürgerverein Wiesental lädt zur Versammlung nach Ulm ein."
+    text: "Der Heimatverein Wiesental lädt zur Versammlung nach Ulm ein."
     entities:
-      - {type: ORGANIZATION, value: "Bürgerverein Wiesental", expected_recall: must_detect}
+      - {type: ORGANIZATION, value: "Heimatverein Wiesental", expected_recall: must_detect}
       - {type: LOCATION, value: "Ulm", expected_recall: must_detect}
 
   - id: v2-adresse-fliesstext-017
     category: adresse-fliesstext
     split: holdout
-    text: "Empfänger:\nAm Mühlenteich 5\nSchwerin"
+    text: "Empfänger:\nAm Mühlenteich 5\nGüstrow"
     entities:
       - {type: DE_STRASSE, value: "Am Mühlenteich 5", expected_recall: known_gap}
-      - {type: LOCATION, value: "Schwerin", expected_recall: must_detect}
+      - {type: LOCATION, value: "Güstrow", expected_recall: must_detect}
 
   - id: v2-adresse-fliesstext-018
     category: adresse-fliesstext
     split: holdout
-    text: "Herr Voss arbeitet bei der Lindner Elektrotechnik GmbH in Siegen."
+    text: "Herr Voss arbeitet bei der Kranz Elektrotechnik GmbH in Siegen."
     entities:
       - {type: PERSON, value: "Voss", expected_recall: must_detect}
-      - {type: DE_FIRMA, value: "Lindner Elektrotechnik GmbH", expected_recall: must_detect}
+      - {type: DE_FIRMA, value: "Kranz Elektrotechnik GmbH", expected_recall: must_detect}
       - {type: LOCATION, value: "Siegen", expected_recall: must_detect}
 
   - id: v2-json-gemischt-001
@@ -1996,9 +1996,9 @@ cases:
   - id: v2-person-fliesstext-013
     category: person-fliesstext
     split: holdout
-    text: "Frau Dorothea Wittkopp bittet um Rückruf."
+    text: "Frau Dorothea Ostermann bittet um Rückruf."
     entities:
-      - {type: PERSON, value: "Dorothea Wittkopp", expected_recall: must_detect}
+      - {type: PERSON, value: "Dorothea Ostermann", expected_recall: must_detect}
 
   - id: v2-person-fliesstext-014
     category: person-fliesstext

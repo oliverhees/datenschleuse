@@ -571,53 +571,171 @@ class CorpusFloorsTest(unittest.TestCase):
                     self.assertIsInstance(gt.baseline_detected, bool, c.case_id)
 
 
-_NAME_TYPES = ("PERSON", "LOCATION", "ORGANIZATION")
+import re
+
+# Name-bearing entity types (hold-out side AND dev side). Pure identifiers
+# (IBAN, phone, dates, numbers, ...) are excluded: they carry no vocabulary.
+_NAME_TYPES = ("PERSON", "LOCATION", "ORGANIZATION", "DE_FIRMA")
+# On the dev side, the words of a QUASI_IDENTIFIER_COMBO span count too
+# (v1 quasi-002 names 'Bamberg' only inside such a span).
+_QUASI_TYPE = "QUASI_IDENTIFIER_COMBO"
+# Legal forms are not vocabulary of a name.
+_LEGAL_FORMS = frozenset(
+    {"gmbh", "ag", "kg", "gbr", "ug", "mbh", "ohg", "kgaa", "se", "co", "ev", "e.v", "inc", "ltd", "llc"}
+)
+
+# Stem rule thresholds. Two tokens of length >= _STEM_MIN_LEN are variants of
+# each other if one is a prefix of the other or they share a prefix of >=
+# _SHARED_PREFIX characters (after folding umlauts: ae/oe/ue/ss). Catches
+# Gebhardt/Gebhart, Sommer/Sommerfeld, Berg/Bergmann, Wittkopp/Witt.
+_STEM_MIN_LEN = 4
+_SHARED_PREFIX = 5
+
+# Explicit, justified, test-checked exceptions: (hold-out token, dev token).
+# An exception that no longer matches a real conflict fails the test, so the
+# list cannot rot. Keep it small; prefer replacing the hold-out value.
+_STEM_EXCEPTIONS: dict = {}
 
 
-def _entity_tokens(cases, types=_NAME_TYPES):
-    """token -> sorted case ids, over PERSON/LOCATION/ORGANIZATION values.
+def _fold(tok):
+    return (tok.casefold().replace("ä", "ae").replace("ö", "oe")
+            .replace("ü", "ue").replace("ß", "ss"))
+
+
+def _tokens_of(value, *, quasi=False):
+    out = []
+    for tok in re.split(r"[\s\-_/,&()]+", value):
+        tok = tok.strip(".,;:()'\"")
+        if not tok or any(ch.isdigit() for ch in tok):
+            continue
+        if quasi and not tok[0].isupper():
+            continue  # inside a quasi span only capitalised words are names
+        folded = _fold(tok)
+        if folded in _LEGAL_FORMS:
+            continue
+        out.append(folded)
+    return out
+
+
+def _entity_tokens(cases, types=_NAME_TYPES, with_quasi=False):
+    """folded token -> sorted case ids.
 
     Multi-word names are split on whitespace, hyphen and underscore, so
     'Freiburg im Breisgau' and 'Heinz-Dieter Brandt' contribute every part.
-    Casefolded, so 'Koch' and 'koch' count as the same token.
+    Casefolded and umlaut-folded, so 'Koch' == 'koch' and 'Bürger' == 'Buerger'.
     """
-    import re
-
     out = {}
     for c in cases:
         for gt in c.ground_truth:
-            if gt.entity_type not in types:
+            if gt.entity_type in types:
+                toks = _tokens_of(gt.value)
+            elif with_quasi and gt.entity_type == _QUASI_TYPE:
+                toks = _tokens_of(gt.value, quasi=True)
+            else:
                 continue
-            for tok in re.split(r"[\s\-_]+", gt.value):
-                tok = tok.strip(".,;:()").casefold()
-                if tok:
-                    out.setdefault(tok, set()).add(c.case_id)
+            for tok in toks:
+                out.setdefault(tok, set()).add(c.case_id)
     return {k: sorted(v) for k, v in out.items()}
 
 
-class HoldoutDisjointTest(unittest.TestCase):
-    """The hold-out is only a hold-out if it shares no name token with dev.
+def _variant(a, b):
+    """True if tokens a and b are equal or stem variants (see thresholds)."""
+    if a == b:
+        return True
+    if len(a) < _STEM_MIN_LEN or len(b) < _STEM_MIN_LEN:
+        return False
+    if a.startswith(b) or b.startswith(a):
+        return True
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n >= _SHARED_PREFIX
 
-    Tokens of every PERSON/LOCATION/ORGANIZATION entity in a hold-out case
-    must not occur in any dev entity (v1 cases are dev). Otherwise tuning on
-    dev (e.g. a stopword for 'Bauer') silently moves the hold-out too.
+
+def _holdout_conflicts(cases):
+    """[(holdout token, dev token, holdout case ids, dev case ids), ...]"""
+    dev = _entity_tokens([c for c in cases if c.split == "dev"], with_quasi=True)
+    ho = _entity_tokens([c for c in cases if c.split == "holdout"])
+    out = []
+    for ht, hcases in sorted(ho.items()):
+        for dt, dcases in sorted(dev.items()):
+            if _variant(ht, dt):
+                out.append((ht, dt, hcases, dcases))
+    return out
+
+
+class HoldoutDisjointTest(unittest.TestCase):
+    """The hold-out is only a hold-out if it shares no name vocabulary with dev.
+
+    Covers: every token of every PERSON / LOCATION / ORGANIZATION / DE_FIRMA
+    entity in a hold-out case against every such entity in dev (v1 is dev)
+    AND against the capitalised words inside dev QUASI_IDENTIFIER_COMBO spans
+    (cross-type, so a surname vs a company name counts). Beyond exact equality
+    a stem rule applies (tokens >= 4 chars: prefix of each other, or shared
+    prefix >= 5 chars after umlaut folding). Not covered: pure identifiers
+    (IBAN, phone, dates, numbers), legal-form tokens, and lower-case words;
+    capitalised non-initial words in negative texts are shared with dev by
+    design and are NOT checked.
     """
+
+    def _case(self, cid, split, typ, value):
+        gt = cb.GroundTruthEntity(cid, typ, value, "must_detect", 0, 1, 1)
+        return cb.Case(cid, "t", [gt], split=split)
 
     def test_helper_splits_multiword_and_hyphenated_names(self):
         c = cb.Case("v2-x", "t", [
             cb.GroundTruthEntity("v2-x", "LOCATION", "Freiburg im Breisgau", "must_detect", 0, 1, 1),
             cb.GroundTruthEntity("v2-x", "PERSON", "Heinz-Dieter Brandt", "must_detect", 0, 1, 1),
             cb.GroundTruthEntity("v2-x", "DE_FIRMA", "Foo GmbH", "must_detect", 0, 1, 1),
+            cb.GroundTruthEntity("v2-x", "IBAN_CODE", "DE02 1203", "must_detect", 0, 1, 1),
         ])
         toks = _entity_tokens([c])
-        self.assertEqual(set(toks), {"freiburg", "im", "breisgau", "heinz", "dieter", "brandt"})
+        self.assertEqual(set(toks), {"freiburg", "im", "breisgau", "heinz", "dieter", "brandt", "foo"})
 
-    def test_holdout_entity_tokens_do_not_occur_in_dev(self):
+    def test_variant_rule(self):
+        for a, b in (("gebhardt", "gebhart"), ("lindner", "lindner"), ("sommer", "sommerfeld"),
+                     ("berg", "bergmann"), ("wittkopp", "witt"), ("buergerverein", "buergermeister"),
+                     ("schwerin", "schweitzer")):
+            with self.subTest(pair=(a, b)):
+                self.assertTrue(_variant(a, b))
+        for a, b in (("tag", "tagung"), ("anna", "annette"), ("ritter", "rotter"), ("jena", "gotha")):
+            with self.subTest(pair=(a, b)):
+                self.assertFalse(_variant(a, b))
+
+    def test_blind_spots_are_closed(self):
+        """Cross-type (PERSON vs DE_FIRMA), quasi-span words and stems are seen."""
+        dev = [
+            self._case("d1", "dev", "PERSON", "Torsten Lindner"),
+            self._case("d2", "dev", "PERSON", "Leonie Gebhart"),
+            cb.Case("d3", "t", [cb.GroundTruthEntity(
+                "d3", "QUASI_IDENTIFIER_COMBO", "Leiterin der Qualitaet bei Zulieferern in Bamberg",
+                "known_gap", 0, 1, 1)], split="dev"),
+        ]
+        ho = [
+            self._case("h1", "holdout", "DE_FIRMA", "Lindner Elektrotechnik GmbH"),
+            self._case("h2", "holdout", "LOCATION", "Bamberg"),
+            self._case("h3", "holdout", "PERSON", "Gebhardt"),
+            self._case("h4", "holdout", "PERSON", "Ritter"),
+        ]
+        found = {(h, d) for h, d, _a, _b in _holdout_conflicts(dev + ho)}
+        self.assertEqual(found, {("lindner", "lindner"), ("bamberg", "bamberg"),
+                                 ("gebhardt", "gebhart")})
+
+    def test_holdout_does_not_share_name_vocabulary_with_dev(self):
         cases = cb.load_corpus(_CORPUS)
-        dev = _entity_tokens([c for c in cases if c.split == "dev"])
-        ho = _entity_tokens([c for c in cases if c.split == "holdout"])
-        shared = {t: (ho[t], dev[t]) for t in ho if t in dev}
-        self.assertEqual(shared, {}, "hold-out shares name tokens with dev: %r" % shared)
+        found = {(h, d): (a, b) for h, d, a, b in _holdout_conflicts(cases)
+                 if (h, d) not in _STEM_EXCEPTIONS}
+        self.assertEqual(found, {}, "hold-out shares name vocabulary with dev: %r" % found)
+
+    def test_exceptions_are_real_and_justified(self):
+        cases = cb.load_corpus(_CORPUS)
+        actual = {(h, d) for h, d, _a, _b in _holdout_conflicts(cases)}
+        for pair, why in _STEM_EXCEPTIONS.items():
+            self.assertIn(pair, actual, "stale exception %r" % (pair,))
+            self.assertGreaterEqual(len(why), 30, "exception %r needs a justification" % (pair,))
+        self.assertLessEqual(len(_STEM_EXCEPTIONS), 3)
 
 
 class AnnotationRulesDocumentedTest(unittest.TestCase):

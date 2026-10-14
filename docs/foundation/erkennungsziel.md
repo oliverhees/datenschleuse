@@ -108,7 +108,7 @@ Adressen und Organisationen im Fließtext und mehrzeilig, deutsche JSON-Schlüss
 neben echten Werten, Quasi-Identifier, Titel in Dateinamen-Form, satzinitiale
 Verben und Substantive in ASCII- und Umlautschreibung als Negative. Dazu ein
 **Hold-out-Split** (37 Positiv-, 30 Negativ-Fälle), der nie zum Abstimmen
-dient und zu dev namens-token-disjunkt ist (maschinell geprüft), und Annotationsregeln A1–A6 im Korpus-Header. Der Korpus kann nicht mehr
+dient und zu dev namens-disjunkt ist (maschinell geprüft, Umfang s. u.), und Annotationsregeln A1–A6 im Korpus-Header. Der Korpus kann nicht mehr
 still schrumpfen (`test/corpus/corpus-manifest.json`,
 `test/test_corpus_v2.py`).
 
@@ -118,22 +118,22 @@ mit Nicht-PII-Wortliste (ausgelieferte Konfiguration):
 
 | Kennzahl | v1-Korpus (84 Fälle) | v2-Korpus gesamt (325 Fälle) | v2 dev | v2 Hold-out |
 |---|---|---|---|---|
-| Recall (`must_detect`) | 100,0 % (54/54) | **91,8 %** (258/281) | 93,1 % (217/233) | **85,4 %** (41/48) |
-| Precision | 81,8 % | **89,3 %** | 89,3 % | 89,1 % |
+| Recall (`must_detect`) | 100,0 % (54/54) | **92,9 %** (261/281) | 93,1 % (217/233) | **91,7 %** (44/48) |
+| Precision | 81,8 % | **89,4 %** | 89,3 % | 89,8 % |
 | Störquote | 37,5 % (12/32) | **26,3 %** (30/114) | 29,8 % (25/84) | 16,7 % (5/30) |
-| Recall PERSON | 100,0 % | **87,0 %** (120/138) | | |
+| Recall PERSON | 100,0 % | **89,1 %** (123/138) | | |
 | Recall ORGANIZATION | n/a | **50,0 %** (3/6) | | |
 | `known_gap` erkannt | 0/4 | 3/24 | 3/18 | 0/6 |
 
-Rohzustand ohne Wortliste über den v2-Korpus: Recall 91,8 %, Precision 83,0 %,
+Rohzustand ohne Wortliste über den v2-Korpus: Recall 92,9 %, Precision 83,1 %,
 Störquote 42,1 % (48/114). Die Wortliste ändert den Recall nicht und senkt die
 Störquote um 16 Prozentpunkte.
 
 Wie die Zahlen zu lesen sind:
 
-- **Der Recall wird rot.** Gesamt 91,8 % < 95 %, PERSON 87,0 % < 90 %,
+- **Der Recall wird rot.** Gesamt 92,9 % < 95 %, PERSON 89,1 % < 90 %,
   ORGANIZATION 50,0 % < 75 %. Die Fehlstellen sind benannt, nicht pauschal:
-  15 der 23 verfehlten Entitäten sind Nachnamen, die Alltagswörter sind
+  13 der 20 verfehlten Entitäten sind Nachnamen, die Alltagswörter sind
   (`Bauer`, `Koch`, `Menge`, `Vogel`, `Hahn`, …) — in Fließtext wie in
   JSON-Werten. Die Kopf-Morphem-Wächter (`Erhart`, `Lienhart`, …) und alle
   Positiv-Kontrollen werden dagegen erkannt (0 Abweichungen von der Baseline).
@@ -142,16 +142,40 @@ Wie die Zahlen zu lesen sind:
   22), satzinitiale Verben und Substantive dagegen weiterhin (15 von 46).
   Maßgeblich bleibt daher die Quote je Kategorie
   (`by_category` in `benchmark-results.json`).
-- **Hold-out vs. dev:** Der Recall fällt von 93,1 % auf 85,4 %. Der Hold-out
-  ist klein (48 Entitäten), die Differenz ist ein Signal, kein Beweis; die
+- **Hold-out vs. dev:** Recall 91,7 % (Hold-out) gegen 93,1 % (dev). Der
+  Hold-out ist klein (48 Entitäten, ein Treffer = 2,1 Prozentpunkte). Ein
+  früherer Zwischenstand lag bei 85,4 % (41/48); beim Herstellen der
+  Disjunktheit wurden drei damals verfehlte Hold-out-Namen (`Sommer`, `Berg`,
+  `Wittkopp`, alle mit dev-Verwandten) durch frische Namen ersetzt, die erkannt
+  werden. Das ist ein Nebeneffekt des Austauschs und kein besseres Modell — es
+  zeigt, wie stark der Hold-out-Recall an einzelnen Wörtern hängt. Die
   Kategorie-Zusammensetzung der Negative unterscheidet sich außerdem
   (Hold-out: 14 von 30 satzinitial), die Störquoten sind daher nicht direkt
-  vergleichbar. Frisches Vokabular im Hold-out (`Gliedere`,
-  `Skizziere`, `Retoure`) wird trotzdem fehlalarmiert, wo die Liste es nicht
-  kennt.
+  vergleichbar. Frisches Vokabular im Hold-out (`Gliedere`, `Skizziere`,
+  `Retoure`) wird trotzdem fehlalarmiert, wo die Liste es nicht kennt.
+- **Was „namens-disjunkt“ genau abdeckt** (`HoldoutDisjointTest`): Jedes Token
+  jeder PERSON-, LOCATION-, ORGANIZATION- und DE_FIRMA-Entität im Hold-out wird
+  gegen alle solchen dev-Entitäten (v1 zählt zu dev) **und** gegen die groß
+  geschriebenen Wörter in dev-Quasi-Identifier-Spans geprüft, typübergreifend
+  (Nachname gegen Firmenname zählt). Zusätzlich gilt eine Stammregel für Tokens
+  ab 4 Zeichen: eines ist Präfix des anderen oder beide teilen ≥ 5 Zeichen
+  Präfix (nach Umlaut-Faltung `ae/oe/ue/ss`). Rechtsform-Tokens (`GmbH`, …),
+  Zahlen, Datumsangaben und reine Kennungen (IBAN, Telefon) sind ausgenommen.
+  Eine Ausnahmeliste existiert (max. 3 Einträge, begründet, test-geprüft) und
+  ist leer. **Nicht** geprüft: groß geschriebene Nicht-Anfangswörter in
+  Negativ-Texten — die teilt der Hold-out mit dev; ebenso Berufsbezeichnungen
+  (`Bürgerverein` gegen `Bürgermeister` wurde dennoch vorsorglich getauscht).
+- **Hold-out-Störquote ist teilweise geschönt.** Die ausgelieferte Wortliste
+  (`presidio/de-stopwords.yml`, 14 Schema-Schlüssel) kennt Wörter, die in
+  Hold-out-Negativen vorkommen: zwei der 30 Hold-out-Negativ-Texte
+  (`v2-negativ-schema-013`, `-014`) enthalten gelistete Schlüssel
+  (`kundennummer`, `rechnungsnummer`, `zahlungsart`, `sendungsnummer`). Ohne
+  diese beiden liegt die Hold-out-Störquote bei 17,9 % (5/28) statt 16,7 %. In
+  dev sind es 22 von 84 Negativ-Texten, die Listen-Wörter enthalten. Die Liste
+  wurde allerdings nicht am Hold-out abgestimmt (sie entstand vor diesem Korpus).
 - **Interimsziele (Entscheidung Oliver):** Z1 = kein Recall-Verlust, Störquote
   ≤ 20 %, Precision ≥ 85 %, Gate bleibt rot; Z2 = ≤ 10 % / ≥ 90 %. Gegen Z1:
-  Precision erfüllt (89,3 %), Störquote verfehlt (26,3 %). Der Recall-Vergleich
+  Precision erfüllt (89,4 %), Störquote verfehlt (26,3 %). Der Recall-Vergleich
   gegen die v1-Baseline ist auf dem neuen Korpus neu zu ziehen: **v2 ist die
   Baseline.** Regel R2 und der Umgang mit JSON-Schlüsseln werden erst nach
   dieser Messung entschieden.
@@ -205,7 +229,7 @@ Deshalb braucht das Ziel zwei Zahlen, nicht eine.
 | Recall bei `known_gap` | keine Vorgabe | nur berichtet |
 
 **Aktueller Stand gegen dieses Ziel** (Korpus v2, §1.4, mit Wortliste):
-Recall 91,8 %, Precision 89,3 %, Störquote 26,3 % — **fünf Gates verfehlt**
+Recall 92,9 %, Precision 89,4 %, Störquote 26,3 % — **fünf Gates verfehlt**
 (Recall gesamt, Recall PERSON, Recall ORGANIZATION, Precision, Störquote).
 Auf dem alten v1-Korpus (84 Fälle) standen Recall 100 %, Precision 81,8 % und
 Störquote 37,5 % — zwei Gates verfehlt; der v1-Recall war ein Artefakt des zu
@@ -436,7 +460,7 @@ Daraus folgt zweierlei:
    Erst dann misst der Recall etwas. Eigenes Work Item.
 
 **Umgesetzt in DATENSCHLE-94 (§1.4):** Auf dem gehärteten Korpus v2 fällt der
-Recall auf 91,8 % (PERSON 87,0 %). Damit liegt PERSON im Bereich der
+Recall auf 92,9 % (PERSON 89,1 %). Damit liegt PERSON im Bereich der
 Modell-Metadaten (92,02 %) statt darüber — erstmals misst der Recall etwas.
 
 ### Warum die Recall-Ziele nach Mechanismus gestaffelt sind

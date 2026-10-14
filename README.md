@@ -234,26 +234,26 @@ Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregis
 
 Gemessen wird gegen einen eigenen deutschen Testkorpus (325 Fälle, `test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py` misst den Rohzustand des Analyzers ohne Wortliste, `--stopwords presidio/de-stopwords.yml` misst mit der Nicht-PII-Wortliste, die der Guardrail seit DATENSCHLE-82 mitsendet.
 
-**Recall: 91,8 %.** Hier stand vorher 100 % — auf einem Korpus mit 84 handverlesenen, kurzen, syntaktisch einfachen Fällen, auf dem das Modell besser abschnitt als auf seiner eigenen Evaluationsmenge. Das war kein Qualitätsbeleg, sondern ein zu leichter Korpus. Das eingesetzte Sprachmodell `de_core_news_lg` gibt für Personennamen in seinen eigenen Metadaten **92,02 % Recall** an. Selbst nachsehen:
+**Recall: 92,9 %.** Hier stand vorher 100 % — auf einem Korpus mit 84 handverlesenen, kurzen, syntaktisch einfachen Fällen, auf dem das Modell besser abschnitt als auf seiner eigenen Evaluationsmenge. Das war kein Qualitätsbeleg, sondern ein zu leichter Korpus. Das eingesetzte Sprachmodell `de_core_news_lg` gibt für Personennamen in seinen eigenen Metadaten **92,02 % Recall** an. Selbst nachsehen:
 
 ```bash
 docker exec datenschleuse-analyzer python -c \
   "import de_core_news_lg; print(de_core_news_lg.load().meta['performance'])"
 ```
 
-Der Korpus wurde gehärtet (DATENSCHLE-94): 241 neue Fälle mit Nachnamen, die Alltagswörter sind (`Menge`, `Koch`, `Bauer`), Namen ohne Anrede, Adressen und Organisationen im Fließtext, deutschen JSON-Schlüsseln neben echten Werten, Quasi-Identifiern und satzinitialen Verben in ASCII- und Umlautschreibung als Negativ-Beispiele, dazu ein **Hold-out-Split**, der nie zum Abstimmen dient. Über alle 281 Pflicht-Entitäten werden jetzt 258 gefunden; bei Personen sind es 87,0 %, bei Organisationen 50,0 %. Die größte Lücke sind Nachnamen, die zugleich Alltagswörter sind (`Bauer`, `Koch`, `Menge`): 15 der 23 verfehlten Entitäten. Auf dem Hold-out liegt der Recall bei 85,4 %.
+Der Korpus wurde gehärtet (DATENSCHLE-94): 241 neue Fälle mit Nachnamen, die Alltagswörter sind (`Menge`, `Koch`, `Bauer`), Namen ohne Anrede, Adressen und Organisationen im Fließtext, deutschen JSON-Schlüsseln neben echten Werten, Quasi-Identifiern und satzinitialen Verben in ASCII- und Umlautschreibung als Negativ-Beispiele, dazu ein **Hold-out-Split**, der nie zum Abstimmen dient. Über alle 281 Pflicht-Entitäten werden jetzt 261 gefunden; bei Personen sind es 89,1 %, bei Organisationen 50,0 %. Die größte Lücke sind Nachnamen, die zugleich Alltagswörter sind (`Bauer`, `Koch`, `Menge`): 13 der 20 verfehlten Entitäten. Auf dem Hold-out liegt der Recall bei 91,7 % (nur 48 Entitäten, entsprechend grob).
 
 **Precision: Hier stand vorher 100 %. Die Zahl ist zurückgezogen.** Sie kam zustande, weil der Korpus auf der Negativ-Seite ausschließlich die Regex-Recognizer beprobte (IBAN, Telefon, KFZ, Aktenzeichen, Firma); die statistische Erkennung war unbeprobt. Nachdem sie beprobt wurde und der Korpus gehärtet ist, sieht es so aus:
 
 | Kennzahl | Ziel | Rohzustand, ohne Wortliste | **mit Wortliste — ausgelieferte Konfiguration** |
 |---|---|---|---|
-| Recall (Pflicht-Entitäten) | ≥ 95 % | 91,8 % | 91,8 % |
-| Precision (aus Negativ-Fällen) | ≥ 90 % | 83,0 % | **89,3 %** |
+| Recall (Pflicht-Entitäten) | ≥ 95 % | 92,9 % | 92,9 % |
+| Precision (aus Negativ-Fällen) | ≥ 90 % | 83,1 % | **89,4 %** |
 | Störquote (PII-freie Texte mit Fehlalarm) | ≤ 10 % | 42,1 % (48 von 114) | **26,3 %** (30 von 114) |
 
 **Gut jeder vierte PII-freie Text wird weiterhin gestört** (30 von 114), und das Ziel ist verfehlt. Ohne die Wortliste waren es vier von zehn. Satzinitiale Verben und Substantive stören dabei nach wie vor in knapp jedem dritten Fall (15 von 46), zusammenhängender Fließtext fast nie (1 von 22) — die gemischte Quote verdünnt, deshalb weist `benchmark-results.json` sie je Kategorie aus.
 
-Die rechte Spalte ist die ausgelieferte Konfiguration. Die gemessene Nicht-PII-Wortliste (`presidio/de-stopwords.yml`, derzeit 14 Einträge) wird vom Guardrail seit DATENSCHLE-82 an jeden Presidio-Aufruf gehängt, in Maskierung und Verifikationsdurchlauf gleichermaßen. Sie deckt ausschließlich **deutsche Schema-Schlüssel** ab — `bestellnummer`, `lieferdatum`, `zahlungsart` und ähnliche Komposita, die das Modell als Orte oder Namen meldet. Das ist eng, und zwar mit Absicht: Der Recall ist mit und ohne Liste identisch (258 von 281 Pflicht-Entitäten). Die Zahlen der rechten Spalte sind durch den Guardrail-Pfad selbst gemessen (`test/guardrail-benchmark.py`, gegen einen laufenden Analyzer) und stimmen mit dem Benchmark-Lauf mit Liste überein. Die Wirkung beschreibt [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md) §7; warum es die Liste gibt, welche Gegenkontrollen sie absichern und welche Alternativen verworfen wurden: [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md).
+Die rechte Spalte ist die ausgelieferte Konfiguration. Die gemessene Nicht-PII-Wortliste (`presidio/de-stopwords.yml`, derzeit 14 Einträge) wird vom Guardrail seit DATENSCHLE-82 an jeden Presidio-Aufruf gehängt, in Maskierung und Verifikationsdurchlauf gleichermaßen. Sie deckt ausschließlich **deutsche Schema-Schlüssel** ab — `bestellnummer`, `lieferdatum`, `zahlungsart` und ähnliche Komposita, die das Modell als Orte oder Namen meldet. Das ist eng, und zwar mit Absicht: Der Recall ist mit und ohne Liste identisch (261 von 281 Pflicht-Entitäten). Die Zahlen der rechten Spalte sind durch den Guardrail-Pfad selbst gemessen (`test/guardrail-benchmark.py`, gegen einen laufenden Analyzer) und stimmen mit dem Benchmark-Lauf mit Liste überein. Die Wirkung beschreibt [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md) §7; warum es die Liste gibt, welche Gegenkontrollen sie absichern und welche Alternativen verworfen wurden: [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md).
 
 **Was „ausgeliefert" hier belegt und was nicht:** Belegt sind die Verdrahtung im Code (der Guardrail sendet `allow_list`, `allow_list_match` und `regex_flags`) und die Layout-Simulation `test/test_deploy_layout.py`, die aus Dockerfile- und Compose-Dateien das `/app`-Layout nachbaut und den Guardrail darin importiert und konstruiert. Ein echter Docker-Build und ein Container-Start wurden dafür **nicht** ausgeführt.
 

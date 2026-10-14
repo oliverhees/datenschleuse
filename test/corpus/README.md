@@ -57,7 +57,15 @@ werden vom Loader streng validiert:
   ist **namens-token-disjunkt** zu dev: kein Token einer PERSON-/LOCATION-/
   ORGANIZATION-Entität im Hold-out kommt in einer dev-Entität vor (v1 zählt
   zu dev; Mehrwort- und Bindestrich-Namen werden in Teile zerlegt). Erzwungen
-  von `HoldoutDisjointTest`. Neue Hold-out-Fälle brauchen frisches Vokabular, keine Varianten bereits
+  von `HoldoutDisjointTest`. Umfang: Typen PERSON, LOCATION, ORGANIZATION und
+  DE_FIRMA typübergreifend, plus die groß geschriebenen Wörter in dev-Quasi-
+  Identifier-Spans; dazu eine Stammregel für Tokens ab 4 Zeichen (Präfix des
+  anderen oder ≥ 5 gemeinsame Präfix-Zeichen nach Umlaut-Faltung). Nicht
+  geprüft: groß geschriebene Nicht-Anfangswörter in Negativ-Texten (die teilt
+  der Hold-out mit dev), Berufsbezeichnungen, Zahlen/Kennungen. Die ausgelieferte
+  Wortliste kennt 14 Schema-Schlüssel; zwei Hold-out-Negative enthalten sie, die
+  Hold-out-Störquote ist dadurch leicht geschönt (16,7 % gegen 17,9 % ohne diese
+  beiden). Neue Hold-out-Fälle brauchen frisches Vokabular, keine Varianten bereits
   abgestimmter Wörter.
 - `control: true` — Positiv-Kontrolle. Jede `must_detect`-Entität trägt dann
   `baseline_detected` (true/false): ob die Baseline (main bei der Härtung) sie
@@ -192,16 +200,16 @@ Docker gestartet), kein Container-Start.
 
 | Kennzahl | Rohzustand (ohne Liste) | mit Liste (ausgeliefert) | davon dev | davon Hold-out |
 |---|---|---|---|---|
-| Recall (`must_detect`) | 91,8 % (258/281) | 91,8 % (258/281) | 93,1 % (217/233) | 85,4 % (41/48) |
-| Precision | 83,0 % | 89,3 % | 89,3 % | 89,1 % |
+| Recall (`must_detect`) | 92,9 % (261/281) | 92,9 % (261/281) | 93,1 % (217/233) | 91,7 % (44/48) |
+| Precision | 83,1 % | 89,4 % | 89,3 % | 89,8 % |
 | Störquote | 42,1 % (48/114) | 26,3 % (30/114) | 29,8 % (25/84) | 16,7 % (5/30) |
 
-Recall PERSON 87,0 % (120/138), ORGANIZATION 50,0 % (3/6); `known_gap` 3 von 24
+Recall PERSON 89,1 % (123/138), ORGANIZATION 50,0 % (3/6); `known_gap` 3 von 24
 erkannt. Recall, Precision und Störquote sind **rot**. Die 20
 Positiv-Kontrollen weichen nicht von der Baseline ab (0 Abweichungen); alle
 `nachname-kopf`-Wächter (`Erhart`, `Lienhart`, …) werden erkannt. Die größte
 Recall-Lücke sind Nachnamen, die Alltagswörter sind (`Bauer`, `Koch`, `Menge`:
-15 der 23 verfehlten Entitäten).
+13 der 20 verfehlten Entitäten).
 
 Zum Vergleich der alte Korpus (nur v1, 84 Fälle, am selben Tag gegen denselben
 Stand reproduziert): Recall 100 % (54/54), Precision 81,8 %, Störquote 37,5 %

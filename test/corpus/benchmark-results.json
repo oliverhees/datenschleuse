@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-10-14T11:27:41.894593+00:00",
+  "timestamp_utc": "2026-10-14T11:37:13.588420+00:00",
   "presidio_url": "http://127.0.0.1:5811",
   "corpus_path": "/home/user/datenschleuse/.claude/worktrees/agent-ae9fd6ffcebbd67c2/test/corpus/de-pii-testkorpus.yaml",
   "case_count": 325,
@@ -7,12 +7,12 @@
   "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
   "must_detect": {
     "overall": {
-      "tp": 258,
-      "fn": 23,
+      "tp": 261,
+      "fn": 20,
       "fp": 31,
       "support": 281,
-      "recall": 0.9181,
-      "precision": 0.8927
+      "recall": 0.9288,
+      "precision": 0.8938
     },
     "by_type": {
       "CREDIT_CARD": {
@@ -168,12 +168,12 @@
         "precision": 0.375
       },
       "PERSON": {
-        "tp": 120,
-        "fn": 18,
+        "tp": 123,
+        "fn": 15,
         "fp": 19,
         "support": 138,
-        "recall": 0.8696,
-        "precision": 0.8633
+        "recall": 0.8913,
+        "precision": 0.8662
       },
       "PHONE_NUMBER": {
         "tp": 4,
@@ -757,11 +757,11 @@
       "per_type_min_support": 3
     },
     "verstoesse": [
-      "Recall gesamt 91.8% < Ziel 95% (TP=258 FN=23)",
-      "Precision 89.3% < Ziel 90% (FP=31)",
+      "Recall gesamt 92.9% < Ziel 95% (TP=261 FN=20)",
+      "Precision 89.4% < Ziel 90% (FP=31)",
       "Stoerquote 26.3% > Ziel 10% (30/114 PII-freie Texte gestört)",
       "Recall ORGANIZATION 50.0% < Ziel 75% (TP=3 FN=3)",
-      "Recall PERSON 87.0% < Ziel 90% (TP=120 FN=18)"
+      "Recall PERSON 89.1% < Ziel 90% (TP=123 FN=15)"
     ],
     "bestanden": false
   },
@@ -1127,7 +1127,7 @@
       "case_id": "v2-adresse-fliesstext-018",
       "entity_type": "ORGANIZATION",
       "start": 27,
-      "end": 54,
+      "end": 52,
       "score": 0.85
     },
     {
@@ -1505,12 +1505,12 @@
     },
     "holdout": {
       "must_detect": {
-        "tp": 41,
-        "fn": 7,
+        "tp": 44,
+        "fn": 4,
         "fp": 5,
         "support": 48,
-        "recall": 0.8542,
-        "precision": 0.8913
+        "recall": 0.9167,
+        "precision": 0.898
       },
       "must_detect_by_type": {
         "DE_FIRMA": {
@@ -1554,12 +1554,12 @@
           "precision": 0.4
         },
         "PERSON": {
-          "tp": 21,
-          "fn": 5,
+          "tp": 24,
+          "fn": 2,
           "fp": 1,
           "support": 26,
-          "recall": 0.8077,
-          "precision": 0.9545
+          "recall": 0.9231,
+          "precision": 0.96
         }
       },
       "known_gap": {
@@ -1636,20 +1636,6 @@
       "value": "Menge"
     },
     {
-      "case_id": "v2-nachname-wort-021",
-      "split": "holdout",
-      "category": "nachname-wort",
-      "entity_type": "PERSON",
-      "value": "Sommer"
-    },
-    {
-      "case_id": "v2-nachname-wort-022",
-      "split": "holdout",
-      "category": "nachname-wort",
-      "entity_type": "PERSON",
-      "value": "Berg"
-    },
-    {
       "case_id": "v2-adresse-fliesstext-005",
       "split": "dev",
       "category": "adresse-fliesstext",
@@ -1675,7 +1661,7 @@
       "split": "holdout",
       "category": "adresse-fliesstext",
       "entity_type": "ORGANIZATION",
-      "value": "Bürgerverein Wiesental"
+      "value": "Heimatverein Wiesental"
     },
     {
       "case_id": "v2-json-gemischt-002",
@@ -1732,13 +1718,6 @@
       "category": "person-fliesstext",
       "entity_type": "PERSON",
       "value": "M. Berger"
-    },
-    {
-      "case_id": "v2-person-fliesstext-013",
-      "split": "holdout",
-      "category": "person-fliesstext",
-      "entity_type": "PERSON",
-      "value": "Dorothea Wittkopp"
     }
   ],
   "by_category": {
@@ -1772,8 +1751,8 @@
     },
     "nachname-wort": {
       "cases": 28,
-      "tp": 22,
-      "fn": 10,
+      "tp": 24,
+      "fn": 8,
       "negative_cases": 0,
       "negative_cases_with_fp": 0
     },
@@ -1814,8 +1793,8 @@
     },
     "person-fliesstext": {
       "cases": 14,
-      "tp": 13,
-      "fn": 2,
+      "tp": 14,
+      "fn": 1,
       "negative_cases": 0,
       "negative_cases_with_fp": 0
     },
