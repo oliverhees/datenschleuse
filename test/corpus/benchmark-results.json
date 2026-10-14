@@ -1,25 +1,25 @@
 {
-  "timestamp_utc": "2026-10-14T07:04:54.430122+00:00",
-  "presidio_url": "http://localhost:5791",
-  "corpus_path": "/home/user/datenschleuse/.claude/worktrees/agent-adc8b61a2299f0022/test/corpus/de-pii-testkorpus.yaml",
-  "case_count": 84,
+  "timestamp_utc": "2026-10-14T11:12:00.461213+00:00",
+  "presidio_url": "http://127.0.0.1:5811",
+  "corpus_path": "/home/user/datenschleuse/.claude/worktrees/agent-ae9fd6ffcebbd67c2/test/corpus/de-pii-testkorpus.yaml",
+  "case_count": 325,
   "overlap_min_ratio": 0.5,
   "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
   "must_detect": {
     "overall": {
-      "tp": 54,
-      "fn": 0,
-      "fp": 12,
-      "support": 54,
-      "recall": 1.0,
-      "precision": 0.8182
+      "tp": 258,
+      "fn": 23,
+      "fp": 31,
+      "support": 281,
+      "recall": 0.9181,
+      "precision": 0.8927
     },
     "by_type": {
       "CREDIT_CARD": {
-        "tp": 1,
+        "tp": 2,
         "fn": 0,
         "fp": 0,
-        "support": 1,
+        "support": 2,
         "recall": 1.0,
         "precision": 1.0
       },
@@ -40,18 +40,18 @@
         "precision": 1.0
       },
       "DE_FIRMA": {
-        "tp": 4,
+        "tp": 17,
         "fn": 0,
         "fp": 0,
-        "support": 4,
+        "support": 17,
         "recall": 1.0,
         "precision": 1.0
       },
       "DE_GEBURTSDATUM": {
-        "tp": 1,
+        "tp": 2,
         "fn": 0,
         "fp": 0,
-        "support": 1,
+        "support": 2,
         "recall": 1.0,
         "precision": 1.0
       },
@@ -88,12 +88,12 @@
         "precision": 1.0
       },
       "DE_PLZ": {
-        "tp": 1,
+        "tp": 4,
         "fn": 0,
-        "fp": 0,
-        "support": 1,
+        "fp": 1,
+        "support": 4,
         "recall": 1.0,
-        "precision": 1.0
+        "precision": 0.8
       },
       "DE_SOZIALVERSICHERUNG": {
         "tp": 1,
@@ -104,18 +104,18 @@
         "precision": 1.0
       },
       "DE_STEUER_ID": {
-        "tp": 3,
+        "tp": 4,
         "fn": 0,
         "fp": 0,
-        "support": 3,
+        "support": 4,
         "recall": 1.0,
         "precision": 1.0
       },
       "DE_STRASSE": {
-        "tp": 2,
+        "tp": 15,
         "fn": 0,
         "fp": 0,
-        "support": 2,
+        "support": 15,
         "recall": 1.0,
         "precision": 1.0
       },
@@ -128,58 +128,58 @@
         "precision": 1.0
       },
       "EMAIL_ADDRESS": {
-        "tp": 3,
+        "tp": 6,
         "fn": 0,
         "fp": 0,
-        "support": 3,
+        "support": 6,
         "recall": 1.0,
         "precision": 1.0
       },
       "IBAN_CODE": {
-        "tp": 2,
+        "tp": 4,
         "fn": 0,
         "fp": 0,
-        "support": 2,
+        "support": 4,
         "recall": 1.0,
         "precision": 1.0
       },
       "IP_ADDRESS": {
-        "tp": 1,
-        "fn": 0,
-        "fp": 0,
-        "support": 1,
-        "recall": 1.0,
-        "precision": 1.0
-      },
-      "LOCATION": {
-        "tp": 4,
-        "fn": 0,
-        "fp": 3,
-        "support": 4,
-        "recall": 1.0,
-        "precision": 0.5714
-      },
-      "ORGANIZATION": {
-        "tp": 0,
-        "fn": 0,
-        "fp": 1,
-        "support": 0,
-        "recall": null,
-        "precision": 0.0
-      },
-      "PERSON": {
-        "tp": 16,
-        "fn": 0,
-        "fp": 8,
-        "support": 16,
-        "recall": 1.0,
-        "precision": 0.6667
-      },
-      "PHONE_NUMBER": {
         "tp": 2,
         "fn": 0,
         "fp": 0,
         "support": 2,
+        "recall": 1.0,
+        "precision": 1.0
+      },
+      "LOCATION": {
+        "tp": 61,
+        "fn": 2,
+        "fp": 6,
+        "support": 63,
+        "recall": 0.9683,
+        "precision": 0.9104
+      },
+      "ORGANIZATION": {
+        "tp": 3,
+        "fn": 3,
+        "fp": 5,
+        "support": 6,
+        "recall": 0.5,
+        "precision": 0.375
+      },
+      "PERSON": {
+        "tp": 120,
+        "fn": 18,
+        "fp": 19,
+        "support": 138,
+        "recall": 0.8696,
+        "precision": 0.8633
+      },
+      "PHONE_NUMBER": {
+        "tp": 4,
+        "fn": 0,
+        "fp": 0,
+        "support": 4,
         "recall": 1.0,
         "precision": 1.0
       }
@@ -187,27 +187,35 @@
   },
   "known_gap": {
     "overall": {
-      "tp": 0,
-      "fn": 4,
+      "tp": 3,
+      "fn": 21,
       "fp": 0,
-      "support": 4,
-      "recall": 0.0,
-      "precision": null
+      "support": 24,
+      "recall": 0.125,
+      "precision": 1.0
     },
     "by_type": {
-      "PERSON": {
+      "DE_STRASSE": {
         "tp": 0,
-        "fn": 2,
+        "fn": 1,
         "fp": 0,
-        "support": 2,
+        "support": 1,
         "recall": 0.0,
         "precision": null
       },
+      "PERSON": {
+        "tp": 3,
+        "fn": 7,
+        "fp": 0,
+        "support": 10,
+        "recall": 0.3,
+        "precision": 1.0
+      },
       "QUASI_IDENTIFIER_COMBO": {
         "tp": 0,
-        "fn": 2,
+        "fn": 13,
         "fp": 0,
-        "support": 2,
+        "support": 13,
         "recall": 0.0,
         "precision": null
       }
@@ -240,19 +248,160 @@
         "value": "Max Mustermann",
         "detected_same_type": false,
         "any_overlap_detected": false
+      },
+      {
+        "case_id": "v2-adresse-fliesstext-017",
+        "entity_type": "DE_STRASSE",
+        "value": "Am Mühlenteich 5",
+        "detected_same_type": false,
+        "any_overlap_detected": false
+      },
+      {
+        "case_id": "v2-quasi-identifier-001",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Geschäftsführer von Kessler Maschinenbau GmbH in Offenburg",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-002",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "einzige Ärztin der Praxis in Wittlich",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-003",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Leiter der Personalabteilung der Bergmann Logistik GmbH in Duisburg",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-004",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "jüngste Gemeinderätin von Lindau, 29 Jahre alt, arbeitet als Lehrerin",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-005",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Pfarrer der Gemeinde in Bernau, der im Mai 70 wurde",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-006",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Betriebsrätin der Nordlicht Medien AG in Rostock mit zwei Kindern",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-007",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Hausmeister der Schule in Zeitz, 58",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-008",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "einzige Rollstuhlfahrer im Team der Winkler & Partner GbR in Passau",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-009",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Direktor der Sparkasse Oberland in Garmisch",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-010",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "einzige Tierärztin in Husum, geboren 1984",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-quasi-identifier-011",
+        "entity_type": "QUASI_IDENTIFIER_COMBO",
+        "value": "Vorstand der Rheintal-Versicherung in Mainz, Jahrgang 1971",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-titel-dateiname-001",
+        "entity_type": "PERSON",
+        "value": "Hartmann",
+        "detected_same_type": true,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-titel-dateiname-002",
+        "entity_type": "PERSON",
+        "value": "Susanne Kaltenbach",
+        "detected_same_type": true,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-titel-dateiname-003",
+        "entity_type": "PERSON",
+        "value": "Klaus-Immel",
+        "detected_same_type": false,
+        "any_overlap_detected": false
+      },
+      {
+        "case_id": "v2-titel-dateiname-004",
+        "entity_type": "PERSON",
+        "value": "Verena_Stahl",
+        "detected_same_type": false,
+        "any_overlap_detected": false
+      },
+      {
+        "case_id": "v2-titel-dateiname-005",
+        "entity_type": "PERSON",
+        "value": "Ewald Zander",
+        "detected_same_type": true,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-titel-dateiname-006",
+        "entity_type": "PERSON",
+        "value": "Menge",
+        "detected_same_type": false,
+        "any_overlap_detected": false
+      },
+      {
+        "case_id": "v2-titel-dateiname-007",
+        "entity_type": "PERSON",
+        "value": "Annette_Ruf",
+        "detected_same_type": false,
+        "any_overlap_detected": true
+      },
+      {
+        "case_id": "v2-titel-dateiname-008",
+        "entity_type": "PERSON",
+        "value": "Koch",
+        "detected_same_type": false,
+        "any_overlap_detected": false
       }
     ]
   },
   "negative_cases": {
-    "count": 32,
-    "false_positives_total": 12,
+    "count": 114,
+    "false_positives_total": 31,
     "false_positives_by_type": {
-      "LOCATION": 3,
-      "ORGANIZATION": 1,
-      "PERSON": 8
+      "DE_PLZ": 1,
+      "LOCATION": 6,
+      "ORGANIZATION": 5,
+      "PERSON": 19
     },
-    "cases_with_false_positive": 12,
-    "stoerquote": 0.375,
+    "cases_with_false_positive": 30,
+    "stoerquote": 0.2632,
     "stoerquote_note": "Anteil der PII-freien Texte mit mindestens einem Fehlalarm. Ergänzt die Precision, weil TP/(TP+FP) Buckets mischt: TP kommen aus Positiv-Fällen, FP aus Negativ-Fällen. Dadurch lässt sich die Precision durch Hinzufügen von Positiv-Fällen optisch verbessern, ohne dass ein Fehlalarm verschwindet. Die Störquote ist dagegen immun und bildet ab, was ein Anwender tatsächlich erlebt.",
     "offenders": [
       {
@@ -386,6 +535,209 @@
             "score": 0.85
           }
         ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-001",
+        "text": "Fasse die Besprechung in drei Sätzen zusammen.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Fasse",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-002",
+        "text": "Uebersetze den Brief ins Spanische.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Uebersetze",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-004",
+        "text": "Rueckruf bitte bis spaetestens Freitag.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Rueckruf",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-011",
+        "text": "Ergaenze den Text um ein Fazit.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Ergaenze",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-019",
+        "text": "Kuerze den Bericht auf eine Seite.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Kuerze",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-020",
+        "text": "Ueberarbeite die Einleitung.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Ueberarbeite",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-022",
+        "text": "Oeffne die Datei und lies den ersten Absatz.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Oeffne",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-023",
+        "text": "Waehle die guenstigste Variante.",
+        "detections": [
+          {
+            "entity_type": "LOCATION",
+            "span": "Waehle",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-024",
+        "text": "Fasse bitte den Vertrag kurz zusammen.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Fasse",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-025",
+        "text": "Rueckfrage zur Lieferung steht noch aus.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Rueckfrage",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-031",
+        "text": "Terminanfrage liegt vor.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Terminanfrage",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-034",
+        "text": "Gliedere den Text in drei Abschnitte.",
+        "detections": [
+          {
+            "entity_type": "PERSON",
+            "span": "Gliedere",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-035",
+        "text": "Skizziere den Ablauf in Stichpunkten.",
+        "detections": [
+          {
+            "entity_type": "LOCATION",
+            "span": "Skizziere",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-045",
+        "text": "Ruecksendung ist kostenlos.",
+        "detections": [
+          {
+            "entity_type": "ORGANIZATION",
+            "span": "Ruecksendung",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-satzanfang-046",
+        "text": "Retoure bitte originalverpackt aufgeben.",
+        "detections": [
+          {
+            "entity_type": "ORGANIZATION",
+            "span": "Retoure",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-schema-001",
+        "text": "{\"bestellnummer\": \"B-20931\", \"menge\": 4, \"einzelpreis\": 12.9}",
+        "detections": [
+          {
+            "entity_type": "ORGANIZATION",
+            "span": "B-20931",
+            "score": 0.85
+          },
+          {
+            "entity_type": "DE_PLZ",
+            "span": "20931",
+            "score": 0.35
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-schema-008",
+        "text": "Felder: bestellnummer, menge, einzelpreis, lieferdatum",
+        "detections": [
+          {
+            "entity_type": "LOCATION",
+            "span": "menge",
+            "score": 0.85
+          }
+        ]
+      },
+      {
+        "case_id": "v2-negativ-fliesstext-014",
+        "text": "Unsere Hotline ist am Feiertag nicht besetzt.",
+        "detections": [
+          {
+            "entity_type": "ORGANIZATION",
+            "span": "Hotline",
+            "score": 0.85
+          }
+        ]
       }
     ]
   },
@@ -405,8 +757,11 @@
       "per_type_min_support": 3
     },
     "verstoesse": [
-      "Precision 81.8% < Ziel 90% (FP=12)",
-      "Stoerquote 37.5% > Ziel 10% (12/32 PII-freie Texte gestört)"
+      "Recall gesamt 91.8% < Ziel 95% (TP=258 FN=23)",
+      "Precision 89.3% < Ziel 90% (FP=31)",
+      "Stoerquote 26.3% > Ziel 10% (30/114 PII-freie Texte gestört)",
+      "Recall ORGANIZATION 50.0% < Ziel 75% (TP=3 FN=3)",
+      "Recall PERSON 87.0% < Ziel 90% (TP=120 FN=18)"
     ],
     "bestanden": false
   },
@@ -655,7 +1010,846 @@
       "start": 0,
       "end": 7,
       "score": 0.85
+    },
+    {
+      "case_id": "v2-nachname-wort-010",
+      "entity_type": "DE_BERUF",
+      "start": 18,
+      "end": 25,
+      "score": 0.7
+    },
+    {
+      "case_id": "v2-positiv-kontrolle-019",
+      "entity_type": "ORGANIZATION",
+      "start": 4,
+      "end": 25,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-positiv-kontrolle-020",
+      "entity_type": "ORGANIZATION",
+      "start": 24,
+      "end": 50,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-name-ohne-anrede-006",
+      "entity_type": "PERSON",
+      "start": 0,
+      "end": 14,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-001",
+      "entity_type": "LOCATION",
+      "start": 26,
+      "end": 37,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-002",
+      "entity_type": "LOCATION",
+      "start": 25,
+      "end": 39,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-003",
+      "entity_type": "LOCATION",
+      "start": 19,
+      "end": 32,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-005",
+      "entity_type": "LOCATION",
+      "start": 9,
+      "end": 20,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-008",
+      "entity_type": "ORGANIZATION",
+      "start": 26,
+      "end": 48,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-009",
+      "entity_type": "ORGANIZATION",
+      "start": 4,
+      "end": 36,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-010",
+      "entity_type": "ORGANIZATION",
+      "start": 7,
+      "end": 35,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-010",
+      "entity_type": "LOCATION",
+      "start": 37,
+      "end": 47,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-011",
+      "entity_type": "LOCATION",
+      "start": 19,
+      "end": 31,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-013",
+      "entity_type": "LOCATION",
+      "start": 20,
+      "end": 34,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-014",
+      "entity_type": "LOCATION",
+      "start": 21,
+      "end": 35,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-016",
+      "entity_type": "LOCATION",
+      "start": 17,
+      "end": 26,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-018",
+      "entity_type": "ORGANIZATION",
+      "start": 27,
+      "end": 54,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-json-gemischt-001",
+      "entity_type": "LOCATION",
+      "start": 42,
+      "end": 53,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-json-gemischt-007",
+      "entity_type": "ORGANIZATION",
+      "start": 11,
+      "end": 34,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-json-gemischt-012",
+      "entity_type": "ORGANIZATION",
+      "start": 44,
+      "end": 50,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-json-gemischt-017",
+      "entity_type": "LOCATION",
+      "start": 11,
+      "end": 17,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-json-gemischt-017",
+      "entity_type": "ORGANIZATION",
+      "start": 27,
+      "end": 29,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-json-gemischt-017",
+      "entity_type": "LOCATION",
+      "start": 33,
+      "end": 38,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-quasi-identifier-001",
+      "entity_type": "ORGANIZATION",
+      "start": 24,
+      "end": 49,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-quasi-identifier-001",
+      "entity_type": "DE_BERUF",
+      "start": 4,
+      "end": 19,
+      "score": 0.7
+    },
+    {
+      "case_id": "v2-quasi-identifier-003",
+      "entity_type": "ORGANIZATION",
+      "start": 37,
+      "end": 59,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-quasi-identifier-005",
+      "entity_type": "DE_BERUF",
+      "start": 4,
+      "end": 11,
+      "score": 0.7
+    },
+    {
+      "case_id": "v2-quasi-identifier-006",
+      "entity_type": "ORGANIZATION",
+      "start": 22,
+      "end": 41,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-quasi-identifier-008",
+      "entity_type": "ORGANIZATION",
+      "start": 40,
+      "end": 61,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-quasi-identifier-010",
+      "entity_type": "DE_GEBURTSJAHR",
+      "start": 41,
+      "end": 45,
+      "score": 0.6
+    },
+    {
+      "case_id": "v2-quasi-identifier-011",
+      "entity_type": "DE_BERUF",
+      "start": 4,
+      "end": 12,
+      "score": 0.7
+    },
+    {
+      "case_id": "v2-quasi-identifier-011",
+      "entity_type": "DE_GEBURTSJAHR",
+      "start": 58,
+      "end": 62,
+      "score": 0.6
+    },
+    {
+      "case_id": "v2-titel-dateiname-007",
+      "entity_type": "LOCATION",
+      "start": 0,
+      "end": 22,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-kombi-001",
+      "entity_type": "LOCATION",
+      "start": 62,
+      "end": 74,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-kombi-002",
+      "entity_type": "ORGANIZATION",
+      "start": 36,
+      "end": 76,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-kombi-002",
+      "entity_type": "LOCATION",
+      "start": 105,
+      "end": 135,
+      "score": 0.85
+    },
+    {
+      "case_id": "v2-kombi-004",
+      "entity_type": "PHONE_NUMBER",
+      "start": 43,
+      "end": 57,
+      "score": 0.4
+    },
+    {
+      "case_id": "v2-kombi-006",
+      "entity_type": "PHONE_NUMBER",
+      "start": 7,
+      "end": 20,
+      "score": 0.4
     }
   ],
-  "offset_ambiguities": []
+  "offset_ambiguities": [],
+  "corpus": {
+    "by_split": {
+      "dev": {
+        "positive": 174,
+        "negative": 84
+      },
+      "holdout": {
+        "positive": 37,
+        "negative": 30
+      }
+    },
+    "by_category": {
+      "adresse-fliesstext": 18,
+      "json-gemischt": 17,
+      "kombi": 7,
+      "nachname-kopf": 14,
+      "nachname-wort": 28,
+      "name-ohne-anrede": 14,
+      "negativ-fliesstext": 22,
+      "negativ-satzanfang": 46,
+      "negativ-schema": 14,
+      "ort-fliesstext": 8,
+      "person-fliesstext": 14,
+      "positiv-kontrolle": 20,
+      "quasi-identifier": 11,
+      "titel-dateiname": 8,
+      "v1": 84
+    }
+  },
+  "splits": {
+    "dev": {
+      "must_detect": {
+        "tp": 217,
+        "fn": 16,
+        "fp": 26,
+        "support": 233,
+        "recall": 0.9313,
+        "precision": 0.893
+      },
+      "must_detect_by_type": {
+        "CREDIT_CARD": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "support": 2,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_AKTENZEICHEN": {
+          "tp": 4,
+          "fn": 0,
+          "fp": 0,
+          "support": 4,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_BERUF": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_FIRMA": {
+          "tp": 15,
+          "fn": 0,
+          "fp": 0,
+          "support": 15,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_GEBURTSDATUM": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_GEBURTSJAHR": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_GENDER": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_HANDELSREGISTER": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "support": 2,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_KFZ_KENNZEICHEN": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "support": 2,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_PLZ": {
+          "tp": 4,
+          "fn": 0,
+          "fp": 1,
+          "support": 4,
+          "recall": 1.0,
+          "precision": 0.8
+        },
+        "DE_SOZIALVERSICHERUNG": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_STEUER_ID": {
+          "tp": 4,
+          "fn": 0,
+          "fp": 0,
+          "support": 4,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_STRASSE": {
+          "tp": 14,
+          "fn": 0,
+          "fp": 0,
+          "support": 14,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_TVOED_STUFE": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "support": 2,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "EMAIL_ADDRESS": {
+          "tp": 6,
+          "fn": 0,
+          "fp": 0,
+          "support": 6,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "IBAN_CODE": {
+          "tp": 4,
+          "fn": 0,
+          "fp": 0,
+          "support": 4,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "IP_ADDRESS": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "support": 2,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "LOCATION": {
+          "tp": 47,
+          "fn": 2,
+          "fp": 5,
+          "support": 49,
+          "recall": 0.9592,
+          "precision": 0.9038
+        },
+        "ORGANIZATION": {
+          "tp": 1,
+          "fn": 1,
+          "fp": 2,
+          "support": 2,
+          "recall": 0.5,
+          "precision": 0.3333
+        },
+        "PERSON": {
+          "tp": 99,
+          "fn": 13,
+          "fp": 18,
+          "support": 112,
+          "recall": 0.8839,
+          "precision": 0.8462
+        },
+        "PHONE_NUMBER": {
+          "tp": 4,
+          "fn": 0,
+          "fp": 0,
+          "support": 4,
+          "recall": 1.0,
+          "precision": 1.0
+        }
+      },
+      "known_gap": {
+        "tp": 3,
+        "fn": 15,
+        "fp": 0,
+        "support": 18,
+        "recall": 0.1667,
+        "precision": 1.0
+      },
+      "negative_cases": {
+        "count": 84,
+        "cases_with_false_positive": 25,
+        "false_positives_total": 26,
+        "stoerquote": 0.2976
+      }
+    },
+    "holdout": {
+      "must_detect": {
+        "tp": 41,
+        "fn": 7,
+        "fp": 5,
+        "support": 48,
+        "recall": 0.8542,
+        "precision": 0.8913
+      },
+      "must_detect_by_type": {
+        "DE_FIRMA": {
+          "tp": 2,
+          "fn": 0,
+          "fp": 0,
+          "support": 2,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_GEBURTSDATUM": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "DE_STRASSE": {
+          "tp": 1,
+          "fn": 0,
+          "fp": 0,
+          "support": 1,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "LOCATION": {
+          "tp": 14,
+          "fn": 0,
+          "fp": 1,
+          "support": 14,
+          "recall": 1.0,
+          "precision": 0.9333
+        },
+        "ORGANIZATION": {
+          "tp": 2,
+          "fn": 2,
+          "fp": 3,
+          "support": 4,
+          "recall": 0.5,
+          "precision": 0.4
+        },
+        "PERSON": {
+          "tp": 21,
+          "fn": 5,
+          "fp": 1,
+          "support": 26,
+          "recall": 0.8077,
+          "precision": 0.9545
+        }
+      },
+      "known_gap": {
+        "tp": 0,
+        "fn": 6,
+        "fp": 0,
+        "support": 6,
+        "recall": 0.0,
+        "precision": null
+      },
+      "negative_cases": {
+        "count": 30,
+        "cases_with_false_positive": 5,
+        "false_positives_total": 5,
+        "stoerquote": 0.1667
+      }
+    }
+  },
+  "must_detect_misses": [
+    {
+      "case_id": "v2-nachname-wort-004",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Bauer"
+    },
+    {
+      "case_id": "v2-nachname-wort-006",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Vogel"
+    },
+    {
+      "case_id": "v2-nachname-wort-008",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Hahn"
+    },
+    {
+      "case_id": "v2-nachname-wort-009",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Kaiser"
+    },
+    {
+      "case_id": "v2-nachname-wort-012",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Maurer"
+    },
+    {
+      "case_id": "v2-nachname-wort-016",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Winter"
+    },
+    {
+      "case_id": "v2-nachname-wort-017",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Koch"
+    },
+    {
+      "case_id": "v2-nachname-wort-018",
+      "split": "dev",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Menge"
+    },
+    {
+      "case_id": "v2-nachname-wort-021",
+      "split": "holdout",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Sommer"
+    },
+    {
+      "case_id": "v2-nachname-wort-022",
+      "split": "holdout",
+      "category": "nachname-wort",
+      "entity_type": "PERSON",
+      "value": "Berg"
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-005",
+      "split": "dev",
+      "category": "adresse-fliesstext",
+      "entity_type": "LOCATION",
+      "value": "Stuttgart"
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-007",
+      "split": "dev",
+      "category": "adresse-fliesstext",
+      "entity_type": "ORGANIZATION",
+      "value": "Rheintal-Versicherung"
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-011",
+      "split": "dev",
+      "category": "adresse-fliesstext",
+      "entity_type": "LOCATION",
+      "value": "Karlsruhe"
+    },
+    {
+      "case_id": "v2-adresse-fliesstext-016",
+      "split": "holdout",
+      "category": "adresse-fliesstext",
+      "entity_type": "ORGANIZATION",
+      "value": "Bürgerverein Wiesental"
+    },
+    {
+      "case_id": "v2-json-gemischt-002",
+      "split": "dev",
+      "category": "json-gemischt",
+      "entity_type": "PERSON",
+      "value": "Menge"
+    },
+    {
+      "case_id": "v2-json-gemischt-003",
+      "split": "dev",
+      "category": "json-gemischt",
+      "entity_type": "PERSON",
+      "value": "Koch"
+    },
+    {
+      "case_id": "v2-json-gemischt-004",
+      "split": "dev",
+      "category": "json-gemischt",
+      "entity_type": "PERSON",
+      "value": "Bauer"
+    },
+    {
+      "case_id": "v2-json-gemischt-006",
+      "split": "dev",
+      "category": "json-gemischt",
+      "entity_type": "PERSON",
+      "value": "Fuege"
+    },
+    {
+      "case_id": "v2-json-gemischt-015",
+      "split": "holdout",
+      "category": "json-gemischt",
+      "entity_type": "PERSON",
+      "value": "Beate"
+    },
+    {
+      "case_id": "v2-json-gemischt-016",
+      "split": "holdout",
+      "category": "json-gemischt",
+      "entity_type": "PERSON",
+      "value": "Bauer"
+    },
+    {
+      "case_id": "v2-quasi-identifier-011",
+      "split": "holdout",
+      "category": "quasi-identifier",
+      "entity_type": "ORGANIZATION",
+      "value": "Rheintal-Versicherung"
+    },
+    {
+      "case_id": "v2-person-fliesstext-005",
+      "split": "dev",
+      "category": "person-fliesstext",
+      "entity_type": "PERSON",
+      "value": "M. Berger"
+    },
+    {
+      "case_id": "v2-person-fliesstext-013",
+      "split": "holdout",
+      "category": "person-fliesstext",
+      "entity_type": "PERSON",
+      "value": "Dorothea Wittkopp"
+    }
+  ],
+  "by_category": {
+    "adresse-fliesstext": {
+      "cases": 18,
+      "tp": 35,
+      "fn": 4,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "json-gemischt": {
+      "cases": 17,
+      "tp": 24,
+      "fn": 6,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "kombi": {
+      "cases": 7,
+      "tp": 22,
+      "fn": 0,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "nachname-kopf": {
+      "cases": 14,
+      "tp": 15,
+      "fn": 0,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "nachname-wort": {
+      "cases": 28,
+      "tp": 22,
+      "fn": 10,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "name-ohne-anrede": {
+      "cases": 14,
+      "tp": 16,
+      "fn": 0,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "negativ-fliesstext": {
+      "cases": 22,
+      "tp": 0,
+      "fn": 0,
+      "negative_cases": 22,
+      "negative_cases_with_fp": 1
+    },
+    "negativ-satzanfang": {
+      "cases": 46,
+      "tp": 0,
+      "fn": 0,
+      "negative_cases": 46,
+      "negative_cases_with_fp": 15
+    },
+    "negativ-schema": {
+      "cases": 14,
+      "tp": 0,
+      "fn": 0,
+      "negative_cases": 14,
+      "negative_cases_with_fp": 2
+    },
+    "ort-fliesstext": {
+      "cases": 8,
+      "tp": 10,
+      "fn": 0,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "person-fliesstext": {
+      "cases": 14,
+      "tp": 13,
+      "fn": 2,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "positiv-kontrolle": {
+      "cases": 20,
+      "tp": 31,
+      "fn": 0,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "quasi-identifier": {
+      "cases": 11,
+      "tp": 16,
+      "fn": 1,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "titel-dateiname": {
+      "cases": 8,
+      "tp": 0,
+      "fn": 0,
+      "negative_cases": 0,
+      "negative_cases_with_fp": 0
+    },
+    "v1": {
+      "cases": 84,
+      "tp": 54,
+      "fn": 0,
+      "negative_cases": 32,
+      "negative_cases_with_fp": 12
+    }
+  },
+  "baseline_control": {
+    "control_cases": 20,
+    "deviations": []
+  }
 }

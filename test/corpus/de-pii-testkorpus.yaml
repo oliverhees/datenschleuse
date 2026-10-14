@@ -18,6 +18,76 @@
 # Recognizer + Testfall + Benchmark-Eintrag zusammen. Dieser Korpus ist der
 # Testfall-Teil davon.
 
+#
+# =========================================================================
+# KORPUS v2 (DATENSCHLE-94) -- Haertung
+# =========================================================================
+# Der Korpus hat zwei Teile:
+#   * v1: die ersten 84 Faelle (ohne `category`). Unveraendert, nur
+#     Basis-Schema. Sie sind fokussiert annotiert (nicht jede PII im Text).
+#   * v2: alle Faelle mit `category` und id-Praefix `v2-`. Streng validiert
+#     (Loader: test/corpus-benchmark.py::_validate_case_rules) und nach den
+#     Regeln A1-A6 unten annotiert. Alle Texte sind synthetisch.
+#
+# Zusatzfelder (nur v2):
+#   category  Fehlerklasse des Falls (z.B. nachname-wort, negativ-satzanfang).
+#   split     `dev` (darf zum Abstimmen von Wortlisten/Recognizern dienen) oder
+#             `holdout`. Der Hold-out darf NIE zum Tunen benutzt werden:
+#             Tuning-Laeufe fahren mit `--split dev`, der Hold-out wird
+#             getrennt ausgewiesen. Neue Hold-out-Faelle brauchen frisches
+#             Vokabular, keine Varianten bereits abgestimmter Woerter.
+#   control   true = Positiv-Kontrolle. Jede must_detect-Entitaet traegt dann
+#             `baseline_detected` (true/false): ob die Baseline (current main
+#             bei der Korpus-Haertung, siehe benchmark-results.json) sie
+#             gemessen erkannt hat. Weicht ein Lauf davon ab, weist der Report
+#             das aus (Rueckschritt bzw. Fortschritt).
+#
+# ANNOTATIONSREGELN
+#   A1 Span-Minimalitaet. `value` ist genau der identifizierende String, wie
+#      im Text geschrieben: ohne Anrede/Titel/Rolle/Label (kein "Herr",
+#      "Dr."), ohne Rand-Satzzeichen, ohne Rand-Whitespace. Er kommt im Text
+#      genau EINMAL vor (kein geratener Offset) und ueberlappt keinen anderen
+#      Span derselben Faelle (Ausnahme: A5). Verschachtelte Namen (Ort im
+#      Organisationsnamen) werden als aeusserster Span annotiert.
+#   A2 Erschoepfend (v2). In v2-Positivfaellen ist JEDE PII der unterstuetzten
+#      Typen annotiert (must_detect oder known_gap); was nicht annotiert ist,
+#      ist per Definition keine PII. Berufs-/Rollenbezeichnungen ohne Namen
+#      sind keine PII. Die Precision bleibt trotzdem allein aus den
+#      Negativfaellen berechnet (Metrik-Semantik unveraendert).
+#   A3 Nicht-PII (Negativfaelle, `entities: []`). Satzinitial grossgeschriebene
+#      Verben und Substantive (Fasse, Uebersetze, Rueckruf), deutsche
+#      Schema-Schluessel und Labels, Produkt-/Werkzeugnamen und generische
+#      Rollenwoerter ohne Namen sind nie PII -- in ASCII- und Umlaut-
+#      Schreibweise gleichermassen. Ein Negativtext enthaelt keinen einzigen
+#      Eigennamen (Person, Ort, Organisation) und keine Kennung.
+#   A4 Mehrdeutige Nachnamen. Ein Nachname, der zugleich Alltagswort ist
+#      (Menge, Fuege, Koch, Bauer), ist PII, wenn der Kontext ihn als Namen
+#      markiert (Anrede, Vorname, Rolle+Name, "Name:"-Label, Signatur,
+#      Schluessel wie "nachname"). Ohne erkennbaren Marker wird NICHT geraten:
+#      der Fall kommt gar nicht erst in den Korpus. Nachnamen mit
+#      Kopf-Morphemen (Erhart, Lienhart) sind Recall-Waechter (DATENSCHLE-101).
+#   A5 Quasi-Identifier und Dateinamen. Die beschreibende Kombination
+#      ("der Geschaeftsfuehrer von X in Y") wird als QUASI_IDENTIFIER_COMBO
+#      annotiert und ist known_gap (nur berichtet, nicht gewertet). Die darin
+#      vorkommenden Eigennamen (Firma, Ort) werden zusaetzlich einzeln und als
+#      must_detect annotiert -- nur hier duerfen sich Spans ueberlappen.
+#      Ein Titel in Dateinamen-Form (Arztbrief_Mustermann.pdf, DATENSCHLE-98)
+#      ist known_gap, solange keine Erkennung dafuer existiert. Strassen ohne
+#      Suffix-Wort ("Am Muehlenteich 5") sind ebenfalls known_gap (dokumentierte
+#      Grenze von DE_STRASSE).
+#   A6 Nur Synthetisches. Alle Namen, Firmen, Adressen und Kennungen sind
+#      erfunden; keine realen Personen, keine Personen des oeffentlichen
+#      Lebens. E-Mail-Adressen liegen ausschliesslich auf reservierten Domains
+#      (RFC 2606: example.com/.org/.net/.de). Die nackte TLD `.example` ist
+#      bewusst NICHT verwendet: Presidios EmailRecognizer validiert die TLD
+#      (tldextract), `x@y.example` wird nie erkannt -- der Fall wuerde den
+#      Validator messen statt die Erkennung. Telefonnummern, IBAN, Steuer-ID
+#      und Kartennummern sind Dokumentations-/Testwerte.
+#
+# NO-SHRINK: corpus-manifest.json haelt alle ids samt Split fest;
+# test/test_corpus_v2.py vergleicht in beide Richtungen und prueft absolute
+# Untergrenzen. Ein Fall verschwindet nur durch eine sichtbare Aenderung.
+
 cases:
   # ---------------------------------------------------------------------
   # PERSON
@@ -761,3 +831,1724 @@ cases:
       - type: PERSON
         value: "Maria Meier"
         expected_recall: must_detect
+
+  # =====================================================================
+  # KORPUS v2 (DATENSCHLE-94) -- ab hier gelten die Regeln A1-A6 (Header).
+  # Reihenfolge: nachname-wort, nachname-kopf, positiv-kontrolle,
+  # name-ohne-anrede, adresse-fliesstext, json-gemischt, quasi-identifier,
+  # titel-dateiname, kombi, person-fliesstext, ort-fliesstext, dann die
+  # Negativ-Kategorien negativ-satzanfang, negativ-schema, negativ-fliesstext.
+  # =====================================================================
+
+  - id: v2-nachname-wort-001
+    category: nachname-wort
+    split: dev
+    text: "Herr Menge hat die Rechnung gestern bezahlt."
+    entities:
+      - {type: PERSON, value: "Menge", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-002
+    category: nachname-wort
+    split: dev
+    text: "Frau Fuege vom Einkauf meldet sich morgen."
+    entities:
+      - {type: PERSON, value: "Fuege", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-003
+    category: nachname-wort
+    split: dev
+    text: "Der Kunde Thomas Koch bestellt zum dritten Mal."
+    entities:
+      - {type: PERSON, value: "Thomas Koch", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-004
+    category: nachname-wort
+    split: dev
+    text: "Bitte leiten Sie die Anfrage an Frau Bauer weiter."
+    entities:
+      - {type: PERSON, value: "Bauer", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-005
+    category: nachname-wort
+    split: dev
+    text: "Dr. Martina Fuchs hat das Gutachten unterschrieben."
+    entities:
+      - {type: PERSON, value: "Martina Fuchs", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-006
+    category: nachname-wort
+    split: dev
+    text: "Herr Vogel erreicht Sie unter der bekannten Durchwahl."
+    entities:
+      - {type: PERSON, value: "Vogel", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-007
+    category: nachname-wort
+    split: dev
+    text: "Die Beschwerde von Herrn Wolf wurde heute geprüft."
+    entities:
+      - {type: PERSON, value: "Wolf", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-008
+    category: nachname-wort
+    split: dev
+    text: "Ansprechpartnerin ist Frau Hahn aus der Buchhaltung."
+    entities:
+      - {type: PERSON, value: "Hahn", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-009
+    category: nachname-wort
+    split: dev
+    text: "Name: Kaiser, Vorname: Jonas"
+    entities:
+      - {type: PERSON, value: "Kaiser", expected_recall: must_detect}
+      - {type: PERSON, value: "Jonas", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-010
+    category: nachname-wort
+    split: dev
+    text: "Der Mandant Peter Richter wünscht einen Rückruf."
+    entities:
+      - {type: PERSON, value: "Peter Richter", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-011
+    category: nachname-wort
+    split: dev
+    text: "Frau Jaeger war am Montag nicht erreichbar."
+    entities:
+      - {type: PERSON, value: "Jaeger", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-012
+    category: nachname-wort
+    split: dev
+    text: "Herr Maurer bestätigt den Termin am Freitag."
+    entities:
+      - {type: PERSON, value: "Maurer", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-013
+    category: nachname-wort
+    split: dev
+    text: "Frau Schäfer und Herr Lang besprechen das Angebot."
+    entities:
+      - {type: PERSON, value: "Schäfer", expected_recall: must_detect}
+      - {type: PERSON, value: "Lang", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-014
+    category: nachname-wort
+    split: dev
+    text: "Kontaktperson: Anja Klein, Abteilung Vertrieb."
+    entities:
+      - {type: PERSON, value: "Anja Klein", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-015
+    category: nachname-wort
+    split: dev
+    text: "Sachbearbeiter Gross hat den Vorgang übernommen."
+    entities:
+      - {type: PERSON, value: "Gross", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-016
+    category: nachname-wort
+    split: dev
+    text: "Vorgang bearbeitet von Frau Winter."
+    entities:
+      - {type: PERSON, value: "Winter", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-017
+    category: nachname-wort
+    split: dev
+    text: "Koch, Birgit"
+    entities:
+      - {type: PERSON, value: "Koch", expected_recall: must_detect}
+      - {type: PERSON, value: "Birgit", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-018
+    category: nachname-wort
+    split: dev
+    text: "Menge, Silke"
+    entities:
+      - {type: PERSON, value: "Menge", expected_recall: must_detect}
+      - {type: PERSON, value: "Silke", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-019
+    category: nachname-wort
+    split: dev
+    text: "Hallo Frau Stein, anbei die Unterlagen."
+    entities:
+      - {type: PERSON, value: "Stein", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-020
+    category: nachname-wort
+    split: dev
+    text: "Herrn Busch wurde die Gutschrift erteilt."
+    entities:
+      - {type: PERSON, value: "Busch", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-021
+    category: nachname-wort
+    split: holdout
+    text: "Herr Sommer hat sich telefonisch gemeldet."
+    entities:
+      - {type: PERSON, value: "Sommer", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-022
+    category: nachname-wort
+    split: holdout
+    text: "Frau Berg leitet das Projekt seit Januar."
+    entities:
+      - {type: PERSON, value: "Berg", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-023
+    category: nachname-wort
+    split: holdout
+    text: "Der Patient Markus Haas wurde heute entlassen."
+    entities:
+      - {type: PERSON, value: "Markus Haas", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-024
+    category: nachname-wort
+    split: holdout
+    text: "Herr Frey bittet um einen Termin."
+    entities:
+      - {type: PERSON, value: "Frey", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-025
+    category: nachname-wort
+    split: holdout
+    text: "Frau Voigt aus dem Lager hat die Lieferung gezählt."
+    entities:
+      - {type: PERSON, value: "Voigt", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-026
+    category: nachname-wort
+    split: holdout
+    text: "Rückfrage an Herrn Schmied, bitte bis Mittwoch."
+    entities:
+      - {type: PERSON, value: "Schmied", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-027
+    category: nachname-wort
+    split: holdout
+    text: "Die Kundin Lena Fink hat reklamiert."
+    entities:
+      - {type: PERSON, value: "Lena Fink", expected_recall: must_detect}
+
+  - id: v2-nachname-wort-028
+    category: nachname-wort
+    split: holdout
+    text: "Herr Kuhn bestätigt die Bestellung."
+    entities:
+      - {type: PERSON, value: "Kuhn", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-001
+    category: nachname-kopf
+    split: dev
+    text: "Frau Anna Erhart hat den Antrag eingereicht."
+    entities:
+      - {type: PERSON, value: "Anna Erhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-002
+    category: nachname-kopf
+    split: dev
+    text: "Herr Lienhart ruft morgen zurück."
+    entities:
+      - {type: PERSON, value: "Lienhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-003
+    category: nachname-kopf
+    split: dev
+    text: "Der Lieferant Felix Reinhart hat die Ware geprüft."
+    entities:
+      - {type: PERSON, value: "Felix Reinhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-004
+    category: nachname-kopf
+    split: dev
+    text: "Bitte Rückfrage an Frau Gebhart."
+    entities:
+      - {type: PERSON, value: "Gebhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-005
+    category: nachname-kopf
+    split: dev
+    text: "Kontakt: Ulrich Burkhart, Leiter Technik."
+    entities:
+      - {type: PERSON, value: "Ulrich Burkhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-006
+    category: nachname-kopf
+    split: dev
+    text: "Herr Eberhart war bei der Besprechung nicht anwesend."
+    entities:
+      - {type: PERSON, value: "Eberhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-007
+    category: nachname-kopf
+    split: dev
+    text: "Die Unterschrift stammt von Sabine Bernhart."
+    entities:
+      - {type: PERSON, value: "Sabine Bernhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-008
+    category: nachname-kopf
+    split: dev
+    text: "Frau Meinhart und Herr Eckhart haben zugesagt."
+    entities:
+      - {type: PERSON, value: "Meinhart", expected_recall: must_detect}
+      - {type: PERSON, value: "Eckhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-009
+    category: nachname-kopf
+    split: dev
+    text: "Herr Engelhart sendet die Unterlagen nach."
+    entities:
+      - {type: PERSON, value: "Engelhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-010
+    category: nachname-kopf
+    split: dev
+    text: "Laut Bericht hat Leonie Gerhart den Test durchgeführt."
+    entities:
+      - {type: PERSON, value: "Leonie Gerhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-011
+    category: nachname-kopf
+    split: holdout
+    text: "Frau Reinhardt leitet das Team."
+    entities:
+      - {type: PERSON, value: "Reinhardt", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-012
+    category: nachname-kopf
+    split: holdout
+    text: "Herr Gebhardt hat angerufen."
+    entities:
+      - {type: PERSON, value: "Gebhardt", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-013
+    category: nachname-kopf
+    split: holdout
+    text: "Dietmar Lienhart unterzeichnet den Vertrag."
+    entities:
+      - {type: PERSON, value: "Dietmar Lienhart", expected_recall: must_detect}
+
+  - id: v2-nachname-kopf-014
+    category: nachname-kopf
+    split: holdout
+    text: "Ansprechpartnerin: Petra Erhart."
+    entities:
+      - {type: PERSON, value: "Petra Erhart", expected_recall: must_detect}
+
+  - id: v2-positiv-kontrolle-001
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Sehr geehrter Herr Dr. Stefan Albrecht, vielen Dank für Ihr Schreiben."
+    entities:
+      - {type: PERSON, value: "Stefan Albrecht", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-002
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Die Bestellung von Claudia Hartmann wurde am Montag versendet."
+    entities:
+      - {type: PERSON, value: "Claudia Hartmann", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-003
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Wir haben mit Jürgen Falkenberg und Miriam Oswald gesprochen."
+    entities:
+      - {type: PERSON, value: "Jürgen Falkenberg", expected_recall: must_detect, baseline_detected: true}
+      - {type: PERSON, value: "Miriam Oswald", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-004
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Kunde: Heinz-Dieter Brandt, wohnhaft in Osnabrück."
+    entities:
+      - {type: PERSON, value: "Heinz-Dieter Brandt", expected_recall: must_detect, baseline_detected: true}
+      - {type: LOCATION, value: "Osnabrück", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-005
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Die Filiale in Hannover wird von Katharina Lindemann geleitet."
+    entities:
+      - {type: LOCATION, value: "Hannover", expected_recall: must_detect, baseline_detected: true}
+      - {type: PERSON, value: "Katharina Lindemann", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-006
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Rechnungsadresse: Julia Steinmetz, Lindenstraße 12, Bremen"
+    entities:
+      - {type: PERSON, value: "Julia Steinmetz", expected_recall: must_detect, baseline_detected: true}
+      - {type: DE_STRASSE, value: "Lindenstraße 12", expected_recall: must_detect, baseline_detected: true}
+      - {type: LOCATION, value: "Bremen", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-007
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Mein Name ist Dennis Brinkmann und ich melde mich wegen der Lieferung."
+    entities:
+      - {type: PERSON, value: "Dennis Brinkmann", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-008
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Die Mail kam von Sophie Lorenz an die Geschäftsleitung."
+    entities:
+      - {type: PERSON, value: "Sophie Lorenz", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-009
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Prof. Dr. Gisela Winterfeld hält den Vortrag in Dresden."
+    entities:
+      - {type: PERSON, value: "Gisela Winterfeld", expected_recall: must_detect, baseline_detected: true}
+      - {type: LOCATION, value: "Dresden", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-010
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Terminvereinbarung mit Herrn Rainer Kopp am Donnerstag."
+    entities:
+      - {type: PERSON, value: "Rainer Kopp", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-011
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Hallo, hier schreibt Nadine Ebersbach aus Stuttgart."
+    entities:
+      - {type: PERSON, value: "Nadine Ebersbach", expected_recall: must_detect, baseline_detected: true}
+      - {type: LOCATION, value: "Stuttgart", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-012
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Ansprechpartner in Münster ist Bernd Tiedemann."
+    entities:
+      - {type: LOCATION, value: "Münster", expected_recall: must_detect, baseline_detected: true}
+      - {type: PERSON, value: "Bernd Tiedemann", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-013
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Schreiben Sie an lena.vogt@beispiel.example.com, wenn etwas fehlt."
+    entities:
+      - {type: EMAIL_ADDRESS, value: "lena.vogt@beispiel.example.com", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-014
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Bitte überweisen Sie den Betrag auf DE02 1203 0000 0000 2020 51."
+    entities:
+      - {type: IBAN_CODE, value: "DE02 1203 0000 0000 2020 51", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-015
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Rufen Sie mich bitte unter +49 89 1234567 zurück."
+    entities:
+      - {type: PHONE_NUMBER, value: "+49 89 1234567", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-016
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Ines Pohlmann, Marcel Kuhlmann und Tobias Reuter nehmen teil."
+    entities:
+      - {type: PERSON, value: "Ines Pohlmann", expected_recall: must_detect, baseline_detected: true}
+      - {type: PERSON, value: "Marcel Kuhlmann", expected_recall: must_detect, baseline_detected: true}
+      - {type: PERSON, value: "Tobias Reuter", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-017
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Die Beschwerde richtet sich gegen Walter Hinrichs aus Kiel."
+    entities:
+      - {type: PERSON, value: "Walter Hinrichs", expected_recall: must_detect, baseline_detected: true}
+      - {type: LOCATION, value: "Kiel", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-018
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Als Zeugin wurde Marlene Sandmann benannt."
+    entities:
+      - {type: PERSON, value: "Marlene Sandmann", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-019
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Die Hoffmann & Söhne GmbH hat die Lieferung bestätigt."
+    entities:
+      - {type: DE_FIRMA, value: "Hoffmann & Söhne GmbH", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-positiv-kontrolle-020
+    category: positiv-kontrolle
+    split: dev
+    control: true
+    text: "Vertragspartner ist die Kessler Maschinenbau GmbH."
+    entities:
+      - {type: DE_FIRMA, value: "Kessler Maschinenbau GmbH", expected_recall: must_detect, baseline_detected: true}
+
+  - id: v2-name-ohne-anrede-001
+    category: name-ohne-anrede
+    split: dev
+    text: "Rechnung an Katrin Brandt, zahlbar bis Monatsende."
+    entities:
+      - {type: PERSON, value: "Katrin Brandt", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-002
+    category: name-ohne-anrede
+    split: dev
+    text: "Unterschrift: Torsten Lindner"
+    entities:
+      - {type: PERSON, value: "Torsten Lindner", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-003
+    category: name-ohne-anrede
+    split: dev
+    text: "Kontakt: Mirko Ahlers"
+    entities:
+      - {type: PERSON, value: "Mirko Ahlers", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-004
+    category: name-ohne-anrede
+    split: dev
+    text: "Mit freundlichen Grüßen\nBirgit Hollmann"
+    entities:
+      - {type: PERSON, value: "Birgit Hollmann", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-005
+    category: name-ohne-anrede
+    split: dev
+    text: "Von: Nils Gerber\nAn: Sabrina Witt\nBetreff: Terminverschiebung"
+    entities:
+      - {type: PERSON, value: "Nils Gerber", expected_recall: must_detect}
+      - {type: PERSON, value: "Sabrina Witt", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-006
+    category: name-ohne-anrede
+    split: dev
+    text: "Gesprächsnotiz: Ralf Neubauer und Jana Pfeiffer klären die Zuständigkeit."
+    entities:
+      - {type: PERSON, value: "Ralf Neubauer", expected_recall: must_detect}
+      - {type: PERSON, value: "Jana Pfeiffer", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-007
+    category: name-ohne-anrede
+    split: dev
+    text: "Ticket zugewiesen an Lukas Reimer."
+    entities:
+      - {type: PERSON, value: "Lukas Reimer", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-008
+    category: name-ohne-anrede
+    split: dev
+    text: "Kundin Elke Strobel hat storniert."
+    entities:
+      - {type: PERSON, value: "Elke Strobel", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-009
+    category: name-ohne-anrede
+    split: dev
+    text: "Autor: Hannes Kellermann, Version 3"
+    entities:
+      - {type: PERSON, value: "Hannes Kellermann", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-010
+    category: name-ohne-anrede
+    split: dev
+    text: "Wir danken Ursula Mertens für die Unterstützung."
+    entities:
+      - {type: PERSON, value: "Ursula Mertens", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-011
+    category: name-ohne-anrede
+    split: holdout
+    text: "Bestellt von Holger Pries am Dienstag."
+    entities:
+      - {type: PERSON, value: "Holger Pries", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-012
+    category: name-ohne-anrede
+    split: holdout
+    text: "Ansprechpartner Dirk Sattler\nTelefon folgt"
+    entities:
+      - {type: PERSON, value: "Dirk Sattler", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-013
+    category: name-ohne-anrede
+    split: holdout
+    text: "Genehmigt durch Monika Alt."
+    entities:
+      - {type: PERSON, value: "Monika Alt", expected_recall: must_detect}
+
+  - id: v2-name-ohne-anrede-014
+    category: name-ohne-anrede
+    split: holdout
+    text: "Gesendet von Frank Odenwald"
+    entities:
+      - {type: PERSON, value: "Frank Odenwald", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-001
+    category: adresse-fliesstext
+    split: dev
+    text: "Die Lieferung geht an den Birkenweg 7 in Lübeck."
+    entities:
+      - {type: DE_STRASSE, value: "Birkenweg 7", expected_recall: must_detect}
+      - {type: LOCATION, value: "Lübeck", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-002
+    category: adresse-fliesstext
+    split: dev
+    text: "Der Termin findet in der Schillerstraße 21 in Heilbronn statt."
+    entities:
+      - {type: DE_STRASSE, value: "Schillerstraße 21", expected_recall: must_detect}
+      - {type: LOCATION, value: "Heilbronn", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-003
+    category: adresse-fliesstext
+    split: dev
+    text: "Wir ziehen von der Gartenallee 3 in Kassel nach Erfurt um."
+    entities:
+      - {type: DE_STRASSE, value: "Gartenallee 3", expected_recall: must_detect}
+      - {type: LOCATION, value: "Kassel", expected_recall: must_detect}
+      - {type: LOCATION, value: "Erfurt", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-004
+    category: adresse-fliesstext
+    split: dev
+    text: "Versandadresse:\nMarktplatz 4\nWeimar"
+    entities:
+      - {type: DE_STRASSE, value: "Marktplatz 4", expected_recall: must_detect}
+      - {type: LOCATION, value: "Weimar", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-005
+    category: adresse-fliesstext
+    split: dev
+    text: "Absender\nRosenstraße 15\nPostleitzahl 70173\nStuttgart"
+    entities:
+      - {type: DE_STRASSE, value: "Rosenstraße 15", expected_recall: must_detect}
+      - {type: DE_PLZ, value: "70173", expected_recall: must_detect}
+      - {type: LOCATION, value: "Stuttgart", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-006
+    category: adresse-fliesstext
+    split: dev
+    text: "Die Stadtwerke Eichstetten haben den Zähler getauscht."
+    entities:
+      - {type: ORGANIZATION, value: "Stadtwerke Eichstetten", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-007
+    category: adresse-fliesstext
+    split: dev
+    text: "Mitarbeiter der Rheintal-Versicherung in Mainz haben den Schaden begutachtet."
+    entities:
+      - {type: ORGANIZATION, value: "Rheintal-Versicherung", expected_recall: must_detect}
+      - {type: LOCATION, value: "Mainz", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-008
+    category: adresse-fliesstext
+    split: dev
+    text: "Der Vertrag wurde mit der Bergmann Logistik GmbH in Duisburg geschlossen."
+    entities:
+      - {type: DE_FIRMA, value: "Bergmann Logistik GmbH", expected_recall: must_detect}
+      - {type: LOCATION, value: "Duisburg", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-009
+    category: adresse-fliesstext
+    split: dev
+    text: "Die Zentrale der Nordlicht Medien AG sitzt in Rostock."
+    entities:
+      - {type: DE_FIRMA, value: "Nordlicht Medien AG", expected_recall: must_detect}
+      - {type: LOCATION, value: "Rostock", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-010
+    category: adresse-fliesstext
+    split: dev
+    text: "Firma: Winkler & Partner GbR\nStraße: Kirchgasse 8\nOrt: Passau"
+    entities:
+      - {type: DE_FIRMA, value: "Winkler & Partner GbR", expected_recall: must_detect}
+      - {type: DE_STRASSE, value: "Kirchgasse 8", expected_recall: must_detect}
+      - {type: LOCATION, value: "Passau", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-011
+    category: adresse-fliesstext
+    split: dev
+    text: "Treffpunkt ist der Hauptbahnhof in Karlsruhe um acht Uhr."
+    entities:
+      - {type: LOCATION, value: "Karlsruhe", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-012
+    category: adresse-fliesstext
+    split: dev
+    text: "Der Außendienst fährt von Magdeburg über Halle nach Leipzig."
+    entities:
+      - {type: LOCATION, value: "Magdeburg", expected_recall: must_detect}
+      - {type: LOCATION, value: "Halle", expected_recall: must_detect}
+      - {type: LOCATION, value: "Leipzig", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-013
+    category: adresse-fliesstext
+    split: dev
+    text: "Unser Büro liegt am Lessingplatz 2, 38100 Braunschweig."
+    entities:
+      - {type: DE_STRASSE, value: "Lessingplatz 2", expected_recall: must_detect}
+      - {type: DE_PLZ, value: "38100", expected_recall: must_detect}
+      - {type: LOCATION, value: "Braunschweig", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-014
+    category: adresse-fliesstext
+    split: holdout
+    text: "Die Sendung wurde am Eichendorffweg 9 in Bamberg abgegeben."
+    entities:
+      - {type: DE_STRASSE, value: "Eichendorffweg 9", expected_recall: must_detect}
+      - {type: LOCATION, value: "Bamberg", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-015
+    category: adresse-fliesstext
+    split: holdout
+    text: "Die Sparkasse Oberland in Garmisch hat die Zusage erteilt."
+    entities:
+      - {type: ORGANIZATION, value: "Sparkasse Oberland", expected_recall: must_detect}
+      - {type: LOCATION, value: "Garmisch", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-016
+    category: adresse-fliesstext
+    split: holdout
+    text: "Der Bürgerverein Wiesental lädt zur Versammlung nach Ulm ein."
+    entities:
+      - {type: ORGANIZATION, value: "Bürgerverein Wiesental", expected_recall: must_detect}
+      - {type: LOCATION, value: "Ulm", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-017
+    category: adresse-fliesstext
+    split: holdout
+    text: "Empfänger:\nAm Mühlenteich 5\nSchwerin"
+    entities:
+      - {type: DE_STRASSE, value: "Am Mühlenteich 5", expected_recall: known_gap}
+      - {type: LOCATION, value: "Schwerin", expected_recall: must_detect}
+
+  - id: v2-adresse-fliesstext-018
+    category: adresse-fliesstext
+    split: holdout
+    text: "Herr Voss arbeitet bei der Lindner Elektrotechnik GmbH in Siegen."
+    entities:
+      - {type: PERSON, value: "Voss", expected_recall: must_detect}
+      - {type: DE_FIRMA, value: "Lindner Elektrotechnik GmbH", expected_recall: must_detect}
+      - {type: LOCATION, value: "Siegen", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-001
+    category: json-gemischt
+    split: dev
+    text: "{\"kunde\": \"Heike Sommerfeld\", \"strasse\": \"Birkenweg 7\", \"ort\": \"Lübeck\", \"bestellnummer\": \"A-100234\"}"
+    entities:
+      - {type: PERSON, value: "Heike Sommerfeld", expected_recall: must_detect}
+      - {type: DE_STRASSE, value: "Birkenweg 7", expected_recall: must_detect}
+      - {type: LOCATION, value: "Lübeck", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-002
+    category: json-gemischt
+    split: dev
+    text: "{\"vorname\": \"Jens\", \"nachname\": \"Menge\", \"abteilung\": \"Einkauf\"}"
+    entities:
+      - {type: PERSON, value: "Jens", expected_recall: must_detect}
+      - {type: PERSON, value: "Menge", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-003
+    category: json-gemischt
+    split: dev
+    text: "{\"name\": \"Koch\", \"menge\": 3, \"einzelpreis\": 4.5}"
+    entities:
+      - {type: PERSON, value: "Koch", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-004
+    category: json-gemischt
+    split: dev
+    text: "{\"ansprechpartner\": \"Frau Bauer\", \"rueckruf\": \"ja\", \"lieferdatum\": \"2025-03-14\"}"
+    entities:
+      - {type: PERSON, value: "Bauer", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-005
+    category: json-gemischt
+    split: dev
+    text: "{\n  \"kunde\": {\n    \"name\": \"Marlene Roth\",\n    \"stadt\": \"Göttingen\"\n  },\n  \"zahlungsart\": \"Rechnung\"\n}"
+    entities:
+      - {type: PERSON, value: "Marlene Roth", expected_recall: must_detect}
+      - {type: LOCATION, value: "Göttingen", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-006
+    category: json-gemischt
+    split: dev
+    text: "{\"empfaenger\": \"Fuege\", \"rechnungsbetrag\": 120.5}"
+    entities:
+      - {type: PERSON, value: "Fuege", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-007
+    category: json-gemischt
+    split: dev
+    text: "{\"firma\": \"Brandt Haustechnik GmbH\", \"ort\": \"Oldenburg\", \"vertragsnummer\": \"V-7781\"}"
+    entities:
+      - {type: DE_FIRMA, value: "Brandt Haustechnik GmbH", expected_recall: must_detect}
+      - {type: LOCATION, value: "Oldenburg", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-008
+    category: json-gemischt
+    split: dev
+    text: "{\"mitarbeiter\": [{\"name\": \"Erhart\"}, {\"name\": \"Lienhart\"}]}"
+    entities:
+      - {type: PERSON, value: "Erhart", expected_recall: must_detect}
+      - {type: PERSON, value: "Lienhart", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-009
+    category: json-gemischt
+    split: dev
+    text: "{\"bearbeiter\": \"Nina Wulf\", \"bearbeitungsstatus\": \"offen\", \"rueckrufgrund\": \"Preisanfrage\"}"
+    entities:
+      - {type: PERSON, value: "Nina Wulf", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-010
+    category: json-gemischt
+    split: dev
+    text: "{\"absender\": \"Sven Dietrich\", \"empfaenger\": \"Lisa Marx\", \"betreff\": \"Rückruf\"}"
+    entities:
+      - {type: PERSON, value: "Sven Dietrich", expected_recall: must_detect}
+      - {type: PERSON, value: "Lisa Marx", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-011
+    category: json-gemischt
+    split: dev
+    text: "args = {\"strasse\": \"Hauptstraße 44\", \"plz\": \"50667\", \"ort\": \"Köln\"}"
+    entities:
+      - {type: DE_STRASSE, value: "Hauptstraße 44", expected_recall: must_detect}
+      - {type: DE_PLZ, value: "50667", expected_recall: must_detect}
+      - {type: LOCATION, value: "Köln", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-012
+    category: json-gemischt
+    split: dev
+    text: "{\"geburtsort\": \"Chemnitz\", \"kundennummer\": \"K-4471\"}"
+    entities:
+      - {type: LOCATION, value: "Chemnitz", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-013
+    category: json-gemischt
+    split: dev
+    text: "{\"kontakt\": {\"vorname\": \"Anke\", \"nachname\": \"Rahn\"}, \"menge\": 12}"
+    entities:
+      - {type: PERSON, value: "Anke", expected_recall: must_detect}
+      - {type: PERSON, value: "Rahn", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-014
+    category: json-gemischt
+    split: holdout
+    text: "{\"kunde\": \"Rolf Seidel\", \"ort\": \"Jena\", \"lieferdatum\": \"morgen\"}"
+    entities:
+      - {type: PERSON, value: "Rolf Seidel", expected_recall: must_detect}
+      - {type: LOCATION, value: "Jena", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-015
+    category: json-gemischt
+    split: holdout
+    text: "{\"nachname\": \"Kuhn\", \"vorname\": \"Beate\"}"
+    entities:
+      - {type: PERSON, value: "Kuhn", expected_recall: must_detect}
+      - {type: PERSON, value: "Beate", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-016
+    category: json-gemischt
+    split: holdout
+    text: "{\"empfaenger\": \"Bauer\", \"zahlungsart\": \"Vorkasse\"}"
+    entities:
+      - {type: PERSON, value: "Bauer", expected_recall: must_detect}
+
+  - id: v2-json-gemischt-017
+    category: json-gemischt
+    split: holdout
+    text: "{\"firma\": \"Ostsee Reederei KG\", \"stadt\": \"Stralsund\"}"
+    entities:
+      - {type: DE_FIRMA, value: "Ostsee Reederei KG", expected_recall: must_detect}
+      - {type: LOCATION, value: "Stralsund", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-001
+    category: quasi-identifier
+    split: dev
+    text: "Der Geschäftsführer von Kessler Maschinenbau GmbH in Offenburg ist der einzige mit Zugriff."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Geschäftsführer von Kessler Maschinenbau GmbH in Offenburg", expected_recall: known_gap}
+      - {type: DE_FIRMA, value: "Kessler Maschinenbau GmbH", expected_recall: must_detect}
+      - {type: LOCATION, value: "Offenburg", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-002
+    category: quasi-identifier
+    split: dev
+    text: "Die einzige Ärztin der Praxis in Wittlich hat die Meldung gemacht."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "einzige Ärztin der Praxis in Wittlich", expected_recall: known_gap}
+      - {type: LOCATION, value: "Wittlich", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-003
+    category: quasi-identifier
+    split: dev
+    text: "Der Leiter der Personalabteilung der Bergmann Logistik GmbH in Duisburg wurde versetzt."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Leiter der Personalabteilung der Bergmann Logistik GmbH in Duisburg", expected_recall: known_gap}
+      - {type: DE_FIRMA, value: "Bergmann Logistik GmbH", expected_recall: must_detect}
+      - {type: LOCATION, value: "Duisburg", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-004
+    category: quasi-identifier
+    split: dev
+    text: "Die jüngste Gemeinderätin von Lindau, 29 Jahre alt, arbeitet als Lehrerin."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "jüngste Gemeinderätin von Lindau, 29 Jahre alt, arbeitet als Lehrerin", expected_recall: known_gap}
+      - {type: LOCATION, value: "Lindau", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-005
+    category: quasi-identifier
+    split: dev
+    text: "Der Pfarrer der Gemeinde in Bernau, der im Mai 70 wurde, hat den Antrag gestellt."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Pfarrer der Gemeinde in Bernau, der im Mai 70 wurde", expected_recall: known_gap}
+      - {type: LOCATION, value: "Bernau", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-006
+    category: quasi-identifier
+    split: dev
+    text: "Die Betriebsrätin der Nordlicht Medien AG in Rostock mit zwei Kindern hat geklagt."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Betriebsrätin der Nordlicht Medien AG in Rostock mit zwei Kindern", expected_recall: known_gap}
+      - {type: DE_FIRMA, value: "Nordlicht Medien AG", expected_recall: must_detect}
+      - {type: LOCATION, value: "Rostock", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-007
+    category: quasi-identifier
+    split: dev
+    text: "Der Hausmeister der Schule in Zeitz, 58, wohnt direkt neben dem Schulgebäude."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Hausmeister der Schule in Zeitz, 58", expected_recall: known_gap}
+      - {type: LOCATION, value: "Zeitz", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-008
+    category: quasi-identifier
+    split: dev
+    text: "Der einzige Rollstuhlfahrer im Team der Winkler & Partner GbR in Passau hat gekündigt."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "einzige Rollstuhlfahrer im Team der Winkler & Partner GbR in Passau", expected_recall: known_gap}
+      - {type: DE_FIRMA, value: "Winkler & Partner GbR", expected_recall: must_detect}
+      - {type: LOCATION, value: "Passau", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-009
+    category: quasi-identifier
+    split: holdout
+    text: "Der Direktor der Sparkasse Oberland in Garmisch ist seit 2019 im Amt."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Direktor der Sparkasse Oberland in Garmisch", expected_recall: known_gap}
+      - {type: ORGANIZATION, value: "Sparkasse Oberland", expected_recall: must_detect}
+      - {type: LOCATION, value: "Garmisch", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-010
+    category: quasi-identifier
+    split: holdout
+    text: "Die einzige Tierärztin in Husum, geboren 1984, hat die Praxis übernommen."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "einzige Tierärztin in Husum, geboren 1984", expected_recall: known_gap}
+      - {type: LOCATION, value: "Husum", expected_recall: must_detect}
+
+  - id: v2-quasi-identifier-011
+    category: quasi-identifier
+    split: holdout
+    text: "Der Vorstand der Rheintal-Versicherung in Mainz, Jahrgang 1971, tritt zurück."
+    entities:
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Vorstand der Rheintal-Versicherung in Mainz, Jahrgang 1971", expected_recall: known_gap}
+      - {type: ORGANIZATION, value: "Rheintal-Versicherung", expected_recall: must_detect}
+      - {type: LOCATION, value: "Mainz", expected_recall: must_detect}
+
+  - id: v2-titel-dateiname-001
+    category: titel-dateiname
+    split: dev
+    text: "Arztbrief_Hartmann_2024.pdf"
+    entities:
+      - {type: PERSON, value: "Hartmann", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-002
+    category: titel-dateiname
+    split: dev
+    text: "Gutachten Dr. Susanne Kaltenbach.docx"
+    entities:
+      - {type: PERSON, value: "Susanne Kaltenbach", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-003
+    category: titel-dateiname
+    split: dev
+    text: "Vertrag-Klaus-Immel-final.pdf"
+    entities:
+      - {type: PERSON, value: "Klaus-Immel", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-004
+    category: titel-dateiname
+    split: dev
+    text: "Lebenslauf_Verena_Stahl.pdf"
+    entities:
+      - {type: PERSON, value: "Verena_Stahl", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-005
+    category: titel-dateiname
+    split: dev
+    text: "Kuendigung Ewald Zander 2023-07.pdf"
+    entities:
+      - {type: PERSON, value: "Ewald Zander", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-006
+    category: titel-dateiname
+    split: dev
+    text: "Zeugnis_Menge.pdf"
+    entities:
+      - {type: PERSON, value: "Menge", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-007
+    category: titel-dateiname
+    split: holdout
+    text: "Befund_Annette_Ruf.pdf"
+    entities:
+      - {type: PERSON, value: "Annette_Ruf", expected_recall: known_gap}
+
+  - id: v2-titel-dateiname-008
+    category: titel-dateiname
+    split: holdout
+    text: "Rechnung Koch Dezember.pdf"
+    entities:
+      - {type: PERSON, value: "Koch", expected_recall: known_gap}
+
+  - id: v2-kombi-001
+    category: kombi
+    split: dev
+    text: "Kundin Sabine Wendt (sabine.wendt@kunde.example.org) wohnt am Fliederweg 3 in Gera."
+    entities:
+      - {type: PERSON, value: "Sabine Wendt", expected_recall: must_detect}
+      - {type: EMAIL_ADDRESS, value: "sabine.wendt@kunde.example.org", expected_recall: must_detect}
+      - {type: DE_STRASSE, value: "Fliederweg 3", expected_recall: must_detect}
+      - {type: LOCATION, value: "Gera", expected_recall: must_detect}
+
+  - id: v2-kombi-002
+    category: kombi
+    split: dev
+    text: "Mit freundlichen Grüßen\nTimo Brandl\nBrandl Consulting GmbH\nGutenbergstraße 9\nMünchen\nTel. +49 89 7654321\ntimo.brandl@brandl.example.net"
+    entities:
+      - {type: PERSON, value: "Timo Brandl", expected_recall: must_detect}
+      - {type: DE_FIRMA, value: "Brandl Consulting GmbH", expected_recall: must_detect}
+      - {type: DE_STRASSE, value: "Gutenbergstraße 9", expected_recall: must_detect}
+      - {type: LOCATION, value: "München", expected_recall: must_detect}
+      - {type: PHONE_NUMBER, value: "+49 89 7654321", expected_recall: must_detect}
+      - {type: EMAIL_ADDRESS, value: "timo.brandl@brandl.example.net", expected_recall: must_detect}
+
+  - id: v2-kombi-003
+    category: kombi
+    split: dev
+    text: "Frau Elena Vogt aus Jena hat die IBAN DE02 1203 0000 0000 2020 51 angegeben."
+    entities:
+      - {type: PERSON, value: "Elena Vogt", expected_recall: must_detect}
+      - {type: LOCATION, value: "Jena", expected_recall: must_detect}
+      - {type: IBAN_CODE, value: "DE02 1203 0000 0000 2020 51", expected_recall: must_detect}
+
+  - id: v2-kombi-004
+    category: kombi
+    split: dev
+    text: "Die Steuer-ID von Herrn Gunnar Rahe lautet 65 929 970 489."
+    entities:
+      - {type: PERSON, value: "Gunnar Rahe", expected_recall: must_detect}
+      - {type: DE_STEUER_ID, value: "65 929 970 489", expected_recall: must_detect}
+
+  - id: v2-kombi-005
+    category: kombi
+    split: dev
+    text: "Kontoinhaber: Edith Sanders, Karte 4111 1111 1111 1111."
+    entities:
+      - {type: PERSON, value: "Edith Sanders", expected_recall: must_detect}
+      - {type: CREDIT_CARD, value: "4111 1111 1111 1111", expected_recall: must_detect}
+
+  - id: v2-kombi-006
+    category: kombi
+    split: dev
+    text: "Server 192.168.10.25 wird von Marco Elsner betreut."
+    entities:
+      - {type: IP_ADDRESS, value: "192.168.10.25", expected_recall: must_detect}
+      - {type: PERSON, value: "Marco Elsner", expected_recall: must_detect}
+
+  - id: v2-kombi-007
+    category: kombi
+    split: holdout
+    text: "Geboren am 14.03.1979 in Worms: Hanna Pfeil."
+    entities:
+      - {type: DE_GEBURTSDATUM, value: "14.03.1979", expected_recall: must_detect}
+      - {type: LOCATION, value: "Worms", expected_recall: must_detect}
+      - {type: PERSON, value: "Hanna Pfeil", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-001
+    category: person-fliesstext
+    split: dev
+    text: "Das Foto stammt von Jan-Hendrik Müller-Lüdenscheid."
+    entities:
+      - {type: PERSON, value: "Jan-Hendrik Müller-Lüdenscheid", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-002
+    category: person-fliesstext
+    split: dev
+    text: "Gruss an Maria Schroeder und alle im Team."
+    entities:
+      - {type: PERSON, value: "Maria Schroeder", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-003
+    category: person-fliesstext
+    split: dev
+    text: "Die Entscheidung traf Johanna von der Heide am Montag."
+    entities:
+      - {type: PERSON, value: "Johanna von der Heide", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-004
+    category: person-fliesstext
+    split: dev
+    text: "Herrn Tiedemanns Antrag wurde bewilligt."
+    entities:
+      - {type: PERSON, value: "Tiedemanns", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-005
+    category: person-fliesstext
+    split: dev
+    text: "Laut M. Berger ist der Zähler defekt."
+    entities:
+      - {type: PERSON, value: "M. Berger", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-006
+    category: person-fliesstext
+    split: dev
+    text: "Ahmet Yilmaz und Elif Demir haben die Schulung abgeschlossen."
+    entities:
+      - {type: PERSON, value: "Ahmet Yilmaz", expected_recall: must_detect}
+      - {type: PERSON, value: "Elif Demir", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-007
+    category: person-fliesstext
+    split: dev
+    text: "Eingereicht wurde der Antrag durch Dr. Wiebke Thalmann-Ross."
+    entities:
+      - {type: PERSON, value: "Wiebke Thalmann-Ross", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-008
+    category: person-fliesstext
+    split: dev
+    text: "Frau Svenja Albers-Kuhn ist neue Teamleiterin."
+    entities:
+      - {type: PERSON, value: "Svenja Albers-Kuhn", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-009
+    category: person-fliesstext
+    split: dev
+    text: "Wie Piotr Kowalski bestätigt, ist die Ware angekommen."
+    entities:
+      - {type: PERSON, value: "Piotr Kowalski", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-010
+    category: person-fliesstext
+    split: dev
+    text: "Die Anfrage von Mohammed Al-Hamdan wurde beantwortet."
+    entities:
+      - {type: PERSON, value: "Mohammed Al-Hamdan", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-011
+    category: person-fliesstext
+    split: holdout
+    text: "Mit Grüßen von Jörg Zeidler."
+    entities:
+      - {type: PERSON, value: "Jörg Zeidler", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-012
+    category: person-fliesstext
+    split: holdout
+    text: "Ana Maria Fernandez hat das Formular ausgefüllt."
+    entities:
+      - {type: PERSON, value: "Ana Maria Fernandez", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-013
+    category: person-fliesstext
+    split: holdout
+    text: "Frau Dorothea Wittkopp bittet um Rückruf."
+    entities:
+      - {type: PERSON, value: "Dorothea Wittkopp", expected_recall: must_detect}
+
+  - id: v2-person-fliesstext-014
+    category: person-fliesstext
+    split: holdout
+    text: "Nach Angabe von Yusuf Çelik wurde nichts geliefert."
+    entities:
+      - {type: PERSON, value: "Yusuf Çelik", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-001
+    category: ort-fliesstext
+    split: dev
+    text: "Die Messe findet in Koeln statt."
+    entities:
+      - {type: LOCATION, value: "Koeln", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-002
+    category: ort-fliesstext
+    split: dev
+    text: "Das Lager in Muenchen ist ausgelastet."
+    entities:
+      - {type: LOCATION, value: "Muenchen", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-003
+    category: ort-fliesstext
+    split: dev
+    text: "Die Filiale Nuernberg schliesst am Freitag."
+    entities:
+      - {type: LOCATION, value: "Nuernberg", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-004
+    category: ort-fliesstext
+    split: dev
+    text: "Der Transport laeuft ueber Duesseldorf nach Essen."
+    entities:
+      - {type: LOCATION, value: "Duesseldorf", expected_recall: must_detect}
+      - {type: LOCATION, value: "Essen", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-005
+    category: ort-fliesstext
+    split: dev
+    text: "Aus Würzburg kam die Rückmeldung."
+    entities:
+      - {type: LOCATION, value: "Würzburg", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-006
+    category: ort-fliesstext
+    split: dev
+    text: "Der Standort Neubrandenburg wird erweitert."
+    entities:
+      - {type: LOCATION, value: "Neubrandenburg", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-007
+    category: ort-fliesstext
+    split: holdout
+    text: "Zwischen Flensburg und Konstanz liegen gut tausend Kilometer."
+    entities:
+      - {type: LOCATION, value: "Flensburg", expected_recall: must_detect}
+      - {type: LOCATION, value: "Konstanz", expected_recall: must_detect}
+
+  - id: v2-ort-fliesstext-008
+    category: ort-fliesstext
+    split: holdout
+    text: "Die Lieferung nach Saarbruecken verzoegert sich."
+    entities:
+      - {type: LOCATION, value: "Saarbruecken", expected_recall: must_detect}
+
+  - id: v2-negativ-satzanfang-001
+    category: negativ-satzanfang
+    split: dev
+    text: "Fasse die Besprechung in drei Sätzen zusammen."
+    entities: []
+
+  - id: v2-negativ-satzanfang-002
+    category: negativ-satzanfang
+    split: dev
+    text: "Uebersetze den Brief ins Spanische."
+    entities: []
+
+  - id: v2-negativ-satzanfang-003
+    category: negativ-satzanfang
+    split: dev
+    text: "Übersetze die Tabelle in einfache Sprache."
+    entities: []
+
+  - id: v2-negativ-satzanfang-004
+    category: negativ-satzanfang
+    split: dev
+    text: "Rueckruf bitte bis spaetestens Freitag."
+    entities: []
+
+  - id: v2-negativ-satzanfang-005
+    category: negativ-satzanfang
+    split: dev
+    text: "Rückruf wurde für Dienstag vereinbart."
+    entities: []
+
+  - id: v2-negativ-satzanfang-006
+    category: negativ-satzanfang
+    split: dev
+    text: "Pruefe, ob alle Felder ausgefuellt sind."
+    entities: []
+
+  - id: v2-negativ-satzanfang-007
+    category: negativ-satzanfang
+    split: dev
+    text: "Prüfe die Eingaben auf Tippfehler."
+    entities: []
+
+  - id: v2-negativ-satzanfang-008
+    category: negativ-satzanfang
+    split: dev
+    text: "Erstelle eine Liste der offenen Punkte."
+    entities: []
+
+  - id: v2-negativ-satzanfang-009
+    category: negativ-satzanfang
+    split: dev
+    text: "Schreibe eine kurze Antwort auf die Anfrage."
+    entities: []
+
+  - id: v2-negativ-satzanfang-010
+    category: negativ-satzanfang
+    split: dev
+    text: "Berechne die Summe aller Positionen."
+    entities: []
+
+  - id: v2-negativ-satzanfang-011
+    category: negativ-satzanfang
+    split: dev
+    text: "Ergaenze den Text um ein Fazit."
+    entities: []
+
+  - id: v2-negativ-satzanfang-012
+    category: negativ-satzanfang
+    split: dev
+    text: "Formuliere den Absatz sachlicher."
+    entities: []
+
+  - id: v2-negativ-satzanfang-013
+    category: negativ-satzanfang
+    split: dev
+    text: "Erklaere den Unterschied zwischen beiden Tarifen."
+    entities: []
+
+  - id: v2-negativ-satzanfang-014
+    category: negativ-satzanfang
+    split: dev
+    text: "Beschreibe den Ablauf der Bestellung."
+    entities: []
+
+  - id: v2-negativ-satzanfang-015
+    category: negativ-satzanfang
+    split: dev
+    text: "Vergleiche die beiden Angebote."
+    entities: []
+
+  - id: v2-negativ-satzanfang-016
+    category: negativ-satzanfang
+    split: dev
+    text: "Analysiere die Fehlermeldung im Protokoll."
+    entities: []
+
+  - id: v2-negativ-satzanfang-017
+    category: negativ-satzanfang
+    split: dev
+    text: "Korrigiere die Rechtschreibung im Anhang."
+    entities: []
+
+  - id: v2-negativ-satzanfang-018
+    category: negativ-satzanfang
+    split: dev
+    text: "Sortiere die Liste alphabetisch."
+    entities: []
+
+  - id: v2-negativ-satzanfang-019
+    category: negativ-satzanfang
+    split: dev
+    text: "Kuerze den Bericht auf eine Seite."
+    entities: []
+
+  - id: v2-negativ-satzanfang-020
+    category: negativ-satzanfang
+    split: dev
+    text: "Ueberarbeite die Einleitung."
+    entities: []
+
+  - id: v2-negativ-satzanfang-021
+    category: negativ-satzanfang
+    split: dev
+    text: "Loesche die doppelten Eintraege."
+    entities: []
+
+  - id: v2-negativ-satzanfang-022
+    category: negativ-satzanfang
+    split: dev
+    text: "Oeffne die Datei und lies den ersten Absatz."
+    entities: []
+
+  - id: v2-negativ-satzanfang-023
+    category: negativ-satzanfang
+    split: dev
+    text: "Waehle die guenstigste Variante."
+    entities: []
+
+  - id: v2-negativ-satzanfang-024
+    category: negativ-satzanfang
+    split: dev
+    text: "Fasse bitte den Vertrag kurz zusammen."
+    entities: []
+
+  - id: v2-negativ-satzanfang-025
+    category: negativ-satzanfang
+    split: dev
+    text: "Rueckfrage zur Lieferung steht noch aus."
+    entities: []
+
+  - id: v2-negativ-satzanfang-026
+    category: negativ-satzanfang
+    split: dev
+    text: "Mahnung versendet, Zahlung erwartet."
+    entities: []
+
+  - id: v2-negativ-satzanfang-027
+    category: negativ-satzanfang
+    split: dev
+    text: "Gutschrift wurde erstellt."
+    entities: []
+
+  - id: v2-negativ-satzanfang-028
+    category: negativ-satzanfang
+    split: dev
+    text: "Stornierung bestätigt."
+    entities: []
+
+  - id: v2-negativ-satzanfang-029
+    category: negativ-satzanfang
+    split: dev
+    text: "Bearbeitung dauert zwei Werktage."
+    entities: []
+
+  - id: v2-negativ-satzanfang-030
+    category: negativ-satzanfang
+    split: dev
+    text: "Wartung findet nachts statt."
+    entities: []
+
+  - id: v2-negativ-satzanfang-031
+    category: negativ-satzanfang
+    split: dev
+    text: "Terminanfrage liegt vor."
+    entities: []
+
+  - id: v2-negativ-satzanfang-032
+    category: negativ-satzanfang
+    split: dev
+    text: "Zahlungseingang noch nicht verbucht."
+    entities: []
+
+  - id: v2-negativ-satzanfang-033
+    category: negativ-satzanfang
+    split: holdout
+    text: "Ordne die Punkte nach Wichtigkeit."
+    entities: []
+
+  - id: v2-negativ-satzanfang-034
+    category: negativ-satzanfang
+    split: holdout
+    text: "Gliedere den Text in drei Abschnitte."
+    entities: []
+
+  - id: v2-negativ-satzanfang-035
+    category: negativ-satzanfang
+    split: holdout
+    text: "Skizziere den Ablauf in Stichpunkten."
+    entities: []
+
+  - id: v2-negativ-satzanfang-036
+    category: negativ-satzanfang
+    split: holdout
+    text: "Verfasse eine Zusammenfassung für die Geschäftsleitung."
+    entities: []
+
+  - id: v2-negativ-satzanfang-037
+    category: negativ-satzanfang
+    split: holdout
+    text: "Ermittle den Durchschnitt der Werte."
+    entities: []
+
+  - id: v2-negativ-satzanfang-038
+    category: negativ-satzanfang
+    split: holdout
+    text: "Wiederhole die letzte Berechnung."
+    entities: []
+
+  - id: v2-negativ-satzanfang-039
+    category: negativ-satzanfang
+    split: holdout
+    text: "Ersetze das Wort im gesamten Dokument."
+    entities: []
+
+  - id: v2-negativ-satzanfang-040
+    category: negativ-satzanfang
+    split: holdout
+    text: "Bestaetige den Eingang der Nachricht."
+    entities: []
+
+  - id: v2-negativ-satzanfang-041
+    category: negativ-satzanfang
+    split: holdout
+    text: "Aktualisiere die Tabelle mit den neuen Zahlen."
+    entities: []
+
+  - id: v2-negativ-satzanfang-042
+    category: negativ-satzanfang
+    split: holdout
+    text: "Archiviere den Vorgang nach Abschluss."
+    entities: []
+
+  - id: v2-negativ-satzanfang-043
+    category: negativ-satzanfang
+    split: holdout
+    text: "Anlieferung erfolgt zwischen acht und zwölf Uhr."
+    entities: []
+
+  - id: v2-negativ-satzanfang-044
+    category: negativ-satzanfang
+    split: holdout
+    text: "Reklamation wurde angenommen."
+    entities: []
+
+  - id: v2-negativ-satzanfang-045
+    category: negativ-satzanfang
+    split: holdout
+    text: "Ruecksendung ist kostenlos."
+    entities: []
+
+  - id: v2-negativ-satzanfang-046
+    category: negativ-satzanfang
+    split: holdout
+    text: "Retoure bitte originalverpackt aufgeben."
+    entities: []
+
+  - id: v2-negativ-schema-001
+    category: negativ-schema
+    split: dev
+    text: "{\"bestellnummer\": \"B-20931\", \"menge\": 4, \"einzelpreis\": 12.9}"
+    entities: []
+
+  - id: v2-negativ-schema-002
+    category: negativ-schema
+    split: dev
+    text: "{\"rueckruf\": true, \"rueckrufgrund\": \"Preisfrage\", \"bearbeitungsstatus\": \"offen\"}"
+    entities: []
+
+  - id: v2-negativ-schema-003
+    category: negativ-schema
+    split: dev
+    text: "{\"lieferdatum\": \"2025-04-02\", \"zahlungsart\": \"Rechnung\", \"versandart\": \"Paket\"}"
+    entities: []
+
+  - id: v2-negativ-schema-004
+    category: negativ-schema
+    split: dev
+    text: "{\n  \"kundennummer\": \"K-1182\",\n  \"vertragsnummer\": \"V-0042\",\n  \"rechnungsbetrag\": 89.5\n}"
+    entities: []
+
+  - id: v2-negativ-schema-005
+    category: negativ-schema
+    split: dev
+    text: "{\"ergebnis\": \"ok\", \"fehlercode\": 0, \"meldung\": \"Vorgang abgeschlossen\"}"
+    entities: []
+
+  - id: v2-negativ-schema-006
+    category: negativ-schema
+    split: dev
+    text: "{\"prioritaet\": \"hoch\", \"faelligkeit\": \"naechste Woche\", \"kategorie\": \"Rechnung\"}"
+    entities: []
+
+  - id: v2-negativ-schema-007
+    category: negativ-schema
+    split: dev
+    text: "{\"artikel\": \"Schraube\", \"farbe\": \"silber\", \"gewicht\": 12}"
+    entities: []
+
+  - id: v2-negativ-schema-008
+    category: negativ-schema
+    split: dev
+    text: "Felder: bestellnummer, menge, einzelpreis, lieferdatum"
+    entities: []
+
+  - id: v2-negativ-schema-009
+    category: negativ-schema
+    split: holdout
+    text: "{\"stornogrund\": \"doppelt bestellt\", \"gutschrift\": 15.0}"
+    entities: []
+
+  - id: v2-negativ-schema-010
+    category: negativ-schema
+    split: holdout
+    text: "{\"zeitraum\": \"Quartal\", \"summe\": 1200, \"waehrung\": \"EUR\"}"
+    entities: []
+
+  - id: v2-negativ-schema-011
+    category: negativ-schema
+    split: holdout
+    text: "{\"status\": \"bearbeitet\", \"wiedervorlage\": \"ja\"}"
+    entities: []
+
+  - id: v2-negativ-schema-012
+    category: negativ-schema
+    split: holdout
+    text: "{\"anrede\": \"Sehr geehrte Damen und Herren\", \"betreff\": \"Rückfrage zur Lieferung\"}"
+    entities: []
+
+  - id: v2-negativ-schema-013
+    category: negativ-schema
+    split: holdout
+    text: "{\"rueckfrage\": \"offen\", \"sendungsnummer\": \"S-5501\", \"lieferung\": \"unterwegs\"}"
+    entities: []
+
+  - id: v2-negativ-schema-014
+    category: negativ-schema
+    split: holdout
+    text: "Spalten: kundennummer; rechnungsnummer; zahlungsart; menge"
+    entities: []
+
+  - id: v2-negativ-fliesstext-001
+    category: negativ-fliesstext
+    split: dev
+    text: "Die Bearbeitung der Anfrage dauert in der Regel zwei bis drei Werktage."
+    entities: []
+
+  - id: v2-negativ-fliesstext-002
+    category: negativ-fliesstext
+    split: dev
+    text: "Bitte senden Sie uns die Unterlagen als PDF zurück."
+    entities: []
+
+  - id: v2-negativ-fliesstext-003
+    category: negativ-fliesstext
+    split: dev
+    text: "Das Wartungsfenster liegt zwischen zwei und vier Uhr nachts."
+    entities: []
+
+  - id: v2-negativ-fliesstext-004
+    category: negativ-fliesstext
+    split: dev
+    text: "Für den Export nutzen wir Python und eine einfache CSV-Datei."
+    entities: []
+
+  - id: v2-negativ-fliesstext-005
+    category: negativ-fliesstext
+    split: dev
+    text: "Der Kunde hat die Lieferung abgelehnt, weil die Verpackung beschädigt war."
+    entities: []
+
+  - id: v2-negativ-fliesstext-006
+    category: negativ-fliesstext
+    split: dev
+    text: "Im Anhang finden Sie die Preisliste und die Allgemeinen Geschäftsbedingungen."
+    entities: []
+
+  - id: v2-negativ-fliesstext-007
+    category: negativ-fliesstext
+    split: dev
+    text: "Die Rechnung enthält drei Positionen und einen Rabatt von fünf Prozent."
+    entities: []
+
+  - id: v2-negativ-fliesstext-008
+    category: negativ-fliesstext
+    split: dev
+    text: "Bei Rückfragen erreichen Sie den Support werktags von acht bis sechzehn Uhr."
+    entities: []
+
+  - id: v2-negativ-fliesstext-009
+    category: negativ-fliesstext
+    split: dev
+    text: "Das Angebot gilt bis zum Ende des Quartals und ist unverbindlich."
+    entities: []
+
+  - id: v2-negativ-fliesstext-010
+    category: negativ-fliesstext
+    split: dev
+    text: "Die Software wird einmal im Monat aktualisiert, meist am Wochenende."
+    entities: []
+
+  - id: v2-negativ-fliesstext-011
+    category: negativ-fliesstext
+    split: dev
+    text: "Betreff: Terminverschiebung\n\nSehr geehrte Damen und Herren,\nder Termin wird um eine Woche verschoben.\nMit freundlichen Grüßen\nIhr Serviceteam"
+    entities: []
+
+  - id: v2-negativ-fliesstext-012
+    category: negativ-fliesstext
+    split: dev
+    text: "Excel, Docker und Kubernetes gehören zu den Werkzeugen des Teams."
+    entities: []
+
+  - id: v2-negativ-fliesstext-013
+    category: negativ-fliesstext
+    split: holdout
+    text: "Die Gutschrift wird innerhalb von zehn Tagen auf das Konto zurückgebucht."
+    entities: []
+
+  - id: v2-negativ-fliesstext-014
+    category: negativ-fliesstext
+    split: holdout
+    text: "Unsere Hotline ist am Feiertag nicht besetzt."
+    entities: []
+
+  - id: v2-negativ-fliesstext-015
+    category: negativ-fliesstext
+    split: holdout
+    text: "Der Bericht fasst die Ergebnisse des letzten Halbjahres zusammen."
+    entities: []
+
+  - id: v2-negativ-fliesstext-016
+    category: negativ-fliesstext
+    split: holdout
+    text: "Das Gerät muss vor dem Versand vollständig entladen werden."
+    entities: []
+
+  - id: v2-negativ-fliesstext-017
+    category: negativ-fliesstext
+    split: holdout
+    text: "Anbei die Zusammenfassung der Besprechung vom Vormittag."
+    entities: []
+
+  - id: v2-negativ-fliesstext-018
+    category: negativ-fliesstext
+    split: holdout
+    text: "Der Wartungsvertrag verlängert sich automatisch um ein Jahr."
+    entities: []
+
+  - id: v2-negativ-fliesstext-019
+    category: negativ-fliesstext
+    split: holdout
+    text: "Bitte beachten Sie die Hinweise zur Datensicherung im Handbuch."
+    entities: []
+
+  - id: v2-negativ-fliesstext-020
+    category: negativ-fliesstext
+    split: holdout
+    text: "Die Schulung findet online statt und dauert zwei Stunden."
+    entities: []
+
+  - id: v2-negativ-fliesstext-021
+    category: negativ-fliesstext
+    split: holdout
+    text: "Hinweis:\nDie Lieferung erfolgt ohne Aufpreis.\nRückgabe ist innerhalb von vierzehn Tagen möglich."
+    entities: []
+
+  - id: v2-negativ-fliesstext-022
+    category: negativ-fliesstext
+    split: holdout
+    text: "Linux, Windows und macOS werden gleichermaßen unterstützt."
+    entities: []

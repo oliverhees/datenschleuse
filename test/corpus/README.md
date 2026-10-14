@@ -10,6 +10,8 @@ gegen einen festen Satz realistischer deutscher Texte gemessen wird.
 |-------|-------|
 | `de-pii-testkorpus.yaml` | Ground-Truth-Korpus: pro Case ein Text + die exakt erwarteten PII-Teilstrings. |
 | `../../presidio/de-stopwords.yml` | Nicht-PII-Wortliste: gemessene deutsche Alltagswörter, die das NER fälschlich meldet. Wird per `--stopwords` als Presidio-`allow_list` mitgeschickt. |
+| `corpus-manifest.json` | No-Shrink-Anker: alle Case-ids samt Split. Erzeugt mit `python3 test/corpus-benchmark.py --write-manifest`. |
+| `../test_corpus_v2.py` | Offline-Tests: Schema-/Annotationsregeln, Manifest-Vergleich in beide Richtungen, absolute Untergrenzen je Kategorie. |
 | `../corpus-benchmark.py` | Benchmark-Runner: schickt den Korpus an Presidio, rechnet Recall/Precision. |
 | `benchmark-results.json` | Wird bei jedem Lauf (über)schrieben — strukturiertes Ergebnis mit UTC-Timestamp. |
 
@@ -37,6 +39,50 @@ Jeder `case` hat:
 - Ist `entities` eine **leere Liste** (`entities: []`), ist es ein **Negativ-Fall**
   (False-Positive-Köder): Der Text sieht stellenweise nach PII aus, enthält aber
   keine. Jede Presidio-Detektion hier ist ein False Positive.
+
+### Korpus v2 (DATENSCHLE-94): Zusatzfelder und Regeln
+
+Die ersten 84 Fälle (v1, ohne `category`) bleiben unverändert und unterliegen
+nur dem Basis-Schema. Alle Fälle mit `category` und id-Präfix `v2-` sind v2 und
+werden vom Loader streng validiert:
+
+- `category` — Fehlerklasse (`nachname-wort`, `nachname-kopf`,
+  `positiv-kontrolle`, `name-ohne-anrede`, `adresse-fliesstext`,
+  `json-gemischt`, `quasi-identifier`, `titel-dateiname`, `kombi`,
+  `person-fliesstext`, `ort-fliesstext`, `negativ-satzanfang`,
+  `negativ-schema`, `negativ-fliesstext`).
+- `split` — `dev` oder `holdout`. **Der Hold-out dient nie zum Abstimmen.**
+  Tuning-Läufe (Wortliste, Recognizer) fahren mit `--split dev`; der Runner
+  weist dev und Hold-out im Report immer getrennt aus (`splits`). Neue
+  Hold-out-Fälle brauchen frisches Vokabular, keine Varianten bereits
+  abgestimmter Wörter.
+- `control: true` — Positiv-Kontrolle. Jede `must_detect`-Entität trägt dann
+  `baseline_detected` (true/false): ob die Baseline (main bei der Härtung) sie
+  gemessen erkannt hat. Abweichungen weist der Report unter `baseline_control`
+  aus (Rückschritt bzw. Fortschritt) — nichts geht in der Gesamtzahl unter.
+
+**Annotationsregeln A1–A6** stehen im Header von `de-pii-testkorpus.yaml` (dort
+maßgeblich) und werden, soweit maschinenprüfbar, vom Loader erzwungen:
+
+| Regel | Inhalt | Erzwungen |
+|---|---|---|
+| A1 | Span-Minimalität: kein Titel/Rolle/Label/Satzzeichen im Span, genau ein Vorkommen im Text, keine Überlappung | ja |
+| A2 | v2-Positivfälle sind erschöpfend annotiert; Berufe/Rollen ohne Namen sind keine PII | Konvention |
+| A3 | Satzinitiale Verben/Substantive, Schema-Schlüssel, Produktnamen sind nie PII (ASCII wie Umlaut) | Konvention |
+| A4 | Alltagswort-Nachnamen sind PII nur bei Namens-Marker im Kontext; ohne Marker nicht raten | Konvention |
+| A5 | Quasi-Identifier und Titel in Dateinamen-Form sind `known_gap`; enthaltene Eigennamen einzeln `must_detect` | teilweise |
+| A6 | Nur Synthetisches; E-Mail nur auf reservierten Domains (`example.com/.org/.net/.de`) | ja (E-Mail) |
+
+Warum nicht die nackte TLD `.example`: Presidios `EmailRecognizer` validiert die
+TLD, `x@y.example` wird nie erkannt — der Fall würde den Validator messen, nicht
+die Erkennung.
+
+**No-Shrink:** `corpus-manifest.json` hält alle ids samt Split fest.
+`test/test_corpus_v2.py` vergleicht Korpus und Manifest in beide Richtungen
+(verschwundener Fall = rot, nicht registrierter neuer Fall = rot, Split-Wechsel =
+rot) und prüft absolute Untergrenzen (≥ 150 neue Positiv-Fälle, ≥ 80
+PII-freie Negativ-Texte, Hold-out ≥ 25 Positiv/≥ 30 Negativ, Kategorie-Minima).
+Wer einen Fall bewusst entfernt, ändert das Manifest im selben Commit sichtbar.
 
 ## Was der Benchmark misst
 
@@ -126,33 +172,45 @@ Precision-Zahl danach aussieht.
 
 ### Aktueller Stand: Ziel nicht erreicht
 
-Das Precision-Ziel ist **rot**. Der Korpus beprobte auf der Negativ-Seite lange
-nur die Regex-Recognizer (IBAN, Telefon, KFZ, Aktenzeichen, Firma) — die
-statistische Erkennung war unbeprobt. Beprobt liegt die Precision bei **67,5 %**
-bei einer Störquote von **81,2 %** (26 von 32 PII-freien Texten gestört). Das
-ist der **Rohzustand** des Analyzers ohne Wortliste und die Gegenprobe zur
-ausgelieferten Konfiguration.
+Gemessen am 2026-10-14 über den gehärteten Korpus (325 Fälle: 84 v1 + 241 v2),
+mit der Nicht-PII-Wortliste — das ist die **ausgelieferte Konfiguration**, die
+der Guardrail seit DATENSCHLE-82 an jeden Presidio-Aufruf sendet
+(`docs/foundation/erkennungsziel.md` §7). `test/guardrail-benchmark.py` liefert
+durch den Guardrail-Pfad dieselben Zahlen. Belegt ist damit der Codepfad gegen
+einen laufenden Analyzer (Presidio 2.2.362, `de_core_news_lg` 3.8.0, lokal ohne
+Docker gestartet), kein Container-Start.
 
-Mit der Nicht-PII-Wortliste (`presidio/de-stopwords.yml`) steigt die Precision
-ohne Recall-Verlust auf **81,8 %** bei **37,5 %** Störquote (12 von 32). Das ist
-die **ausgelieferte Konfiguration**: Der Guardrail sendet die Liste seit
-DATENSCHLE-82 an jeden Presidio-Aufruf (`docs/foundation/erkennungsziel.md`
-§7), und `test/guardrail-benchmark.py` misst dieselben Zahlen durch den
-Guardrail-Pfad (siehe „Aufruf"). Belegt ist damit der Codepfad gegen einen
-laufenden Analyzer, kein Container-Start. Beide Gates bleiben verfehlt.
+| Kennzahl | Rohzustand (ohne Liste) | mit Liste (ausgeliefert) | davon dev | davon Hold-out |
+|---|---|---|---|---|
+| Recall (`must_detect`) | 91,8 % (258/281) | 91,8 % (258/281) | 93,1 % (217/233) | 85,4 % (41/48) |
+| Precision | 83,0 % | 89,3 % | 89,3 % | 89,1 % |
+| Störquote | 42,1 % (48/114) | 26,3 % (30/114) | 29,8 % (25/84) | 16,7 % (5/30) |
 
-Der gemeldete **Recall von 100 % ist ebenfalls kein Qualitätsbeleg**:
-`de_core_news_lg` gibt für PERSON in seinen eigenen Metadaten 92,02 % Recall an.
-Ein Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
-Evaluationsmenge, ist zu leicht. Die Härtung des Korpus ist ein eigenes Work
-Item.
+Recall PERSON 87,0 % (120/138), ORGANIZATION 50,0 % (3/6); `known_gap` 3 von 24
+erkannt. Recall, Precision und Störquote sind **rot**. Die 20
+Positiv-Kontrollen weichen nicht von der Baseline ab (0 Abweichungen); alle
+`nachname-kopf`-Wächter (`Erhart`, `Lienhart`, …) werden erkannt. Die größte
+Recall-Lücke sind Nachnamen, die Alltagswörter sind (`Bauer`, `Koch`, `Menge`:
+15 der 23 verfehlten Entitäten).
 
-Das eingecheckte `benchmark-results.json` ist der Lauf **mit** Wortliste über
-alle 84 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
-Störquote 37,5 %, `bestanden: false`). Es wird ausschließlich durch einen
-echten Lauf ersetzt, nie von Hand editiert — eine Handeintragung wäre keine
-Korrektur. Der Rohzustand (ohne Liste) hat kein eingechecktes Artefakt; wer
-ihn belegen will, fährt Lauf 3 selbst.
+Zum Vergleich der alte Korpus (nur v1, 84 Fälle, am selben Tag gegen denselben
+Stand reproduziert): Recall 100 % (54/54), Precision 81,8 %, Störquote 37,5 %
+(12/32); ohne Liste Precision 67,5 %, Störquote 81,2 %. Der v1-Recall von 100 %
+war kein Qualitätsbeleg (`de_core_news_lg` gibt 92,02 % für PERSON an) — der
+Recall-Einbruch auf v2 ist das erwartete Ergebnis eines Korpus, der etwas
+misst.
+
+Die Zahlen sind eine Messung, kein Tuning-Ergebnis: Die Härtung ändert weder
+Filter noch Recognizer noch Wortliste. Das eingecheckte `benchmark-results.json`
+ist der Lauf **mit** Wortliste über alle 325 Fälle (`bestanden: false`). Es wird
+ausschließlich durch einen echten Lauf ersetzt, nie von Hand editiert — eine
+Handeintragung wäre keine Korrektur. Der Rohzustand (ohne Liste) hat kein
+eingechecktes Artefakt; wer ihn belegen will, fährt Lauf 3 selbst.
+
+Bei der Lektüre beachten: Die gepoolte Störquote verdünnt. Fließtext-Negative
+stören kaum (1 von 22), satzinitiale Verben und Substantive weiterhin in 15 von
+46 Fällen. `by_category` im Report weist das je Kategorie aus, und
+`must_detect_misses` listet jede verfehlte Entität namentlich.
 
 ## Aufruf
 
@@ -178,7 +236,7 @@ PYTHONPATH=litellm python3 test/guardrail-benchmark.py
 ```
 
 > **Welche Zahl beschreibt den Betrieb?** Die aus Lauf 4 (mit Liste):
-> Störquote **37,5 %**. Lauf 3 (81,2 %) ist der Rohzustand ohne Wortliste und
+> Störquote **26,3 %**. Lauf 3 (42,1 %) ist der Rohzustand ohne Wortliste und
 > zeigt, was die Liste bewirkt. Beide Zahlen belegen den Codepfad gegen einen
 > laufenden Analyzer; ein echter Docker-Build/Container-Start ist damit nicht
 > belegt.
@@ -199,6 +257,8 @@ Der Runner druckt einen Report auf stdout und schreibt zusätzlich
 | `--output` | `test/corpus/benchmark-results.json` | Alternativer Report-Pfad. |
 | `--timeout` / `PRESIDIO_TIMEOUT_SECONDS` | `30` | Netzwerk-Timeout pro Request (s). |
 | `--overlap-ratio` / `OVERLAP_MIN_RATIO` | `0.5` | Mindest-Overlap-Anteil für einen Treffer. |
+| `--split` | `all` | `dev`, `holdout` oder `all`. Tuning-Läufe nutzen `dev`; der Hold-out wird nie zum Abstimmen verwendet. |
+| `--write-manifest` | _(aus)_ | Schreibt `corpus-manifest.json` neben den Korpus und endet ohne Analyzer-Lauf. |
 | `--stopwords` | _(aus)_ | Pfad zu `presidio/de-stopwords.yml`. Deren Muster werden als Presidio-`allow_list` mitgeschickt, zusammen mit dem `regex_flags`-Wert aus derselben Datei. Misst die ausgelieferte Konfiguration — der Guardrail sendet dieselbe Liste (§7). |
 | `--no-stopwords` | _(Default)_ | Explizit ohne Liste messen; markiert den Vorher-Lauf in Skripten sichtbar. |
 

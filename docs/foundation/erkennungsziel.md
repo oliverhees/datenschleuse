@@ -54,9 +54,12 @@ Korpus hat seither 84 Fälle: zwei neue Fälle der Kategorie `known_gap`
 (`titel-001`, `titel-002`) sind dazugekommen. Die Werte der Spalte „mit
 Stoppwortliste“ (54/54, 81,8 %, 37,5 %) gelten unverändert auch für 84 Fälle,
 weil `known_gap`-Fälle weder in `must_detect` noch in die Negativ-Fälle
-eingehen; belegt in `test/corpus/benchmark-results.json` (`case_count` 84,
-`must_detect` 54/54 bei 12 False Positives, `known_gap` mit Support 4).
-Die Tabelle selbst bleibt als historischer Messstand unverändert.
+eingehen; belegt am v1-Anteil von `test/corpus/benchmark-results.json`
+(`by_category.v1`: 84 Fälle, `must_detect` 54/54; `known_gap` v1 mit Support
+4) und am 2026-10-14 mit dem alten Korpus gegen den aktuellen Stand
+reproduziert (54/54, 12 False Positives, 37,5 %). Seit DATENSCHLE-94 enthält
+das Artefakt den Lauf über den gehärteten Korpus v2 (§1.4). Die Tabelle selbst
+bleibt als historischer Messstand unverändert.
 
 Die mittlere Spalte ist die ehrliche Ausgangslage: **vier von fünf PII-freien
 Texten wurden gestört.**
@@ -89,6 +92,74 @@ ist gegen diesen Effekt immun und beantwortet die Frage, die für die Nutzbarkei
 zählt: *Wie oft zerschießt die Datenschleuse einen Text, in dem gar nichts zu
 finden ist?* Sie ist damit die Kennzahl, die ein Anwender tatsächlich erlebt,
 und wird gleichrangig zur Precision geführt.
+
+### 1.4 Korpus v2 — die erste Messung, die etwas misst (DATENSCHLE-94)
+
+Der Befund aus §1.1 galt auch nach der Erweiterung auf 84 Fälle: 100 % Recall
+auf einem Korpus, auf dem das Modell besser abschneidet als auf seiner eigenen
+Evaluationsmenge (§5), ist eine Aussage über den Korpus, nicht über die
+Erkennung. DATENSCHLE-94 härtet den Korpus (ohne eine Zeile Filtercode zu
+ändern) und misst den unveränderten Stand von `main`.
+
+Was neu ist: 241 v2-Fälle (159 mit erwarteten Spans, 82 PII-freie Negativ-Texte),
+darunter Nachnamen, die Alltagswörter sind (`Menge`, `Fuege`, `Koch`, `Bauer`),
+Nachnamen mit Kopf-Morphemen (`Erhart`, `Lienhart`), Namen ohne Anrede,
+Adressen und Organisationen im Fließtext und mehrzeilig, deutsche JSON-Schlüssel
+neben echten Werten, Quasi-Identifier, Titel in Dateinamen-Form, satzinitiale
+Verben und Substantive in ASCII- und Umlautschreibung als Negative. Dazu ein
+**Hold-out-Split** (37 Positiv-, 30 Negativ-Fälle), der nie zum Abstimmen
+dient, und Annotationsregeln A1–A6 im Korpus-Header. Der Korpus kann nicht mehr
+still schrumpfen (`test/corpus/corpus-manifest.json`,
+`test/test_corpus_v2.py`).
+
+Messung am 2026-10-14, Analyzer = Presidio 2.2.362 mit `de_core_news_lg` 3.8.0
+und der Repo-Konfiguration (`presidio/*.yml`), lokal ohne Docker gestartet,
+mit Nicht-PII-Wortliste (ausgelieferte Konfiguration):
+
+| Kennzahl | v1-Korpus (84 Fälle) | v2-Korpus gesamt (325 Fälle) | v2 dev | v2 Hold-out |
+|---|---|---|---|---|
+| Recall (`must_detect`) | 100,0 % (54/54) | **91,8 %** (258/281) | 93,1 % (217/233) | **85,4 %** (41/48) |
+| Precision | 81,8 % | **89,3 %** | 89,3 % | 89,1 % |
+| Störquote | 37,5 % (12/32) | **26,3 %** (30/114) | 29,8 % (25/84) | 16,7 % (5/30) |
+| Recall PERSON | 100,0 % | **87,0 %** (120/138) | | |
+| Recall ORGANIZATION | n/a | **50,0 %** (3/6) | | |
+| `known_gap` erkannt | 0/4 | 3/24 | 3/18 | 0/6 |
+
+Rohzustand ohne Wortliste über den v2-Korpus: Recall 91,8 %, Precision 83,0 %,
+Störquote 42,1 % (48/114). Die Wortliste ändert den Recall nicht und senkt die
+Störquote um 16 Prozentpunkte.
+
+Wie die Zahlen zu lesen sind:
+
+- **Der Recall wird rot.** Gesamt 91,8 % < 95 %, PERSON 87,0 % < 90 %,
+  ORGANIZATION 50,0 % < 75 %. Die Fehlstellen sind benannt, nicht pauschal:
+  15 der 23 verfehlten Entitäten sind Nachnamen, die Alltagswörter sind
+  (`Bauer`, `Koch`, `Menge`, `Vogel`, `Hahn`, …) — in Fließtext wie in
+  JSON-Werten. Die Kopf-Morphem-Wächter (`Erhart`, `Lienhart`, …) und alle
+  Positiv-Kontrollen werden dagegen erkannt (0 Abweichungen von der Baseline).
+- **Die Störquote sinkt auf dem größeren Korpus, ohne dass die Erkennung besser
+  wurde.** Die gemischte Quote verdünnt: Fließtext-Negative stören kaum (1 von
+  22), satzinitiale Verben und Substantive dagegen weiterhin (15 von 46).
+  Maßgeblich bleibt daher die Quote je Kategorie
+  (`by_category` in `benchmark-results.json`).
+- **Hold-out vs. dev:** Der Recall fällt von 93,1 % auf 85,4 %. Der Hold-out
+  ist klein (48 Entitäten), die Differenz ist ein Signal, kein Beweis; die
+  Kategorie-Zusammensetzung der Negative unterscheidet sich außerdem
+  (Hold-out: 14 von 30 satzinitial), die Störquoten sind daher nicht direkt
+  vergleichbar. Frisches Vokabular im Hold-out (`Gliedere`,
+  `Skizziere`, `Retoure`) wird trotzdem fehlalarmiert, wo die Liste es nicht
+  kennt.
+- **Interimsziele (Entscheidung Oliver):** Z1 = kein Recall-Verlust, Störquote
+  ≤ 20 %, Precision ≥ 85 %, Gate bleibt rot; Z2 = ≤ 10 % / ≥ 90 %. Gegen Z1:
+  Precision erfüllt (89,3 %), Störquote verfehlt (26,3 %). Der Recall-Vergleich
+  gegen die v1-Baseline ist auf dem neuen Korpus neu zu ziehen: **v2 ist die
+  Baseline.** Regel R2 und der Umgang mit JSON-Schlüsseln werden erst nach
+  dieser Messung entschieden.
+
+Reichweite: Gemessen ist der Analyzer-Codepfad (gleiche Python-Pakete und
+Konfiguration wie im Image), nicht ein gebauter Container. Die Zahlen sind eine
+Messung, kein Tuning-Ergebnis; keine Filter-, Recognizer- oder Listenänderung
+ist Teil dieser Arbeit.
 
 ---
 
@@ -133,8 +204,12 @@ Deshalb braucht das Ziel zwei Zahlen, nicht eine.
 | **Precision** (aus Negativ-Fällen) | **≥ 90 %** | V1 blockierend |
 | Recall bei `known_gap` | keine Vorgabe | nur berichtet |
 
-**Aktueller Stand gegen dieses Ziel:** Recall 100 %, Precision 81,8 %,
-Störquote 37,5 % — **zwei Gates verfehlt** (Precision, Störquote).
+**Aktueller Stand gegen dieses Ziel** (Korpus v2, §1.4, mit Wortliste):
+Recall 91,8 %, Precision 89,3 %, Störquote 26,3 % — **fünf Gates verfehlt**
+(Recall gesamt, Recall PERSON, Recall ORGANIZATION, Precision, Störquote).
+Auf dem alten v1-Korpus (84 Fälle) standen Recall 100 %, Precision 81,8 % und
+Störquote 37,5 % — zwei Gates verfehlt; der v1-Recall war ein Artefakt des zu
+leichten Korpus.
 
 Das ist beabsichtigt so ausgewiesen. Die Verfehlung hat genau eine Ursache:
 DATENSCHLE-70 (ASCII-umschriebene Wörter) ist über den `allow_list`-Mechanismus
@@ -360,6 +435,10 @@ Daraus folgt zweierlei:
    sondern den **Korpus zu härten**, bis er das Modell tatsächlich fordert.
    Erst dann misst der Recall etwas. Eigenes Work Item.
 
+**Umgesetzt in DATENSCHLE-94 (§1.4):** Auf dem gehärteten Korpus v2 fällt der
+Recall auf 91,8 % (PERSON 87,0 %). Damit liegt PERSON im Bereich der
+Modell-Metadaten (92,02 %) statt darüber — erstmals misst der Recall etwas.
+
 ### Warum die Recall-Ziele nach Mechanismus gestaffelt sind
 
 Aus derselben Tabelle folgt, dass ein pauschales Per-Typ-Ziel nicht
@@ -427,6 +506,8 @@ Recall-Nachweis ist kein Ergebnis, sondern eine unbelegte Behauptung.
 **Erledigt (DATENSCHLE-82):** Der Guardrail sendet die `allow_list`. Die Zahlen
 dieses Dokuments beschreiben damit den ausgelieferten Zustand — und das ist
 gemessen, nicht gefolgert:
+
+Stand v1-Korpus (84 Fälle), historisch; der Lauf über den Korpus v2 steht in §1.4.
 
 | Lauf (gleicher Analyzer, gleicher Korpus, gleiche Auswertung) | Störquote | Precision | Recall |
 |---|---|---|---|
