@@ -296,11 +296,17 @@ nicht abgesenkt: Die Zahl bildet korrekt ab, dass DATENSCHLE-70 offen ist.
    dieselbe Host-Datei (Invariante, erzwungen von
    `test/test_deploy_layout.py`; Details: `docs/DEPLOY.md`).
 
-   Der Lader prüft außerdem jeden Eintrag auf absolute Verankerung
-   (`\A...\z`, optional `(?i:...)`-gekapselt, kein Top-Level-`|`) und
-   verlangt `regex_flags == 0`; eine über
-   `DATENSCHLEUSE_STOPWORDS_PATH` eingehängte Datei mit unverankertem Muster
-   startet nicht.
+   Der Lader weist außerdem **offensichtliche** Fehlformen zurück: ein
+   Eintrag ohne `\A...\z`-Rahmen (optional `(?i:...)`-gekapselt), mit
+   Alternation auf oberster Ebene oder bei `regex_flags != 0` lässt den Dienst
+   nicht starten. Eine **vollständige** Verankerungs- oder Semantikprüfung
+   beliebiger regulärer Ausdrücke leistet der Lader **nicht**; im Security-Audit
+   gab es akzeptierte Umgehungen (verschachtelte oder gequantelte Anker,
+   Wildcards innerhalb der Anker, globale Inline-Flags). Das ist eine bekannte
+   Grenze, kein Versprechen: Die über `DATENSCHLEUSE_STOPWORDS_PATH`
+   eingehängte Betreiber-Datei gilt als vertrauenswürdige Konfiguration. Die
+   ausgelieferte Liste enthält ausschließlich Literale und ist durch die
+   Strukturtests (Aufnahmebedingung, Gegenkontrollen) gesichert.
 
    Die vier Gegenkontrollen decken diese Frage nicht ab: sie schützen die
    Erkennung des Modells vor der Liste, nicht die Konfiguration des

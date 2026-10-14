@@ -230,7 +230,7 @@ Unsere Fälle sind handverlesen, kurz und syntaktisch einfach. Das Modell trifft
 | Precision (aus Negativ-Fällen) | ≥ 90 % | 67,5 % | **81,8 %** |
 | Störquote (PII-freie Texte mit Fehlalarm) | ≤ 10 % | 81,2 % (26 von 32) | **37,5 %** (12 von 32) |
 
-**Gut drei von zehn PII-freien Texten werden weiterhin gestört** (12 von 32), und das Ziel ist verfehlt. Ohne die Wortliste waren es vier von fünf.
+**Knapp vier von zehn PII-freien Texten werden weiterhin gestört** (12 von 32), und das Ziel ist verfehlt. Ohne die Wortliste waren es vier von fünf.
 
 Die rechte Spalte ist die ausgelieferte Konfiguration. Die gemessene Nicht-PII-Wortliste (`presidio/de-stopwords.yml`, derzeit 14 Einträge) wird vom Guardrail seit DATENSCHLE-82 an jeden Presidio-Aufruf gehängt, in Maskierung und Verifikationsdurchlauf gleichermaßen. Sie deckt ausschließlich **deutsche Schema-Schlüssel** ab — `bestellnummer`, `lieferdatum`, `zahlungsart` und ähnliche Komposita, die das Modell als Orte oder Namen meldet. Das ist eng, und zwar mit Absicht: Der Recall bleibt auf diesem Korpus unverändert bei 54 von 54 Pflicht-Entitäten. Die Zahlen der rechten Spalte sind durch den Guardrail-Pfad selbst gemessen (`test/guardrail-benchmark.py`, gegen einen laufenden Analyzer) und stimmen mit dem Benchmark-Lauf mit Liste überein. Die Wirkung beschreibt [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md) §7; warum es die Liste gibt, welche Gegenkontrollen sie absichern und welche Alternativen verworfen wurden: [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md).
 

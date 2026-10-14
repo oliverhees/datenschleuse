@@ -425,8 +425,9 @@ gemessen, nicht gefolgert:
 | Benchmark **mit** Liste | 37,5 % (12/32) | 81,8 % | 100 % |
 | **Guardrail-Pfad** (`async_pre_call_hook`) | **37,5 % (12/32)** | **81,8 %** | **100 %** |
 
-Der Guardrail-Lauf ist mit dem Benchmark-Lauf mit Liste bis auf die
-Zeitstempel-Felder deckungsgleich — die Verbesserung kommt vollständig im
+Guardrail-Lauf und Benchmark-Lauf mit Liste unterscheiden sich in den
+Metadaten (Zeitstempel, URL sowie die Felder `layer` und `transport`); die
+Messwerte sind identisch — die Verbesserung kommt vollständig im
 laufenden Dienst an, und sie kostet keinen Recall.
 
 Reichweite dieser Messung: „Guardrail-Pfad" meint den Python-Codepfad des
@@ -440,7 +441,10 @@ Abgesichert durch
 `test/test_de_stopwords.py::WirkungImAusgelieferbenPfad`, das beide Seiten im
 selben Lauf misst und vergleicht, statt eine Zahl fest zu verdrahten. Bei
 entfernter Verdrahtung fällt der Guardrail-Pfad nachweislich auf 81,2 %
-zurück, und der Test wird rot.
+zurück, und der Test wird rot — **sofern ein Analyzer erreichbar ist**: Die
+Presidio-gebundenen Tests sind per `skipUnless` bedingt und laufen in der CI
+nicht. Dort schützen nur die Payload-Tests (kein Analyzer nötig) gegen das
+Abklemmen der Verdrahtung.
 
 ---
 
@@ -566,10 +570,18 @@ Laufzeit-Selbsttest, der den Analyzer selbst nach seiner Konfiguration fragt,
 existiert nicht und ist hier nicht Teil der Änderung.
 
 **Zusätzliche Ladeprüfungen (Audit-Härtung).** `de_stopwords.load()` verlangt
-`regex_flags == 0`, prüft **jeden** Eintrag auf absolute Verankerung
-(`\A...\z`, optional `(?i:...)`-gekapselt, kein Top-Level-`|`) und testet die
-`deny_list`-Terme der Vorrangsprüfung in mehreren Schreibweisen (original,
-klein, groß, Title), weil Presidios `deny_list` case-insensitiv matcht.
+`regex_flags == 0`, weist **offensichtliche** Fehlformen zurück (kein
+`\A...\z`-Rahmen, optional `(?i:...)`-gekapselt; Alternation auf oberster
+Ebene) und testet die `deny_list`-Terme der Vorrangsprüfung in mehreren
+Schreibweisen (original, klein, groß, Title), weil Presidios `deny_list`
+case-insensitiv matcht.
+
+**Grenze:** Eine vollständige Verankerungs- oder Semantikprüfung beliebiger
+Muster leistet der Lader nicht; der Security-Audit zeigte akzeptierte
+Umgehungen (verschachtelte oder gequantelte Anker, Wildcards innerhalb der
+Anker, globale Inline-Flags). Betreiber-Dateien gelten als vertrauenswürdige
+Konfiguration. Die ausgelieferte Liste enthält nur Literale und ist durch die
+Strukturtests (Aufnahmebedingung, Gegenkontrollen) gesichert.
 
 `BetreiberVorrangZurLaufzeit` hängt an **keinem** Schalter mehr. Vorher schaltete
 sich die Klasse über einen Substring-Test auf den Quelltext des Guardrails
