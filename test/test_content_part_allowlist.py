@@ -199,5 +199,187 @@ class TestContentPartAllowlist(unittest.IsolatedAsyncioTestCase):
             await _run_pre_call(guard, content)
 
 
+class TestKnownUnsupportedPartTypesAreNamed(unittest.IsolatedAsyncioTestCase):
+    """Die Meldung fuer BEKANNTE, bewusst nicht unterstuetzte Part-Typen
+    (QA-Audit zu ``2165cf2``, neues MEDIUM).
+
+    Der reale Multi-Turn-Fall mit Anthropics nativem Web-Search-Tool schickt
+    ``server_tool_use`` und ``web_search_tool_result`` zurueck -- ein
+    spec-konformer Client MUSS das laut Anthropic-Doku tun. Was der Betreiber
+    davon zu sehen bekam, war die generische Part-Typ-Meldung: kein Wort zu
+    Web-Search, kein Wort zu Zitaten, kein Doku-Verweis und ununterscheidbar
+    von jedem anderen unbekannten Part-Typ. Er konnte nicht erkennen, ob er
+    eine bekannte, akzeptierte Einschraenkung trifft oder einen echten Bug.
+
+    Am VERHALTEN aendert sich nichts: beide Typen blocken weiterhin
+    fail-closed. Nur die Meldung sagt jetzt, was los ist und wo es steht --
+    nach demselben Muster wie ``KNOWN_UNSUPPORTED_CITATION_TYPES``.
+    """
+
+    async def test_server_tool_use_is_named_with_reason_and_doc(self):
+        guard = _guard()
+        content = [{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertIn("server_tool_use", meldung)
+            self.assertIn("Web-Search", meldung)
+            self.assertIn("docs/foundation/security-baseline.md", meldung)
+
+    async def test_web_search_tool_result_is_named_with_reason_and_doc(self):
+        guard = _guard()
+        content = [{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1"}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertIn("web_search_tool_result", meldung)
+            self.assertIn("Web-Search", meldung)
+            self.assertIn("docs/foundation/security-baseline.md", meldung)
+
+    async def test_named_type_message_carries_no_client_values(self):
+        """LEITPLANKE (Gesetz 5). In diesem Projekt war zweimal PII in einer
+        Blockmeldung ein Sicherheitsbefund (DATENSCHLE-64, DATENSCHLE-57).
+        Genannt werden darf ausschliesslich der Typname AUS DER KONSTANTE --
+        kein Feldname, kein Feldinhalt, kein Textausschnitt des Parts.
+
+        Der Test ist ab dem ersten Lauf gruen. Er steht hier trotzdem: er
+        haelt fest, dass diese Meldung ein Konstanten-Kanal ist, damit der
+        Naechste sie nicht 'zur besseren Diagnose' mit Client-Werten
+        anreichert."""
+        guard = _guard()
+        content = [
+            {
+                "type": "server_tool_use",
+                "id": "Max Mustermann",
+                "name": "mustermann@example.org",
+                "input": {"query": "DE02120300000000202051 Diagnose F32.1"},
+                "Patientenakte": "Weimar, 1983, Ingenieur",
+            }
+        ]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            for verboten in (
+                "Mustermann",
+                "example.org",
+                "DE02120300000000202051",
+                "F32.1",
+                "Patientenakte",
+                "Weimar",
+                "Ingenieur",
+                "query",
+            ):
+                self.assertNotIn(verboten, meldung)
+
+    async def test_named_type_message_is_length_bounded(self):
+        """Der Typname stammt aus der Konstante, nicht aus dem Request --
+        die Meldung ist deshalb unabhaengig von der Eingabelaenge. Ein
+        Flooding-Versuch mit riesigen Nachbarfeldern darf sie nicht
+        aufblaehen."""
+        guard = _guard()
+        content = [{"type": "server_tool_use", "id": "A" * 5000}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            self.assertLess(len(str(exc)), 600)
+            self.assertNotIn("A" * 100, str(exc))
+
+    async def test_str_subclass_cannot_alias_into_the_named_branch(self):
+        """W1 aus dem Review zu e6b53b8. Der Kommentar am Code behauptete,
+        der Vergleich 'erzwingt Gleichheit', der ausgegebene Name sei
+        deshalb unsere Konstante. Das war falsch: ``x in frozenset`` prueft
+        ueber ``__hash__``/``__eq__``, formatiert wird aber die INSTANZ.
+
+        Eine str-Subklasse, die sich wie 'server_tool_use' hasht und
+        vergleicht, aber beliebigen Inhalt traegt, landete damit wortwoertlich
+        in der Blockmeldung -- die auch in LiteLLMs Fehlerlog geht ("kein PII
+        in Logs").
+
+        Ueber HTTP ist das nicht erreichbar (``json.loads`` liefert exakte
+        ``str``), wohl aber fuer In-Process-Aufrufer und fuer kuenftige
+        LiteLLM-Normalisierungen, die str-Enums durchreichen. Statt die
+        Zusage zu streichen, machen wir sie wahr: nur exaktes ``str`` darf in
+        den benennenden Zweig (Doku-Falsifikationstest)."""
+
+        class Alias(str):
+            def __hash__(self):
+                return hash("server_tool_use")
+
+            def __eq__(self, other):
+                return other == "server_tool_use"
+
+        boese = Alias("Max Mustermann, IBAN DE02120300000000202051 " + "A" * 5000)
+        # Vorbedingung: die Aliasierung greift wirklich.
+        self.assertIsInstance(boese, str)
+        self.assertIn(boese, dg.KNOWN_UNSUPPORTED_PART_TYPES)
+
+        guard = _guard()
+        try:
+            await _run_pre_call(guard, [{"type": boese}])
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertNotIn("Mustermann", meldung)
+            self.assertNotIn("DE02120300000000202051", meldung)
+            self.assertNotIn("A" * 100, meldung)
+            self.assertLess(len(meldung), 600)
+
+    async def test_citation_type_str_subclass_cannot_alias_either(self):
+        """Dieselbe Aliasierung eine Ebene tiefer. Der Zitat-Zweig hatte das
+        Muster zuerst; ihn stehen zu lassen hiesse, die Kopie zu reparieren
+        und das Original zu behalten."""
+
+        class Alias(str):
+            def __hash__(self):
+                return hash("web_search_result_location")
+
+            def __eq__(self, other):
+                return other == "web_search_result_location"
+
+        boese = Alias("Patientin Mustermann, Diagnose F32.1 " + "A" * 5000)
+        self.assertIn(boese, dg.KNOWN_UNSUPPORTED_CITATION_TYPES)
+
+        guard = _guard()
+        content = [
+            {
+                "type": "text",
+                "text": "Bericht",
+                "citations": [{"type": boese}],
+            }
+        ]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertNotIn("Mustermann", meldung)
+            self.assertNotIn("F32.1", meldung)
+            self.assertNotIn("A" * 100, meldung)
+            self.assertLess(len(meldung), 600)
+
+    async def test_unknown_type_keeps_generic_message(self):
+        """Regression: ein wirklich unbekannter Typ darf NICHT faelschlich
+        als bekannte Einschraenkung ausgewiesen werden -- sonst wuerde die
+        Meldung genau die Unterscheidung wieder einebnen, die dieser Fix
+        herstellt."""
+        guard = _guard()
+        content = [{"type": "irgendein_kuenftiger_typ"}]
+        try:
+            await _run_pre_call(guard, content)
+            self.fail("DatenschleuseBlocked haette geworfen werden muessen")
+        except dg.DatenschleuseBlocked as exc:
+            meldung = str(exc)
+            self.assertNotIn("Web-Search", meldung)
+            self.assertNotIn("irgendein_kuenftiger_typ", meldung)
+            self.assertIn("nicht erlaubtem Typ", meldung)
+
+
 if __name__ == "__main__":
     unittest.main()

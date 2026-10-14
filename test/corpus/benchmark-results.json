@@ -1,8 +1,8 @@
 {
-  "timestamp_utc": "2026-08-20T08:57:10.759291+00:00",
-  "presidio_url": "http://localhost:5001",
-  "corpus_path": "/mnt/projekte/eigene_projekte_neu/ALICE/projekte/datenschleuse/.claude/worktrees/agent-a901483c0dfeae0df/test/corpus/de-pii-testkorpus.yaml",
-  "case_count": 82,
+  "timestamp_utc": "2026-10-14T07:04:54.430122+00:00",
+  "presidio_url": "http://localhost:5791",
+  "corpus_path": "/home/user/datenschleuse/.claude/worktrees/agent-adc8b61a2299f0022/test/corpus/de-pii-testkorpus.yaml",
+  "case_count": 84,
   "overlap_min_ratio": 0.5,
   "precision_note": "Precision-FP stammt ausschließlich aus Negativ-Fällen (entities: []). Zusätzliche Detektionen in Positiv-Fällen sind unter 'positive_case_unmatched_detections' gelistet, fließen aber bewusst nicht in die Precision ein, da der Korpus nicht erschöpfend annotiert ist.",
   "must_detect": {
@@ -188,13 +188,21 @@
   "known_gap": {
     "overall": {
       "tp": 0,
-      "fn": 2,
+      "fn": 4,
       "fp": 0,
-      "support": 2,
+      "support": 4,
       "recall": 0.0,
       "precision": null
     },
     "by_type": {
+      "PERSON": {
+        "tp": 0,
+        "fn": 2,
+        "fp": 0,
+        "support": 2,
+        "recall": 0.0,
+        "precision": null
+      },
       "QUASI_IDENTIFIER_COMBO": {
         "tp": 0,
         "fn": 2,
@@ -218,6 +226,20 @@
         "value": "Leiterin der Qualitätssicherung bei einem der drei großen Automobilzulieferer in Bamberg",
         "detected_same_type": false,
         "any_overlap_detected": true
+      },
+      {
+        "case_id": "titel-001-dateiname-unterstrich",
+        "entity_type": "PERSON",
+        "value": "Mustermann",
+        "detected_same_type": false,
+        "any_overlap_detected": false
+      },
+      {
+        "case_id": "titel-002-dateiname-leerzeichen",
+        "entity_type": "PERSON",
+        "value": "Max Mustermann",
+        "detected_same_type": false,
+        "any_overlap_detected": false
       }
     ]
   },
