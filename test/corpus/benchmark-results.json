@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-10-14T11:12:00.461213+00:00",
+  "timestamp_utc": "2026-10-14T11:27:41.894593+00:00",
   "presidio_url": "http://127.0.0.1:5811",
   "corpus_path": "/home/user/datenschleuse/.claude/worktrees/agent-ae9fd6ffcebbd67c2/test/corpus/de-pii-testkorpus.yaml",
   "case_count": 325,
@@ -329,7 +329,7 @@
       {
         "case_id": "v2-quasi-identifier-011",
         "entity_type": "QUASI_IDENTIFIER_COMBO",
-        "value": "Vorstand der Rheintal-Versicherung in Mainz, Jahrgang 1971",
+        "value": "Vorstand der Alpenland-Assekuranz in Trier, Jahrgang 1971",
         "detected_same_type": false,
         "any_overlap_detected": true
       },
@@ -385,7 +385,7 @@
       {
         "case_id": "v2-titel-dateiname-008",
         "entity_type": "PERSON",
-        "value": "Koch",
+        "value": "Ziegler",
         "detected_same_type": false,
         "any_overlap_detected": false
       }
@@ -1231,8 +1231,8 @@
     {
       "case_id": "v2-quasi-identifier-011",
       "entity_type": "DE_GEBURTSJAHR",
-      "start": 58,
-      "end": 62,
+      "start": 57,
+      "end": 61,
       "score": 0.6
     },
     {
@@ -1717,14 +1717,14 @@
       "split": "holdout",
       "category": "json-gemischt",
       "entity_type": "PERSON",
-      "value": "Bauer"
+      "value": "Schuster"
     },
     {
       "case_id": "v2-quasi-identifier-011",
       "split": "holdout",
       "category": "quasi-identifier",
       "entity_type": "ORGANIZATION",
-      "value": "Rheintal-Versicherung"
+      "value": "Alpenland-Assekuranz"
     },
     {
       "case_id": "v2-person-fliesstext-005",

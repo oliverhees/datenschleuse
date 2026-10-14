@@ -42,6 +42,7 @@ Aufruf:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -1080,6 +1081,31 @@ def category_summary(matches: list[CaseMatch]) -> dict[str, dict[str, Any]]:
     return dict(sorted(cats.items()))
 
 
+def v1_case_hash(case: Case) -> str:
+    """SHA-256 über Text und Entitäten eines Falls (Inhalts-Pin für v1).
+
+    Die ids allein bewachen nicht, dass ein v1-Fall unverändert bleibt: ein
+    Fall lässt sich in place umschreiben, ohne dass Anzahl oder id sich ändern.
+    """
+    payload = {
+        "text": case.text,
+        "entities": [
+            [gt.entity_type, gt.value, gt.expected_recall] for gt in case.ground_truth
+        ],
+    }
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def v1_hash_mismatches(cases: list[Case], manifest: dict[str, Any]) -> list[str]:
+    """ids der v1-Fälle, deren Inhalt vom gepinnten Hash abweicht oder fehlt."""
+    pinned: dict[str, str] = manifest.get("v1_sha256", {})
+    have = {c.case_id: v1_case_hash(c) for c in cases if c.category == V1_CATEGORY}
+    bad = {cid for cid, h in pinned.items() if have.get(cid) != h}
+    bad |= {cid for cid in have if cid not in pinned}
+    return sorted(bad)
+
+
 def build_manifest(cases: list[Case]) -> dict[str, Any]:
     """Manifest aller Case-ids samt Split (No-Shrink-Anker).
 
@@ -1088,7 +1114,12 @@ def build_manifest(cases: list[Case]) -> dict[str, Any]:
     sichtbar geändert wird.
     """
     return {
-        "version": 1,
+        "version": 2,
+        "v1_sha256": {
+            c.case_id: v1_case_hash(c)
+            for c in sorted(cases, key=lambda c: c.case_id)
+            if c.category == V1_CATEGORY
+        },
         "note": (
             "No-Shrink-Anker (DATENSCHLE-94). Erzeugt mit "
             "`python3 test/corpus-benchmark.py --write-manifest`. Ein Case darf nur "

@@ -108,7 +108,7 @@ Adressen und Organisationen im Fließtext und mehrzeilig, deutsche JSON-Schlüss
 neben echten Werten, Quasi-Identifier, Titel in Dateinamen-Form, satzinitiale
 Verben und Substantive in ASCII- und Umlautschreibung als Negative. Dazu ein
 **Hold-out-Split** (37 Positiv-, 30 Negativ-Fälle), der nie zum Abstimmen
-dient, und Annotationsregeln A1–A6 im Korpus-Header. Der Korpus kann nicht mehr
+dient und zu dev namens-token-disjunkt ist (maschinell geprüft), und Annotationsregeln A1–A6 im Korpus-Header. Der Korpus kann nicht mehr
 still schrumpfen (`test/corpus/corpus-manifest.json`,
 `test/test_corpus_v2.py`).
 

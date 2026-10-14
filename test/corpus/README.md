@@ -53,8 +53,11 @@ werden vom Loader streng validiert:
   `negativ-schema`, `negativ-fliesstext`).
 - `split` — `dev` oder `holdout`. **Der Hold-out dient nie zum Abstimmen.**
   Tuning-Läufe (Wortliste, Recognizer) fahren mit `--split dev`; der Runner
-  weist dev und Hold-out im Report immer getrennt aus (`splits`). Neue
-  Hold-out-Fälle brauchen frisches Vokabular, keine Varianten bereits
+  weist dev und Hold-out im Report immer getrennt aus (`splits`). Der Hold-out
+  ist **namens-token-disjunkt** zu dev: kein Token einer PERSON-/LOCATION-/
+  ORGANIZATION-Entität im Hold-out kommt in einer dev-Entität vor (v1 zählt
+  zu dev; Mehrwort- und Bindestrich-Namen werden in Teile zerlegt). Erzwungen
+  von `HoldoutDisjointTest`. Neue Hold-out-Fälle brauchen frisches Vokabular, keine Varianten bereits
   abgestimmter Wörter.
 - `control: true` — Positiv-Kontrolle. Jede `must_detect`-Entität trägt dann
   `baseline_detected` (true/false): ob die Baseline (main bei der Härtung) sie
@@ -77,11 +80,18 @@ Warum nicht die nackte TLD `.example`: Presidios `EmailRecognizer` validiert die
 TLD, `x@y.example` wird nie erkannt — der Fall würde den Validator messen, nicht
 die Erkennung.
 
-**No-Shrink:** `corpus-manifest.json` hält alle ids samt Split fest.
+**No-Shrink:** `corpus-manifest.json` hält alle ids samt Split fest und pinnt
+je v1-Fall einen SHA-256 über Text und Entitäten (`v1_sha256`) — „v1
+unverändert“ ist damit eine Inhalts-, keine Zähl-Aussage.
 `test/test_corpus_v2.py` vergleicht Korpus und Manifest in beide Richtungen
 (verschwundener Fall = rot, nicht registrierter neuer Fall = rot, Split-Wechsel =
 rot) und prüft absolute Untergrenzen (≥ 150 neue Positiv-Fälle, ≥ 80
-PII-freie Negativ-Texte, Hold-out ≥ 25 Positiv/≥ 30 Negativ, Kategorie-Minima).
+PII-freie Negativ-Texte, Hold-out ≥ 60 gesamt / ≥ 25 Positiv / ≥ 26 Negativ —
+bewusst Untergrenzen mit Spielraum, nicht der exakte Ist-Stand —, Kategorie-Minima).
+
+**Grenze der Automatik:** Typ-Labels der Entitäten und die Nicht-PII-Einstufung
+der Negativ-Texte (A3) sind Annotationsurteile und werden von Hand geprüft; kein
+Test kann sie ersetzen.
 Wer einen Fall bewusst entfernt, ändert das Manifest im selben Commit sichtbar.
 
 ## Was der Benchmark misst

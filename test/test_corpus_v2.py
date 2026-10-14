@@ -413,6 +413,49 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(sorted(moved), [], "Cases changed split (dev <-> holdout).")
 
 
+class V1ContentPinTest(unittest.TestCase):
+    """'v1 untouched' is a content claim, not a count claim (QA M2).
+
+    The manifest pins a hash of text + entities for every v1 case. Editing a
+    v1 case in place (same id, same count) turns this red.
+    """
+
+    def _mutated_cases(self, mutate):
+        raw = yaml.safe_load(_CORPUS.read_text(encoding="utf-8"))
+        for c in raw["cases"]:
+            if c["id"] == "person-001-formal":
+                mutate(c)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.yaml"
+            path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+            return cb.load_corpus(path)
+
+    def _manifest(self):
+        return json.loads(_MANIFEST.read_text(encoding="utf-8"))
+
+    def test_checked_in_v1_cases_match_their_pinned_hash(self):
+        cases = cb.load_corpus(_CORPUS)
+        self.assertEqual(cb.v1_hash_mismatches(cases, self._manifest()), [])
+        pinned = self._manifest()["v1_sha256"]
+        self.assertEqual(len(pinned), 84)
+
+    def test_mutating_v1_text_is_detected(self):
+        def mutate(c):
+            c["text"] = c["text"].replace("vielen Dank", "vielen herzlichen Dank")
+        cases = self._mutated_cases(mutate)
+        self.assertEqual(cb.v1_hash_mismatches(cases, self._manifest()), ["person-001-formal"])
+
+    def test_mutating_v1_entity_is_detected(self):
+        def mutate(c):
+            c["entities"][0]["expected_recall"] = "known_gap"
+        cases = self._mutated_cases(mutate)
+        self.assertEqual(cb.v1_hash_mismatches(cases, self._manifest()), ["person-001-formal"])
+
+    def test_removed_v1_case_is_detected(self):
+        cases = [c for c in cb.load_corpus(_CORPUS) if c.case_id != "person-001-formal"]
+        self.assertEqual(cb.v1_hash_mismatches(cases, self._manifest()), ["person-001-formal"])
+
+
 class CorpusFloorsTest(unittest.TestCase):
     """Absolute floors from the DATENSCHLE-94 scope. Lowering one is a
     visible edit of this file, never a silent side effect of editing YAML."""
@@ -443,8 +486,12 @@ class CorpusFloorsTest(unittest.TestCase):
         self.assertGreaterEqual(len(neg), 80)
 
     def test_holdout_floor(self):
+        # Floors, not the exact current counts (QA L1): hold-out is 37 positive
+        # / 30 negative / 67 total today. The floors keep a margin so that
+        # swapping a case is possible, while a real shrink still fails.
         ho = [c for c in self.cases if c.split == "holdout"]
-        self.assertGreaterEqual(len([c for c in ho if c.is_negative]), 30)
+        self.assertGreaterEqual(len(ho), 60)
+        self.assertGreaterEqual(len([c for c in ho if c.is_negative]), 26)
         self.assertGreaterEqual(len([c for c in ho if not c.is_negative]), 25)
 
     def test_holdout_is_never_v1(self):
@@ -522,6 +569,55 @@ class CorpusFloorsTest(unittest.TestCase):
             for gt in c.ground_truth:
                 if gt.expected_recall == "must_detect":
                     self.assertIsInstance(gt.baseline_detected, bool, c.case_id)
+
+
+_NAME_TYPES = ("PERSON", "LOCATION", "ORGANIZATION")
+
+
+def _entity_tokens(cases, types=_NAME_TYPES):
+    """token -> sorted case ids, over PERSON/LOCATION/ORGANIZATION values.
+
+    Multi-word names are split on whitespace, hyphen and underscore, so
+    'Freiburg im Breisgau' and 'Heinz-Dieter Brandt' contribute every part.
+    Casefolded, so 'Koch' and 'koch' count as the same token.
+    """
+    import re
+
+    out = {}
+    for c in cases:
+        for gt in c.ground_truth:
+            if gt.entity_type not in types:
+                continue
+            for tok in re.split(r"[\s\-_]+", gt.value):
+                tok = tok.strip(".,;:()").casefold()
+                if tok:
+                    out.setdefault(tok, set()).add(c.case_id)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+class HoldoutDisjointTest(unittest.TestCase):
+    """The hold-out is only a hold-out if it shares no name token with dev.
+
+    Tokens of every PERSON/LOCATION/ORGANIZATION entity in a hold-out case
+    must not occur in any dev entity (v1 cases are dev). Otherwise tuning on
+    dev (e.g. a stopword for 'Bauer') silently moves the hold-out too.
+    """
+
+    def test_helper_splits_multiword_and_hyphenated_names(self):
+        c = cb.Case("v2-x", "t", [
+            cb.GroundTruthEntity("v2-x", "LOCATION", "Freiburg im Breisgau", "must_detect", 0, 1, 1),
+            cb.GroundTruthEntity("v2-x", "PERSON", "Heinz-Dieter Brandt", "must_detect", 0, 1, 1),
+            cb.GroundTruthEntity("v2-x", "DE_FIRMA", "Foo GmbH", "must_detect", 0, 1, 1),
+        ])
+        toks = _entity_tokens([c])
+        self.assertEqual(set(toks), {"freiburg", "im", "breisgau", "heinz", "dieter", "brandt"})
+
+    def test_holdout_entity_tokens_do_not_occur_in_dev(self):
+        cases = cb.load_corpus(_CORPUS)
+        dev = _entity_tokens([c for c in cases if c.split == "dev"])
+        ho = _entity_tokens([c for c in cases if c.split == "holdout"])
+        shared = {t: (ho[t], dev[t]) for t in ho if t in dev}
+        self.assertEqual(shared, {}, "hold-out shares name tokens with dev: %r" % shared)
 
 
 class AnnotationRulesDocumentedTest(unittest.TestCase):

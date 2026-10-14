@@ -84,7 +84,11 @@
 #      Validator messen statt die Erkennung. Telefonnummern, IBAN, Steuer-ID
 #      und Kartennummern sind Dokumentations-/Testwerte.
 #
-# NO-SHRINK: corpus-manifest.json haelt alle ids samt Split fest;
+# HOLD-OUT-DISJUNKTHEIT: Kein Token einer PERSON/LOCATION/ORGANIZATION-Entitaet
+# im Hold-out darf in einer dev-Entitaet vorkommen (test_corpus_v2.py).
+#
+# NO-SHRINK: corpus-manifest.json haelt alle ids samt Split fest, dazu je
+# v1-Fall einen Inhalts-Hash;
 # test/test_corpus_v2.py vergleicht in beide Richtungen und prueft absolute
 # Untergrenzen. Ein Fall verschwindet nur durch eine sichtbare Aenderung.
 
@@ -1029,16 +1033,16 @@ cases:
   - id: v2-nachname-wort-027
     category: nachname-wort
     split: holdout
-    text: "Die Kundin Lena Fink hat reklamiert."
+    text: "Die Kundin Hilde Fink hat reklamiert."
     entities:
-      - {type: PERSON, value: "Lena Fink", expected_recall: must_detect}
+      - {type: PERSON, value: "Hilde Fink", expected_recall: must_detect}
 
   - id: v2-nachname-wort-028
     category: nachname-wort
     split: holdout
-    text: "Herr Kuhn bestätigt die Bestellung."
+    text: "Herr Ritter bestätigt die Bestellung."
     entities:
-      - {type: PERSON, value: "Kuhn", expected_recall: must_detect}
+      - {type: PERSON, value: "Ritter", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-001
     category: nachname-kopf
@@ -1114,9 +1118,9 @@ cases:
   - id: v2-nachname-kopf-011
     category: nachname-kopf
     split: holdout
-    text: "Frau Reinhardt leitet das Team."
+    text: "Frau Everhardt leitet das Team."
     entities:
-      - {type: PERSON, value: "Reinhardt", expected_recall: must_detect}
+      - {type: PERSON, value: "Everhardt", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-012
     category: nachname-kopf
@@ -1128,16 +1132,16 @@ cases:
   - id: v2-nachname-kopf-013
     category: nachname-kopf
     split: holdout
-    text: "Dietmar Lienhart unterzeichnet den Vertrag."
+    text: "Dietmar Gernhart unterzeichnet den Vertrag."
     entities:
-      - {type: PERSON, value: "Dietmar Lienhart", expected_recall: must_detect}
+      - {type: PERSON, value: "Dietmar Gernhart", expected_recall: must_detect}
 
   - id: v2-nachname-kopf-014
     category: nachname-kopf
     split: holdout
-    text: "Ansprechpartnerin: Petra Erhart."
+    text: "Ansprechpartnerin: Petra Reichhart."
     entities:
-      - {type: PERSON, value: "Petra Erhart", expected_recall: must_detect}
+      - {type: PERSON, value: "Petra Reichhart", expected_recall: must_detect}
 
   - id: v2-positiv-kontrolle-001
     category: positiv-kontrolle
@@ -1662,25 +1666,25 @@ cases:
   - id: v2-json-gemischt-014
     category: json-gemischt
     split: holdout
-    text: "{\"kunde\": \"Rolf Seidel\", \"ort\": \"Jena\", \"lieferdatum\": \"morgen\"}"
+    text: "{\"kunde\": \"Rolf Seidel\", \"ort\": \"Gotha\", \"lieferdatum\": \"morgen\"}"
     entities:
       - {type: PERSON, value: "Rolf Seidel", expected_recall: must_detect}
-      - {type: LOCATION, value: "Jena", expected_recall: must_detect}
+      - {type: LOCATION, value: "Gotha", expected_recall: must_detect}
 
   - id: v2-json-gemischt-015
     category: json-gemischt
     split: holdout
-    text: "{\"nachname\": \"Kuhn\", \"vorname\": \"Beate\"}"
+    text: "{\"nachname\": \"Specht\", \"vorname\": \"Beate\"}"
     entities:
-      - {type: PERSON, value: "Kuhn", expected_recall: must_detect}
+      - {type: PERSON, value: "Specht", expected_recall: must_detect}
       - {type: PERSON, value: "Beate", expected_recall: must_detect}
 
   - id: v2-json-gemischt-016
     category: json-gemischt
     split: holdout
-    text: "{\"empfaenger\": \"Bauer\", \"zahlungsart\": \"Vorkasse\"}"
+    text: "{\"empfaenger\": \"Schuster\", \"zahlungsart\": \"Vorkasse\"}"
     entities:
-      - {type: PERSON, value: "Bauer", expected_recall: must_detect}
+      - {type: PERSON, value: "Schuster", expected_recall: must_detect}
 
   - id: v2-json-gemischt-017
     category: json-gemischt
@@ -1778,11 +1782,11 @@ cases:
   - id: v2-quasi-identifier-011
     category: quasi-identifier
     split: holdout
-    text: "Der Vorstand der Rheintal-Versicherung in Mainz, Jahrgang 1971, tritt zurück."
+    text: "Der Vorstand der Alpenland-Assekuranz in Trier, Jahrgang 1971, tritt zurück."
     entities:
-      - {type: QUASI_IDENTIFIER_COMBO, value: "Vorstand der Rheintal-Versicherung in Mainz, Jahrgang 1971", expected_recall: known_gap}
-      - {type: ORGANIZATION, value: "Rheintal-Versicherung", expected_recall: must_detect}
-      - {type: LOCATION, value: "Mainz", expected_recall: must_detect}
+      - {type: QUASI_IDENTIFIER_COMBO, value: "Vorstand der Alpenland-Assekuranz in Trier, Jahrgang 1971", expected_recall: known_gap}
+      - {type: ORGANIZATION, value: "Alpenland-Assekuranz", expected_recall: must_detect}
+      - {type: LOCATION, value: "Trier", expected_recall: must_detect}
 
   - id: v2-titel-dateiname-001
     category: titel-dateiname
@@ -1836,9 +1840,9 @@ cases:
   - id: v2-titel-dateiname-008
     category: titel-dateiname
     split: holdout
-    text: "Rechnung Koch Dezember.pdf"
+    text: "Rechnung Ziegler Dezember.pdf"
     entities:
-      - {type: PERSON, value: "Koch", expected_recall: known_gap}
+      - {type: PERSON, value: "Ziegler", expected_recall: known_gap}
 
   - id: v2-kombi-001
     category: kombi
@@ -1985,9 +1989,9 @@ cases:
   - id: v2-person-fliesstext-012
     category: person-fliesstext
     split: holdout
-    text: "Ana Maria Fernandez hat das Formular ausgefüllt."
+    text: "Ana Lucia Fernandez hat das Formular ausgefüllt."
     entities:
-      - {type: PERSON, value: "Ana Maria Fernandez", expected_recall: must_detect}
+      - {type: PERSON, value: "Ana Lucia Fernandez", expected_recall: must_detect}
 
   - id: v2-person-fliesstext-013
     category: person-fliesstext
