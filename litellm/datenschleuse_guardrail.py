@@ -310,6 +310,16 @@ IMAGE_URL_DETAILS = frozenset({"auto", "low", "high"})
 # ("Arztbrief_Mustermann.pdf"). Beides ist Freitext und kann PII tragen --
 # also derselbe Weg wie jeder andere Text: Presidio + Masker.
 #
+# GRENZE (Security-Audit Sec-L1, mit lokalem Analyzer gemessen): Das Feld
+# geht nachweislich durch den Masker -- der PFAD ist geschlossen. Ob aber ein
+# Titel in Dateinamen-Form (Unterstrich/Punkt-getrennt, z. B.
+# "Arztbrief_Mustermann.pdf" oder "Arztbrief Max Mustermann.pdf") einen Namen
+# enthaelt, den die Erkennung findet, haengt allein von der Erkennung ab, und
+# die ist eine pragmatische Heuristik: beide Beispiele lieferten KEINEN
+# Treffer, der Titel ging unveraendert weiter. Solche Titel werden also nicht
+# zuverlaessig erkannt. Das ist eine Erkennungsluecke, keine Pfadluecke; sie
+# ist im Testkorpus als known_gap festgehalten (Fall-IDs titel-001/-002).
+#
 # Warum nicht BLOCKEN, sobald ``cited_text`` da ist: das Feld ist im
 # Request-Schema PFLICHT (Anthropic Messages API, TextCitationParam) und
 # wird beim Echo ausdruecklich zurueckerwartet -- die Doku haelt sogar fest,

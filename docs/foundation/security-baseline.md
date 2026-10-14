@@ -69,6 +69,20 @@ Dokumentinhalt) und `document_title` (der vom Nutzer vergebene Titel, etwa
 Text; die Indizes bleiben unverändert, sonst zeigt das Zitat nach der
 Schleuse auf eine andere Stelle.
 
+**Grenze (Security-Audit Sec-L1).** Belegt ist der *Pfad*: beide Felder gehen
+durch den Masker. Ob dabei ein Personenname gefunden wird, entscheidet die
+Erkennung, und die ist eine pragmatische Heuristik. Gemessen mit einem lokalen
+Analyzer (Presidio 2.2.362, `de_core_news_lg`, Repo-Konfiguration):
+`Arztbrief_Mustermann.pdf` und `Arztbrief Max Mustermann.pdf` lieferten
+**keinen** Treffer, der Titel ginge unverändert an das Modell. Titel in
+Dateinamen-Form (Unterstrich- oder Punkt-getrennt) werden daher **nicht
+zuverlässig erkannt**. Das ist eine Erkennungslücke, keine Pfadlücke. Sie ist
+im Testkorpus als `known_gap` festgehalten (`titel-001`, `titel-002`; Recall
+dort nur berichtet, keine Vorgabe). Eine Behebung (Titel vor der Analyse
+auftrennen oder durch einen festen Platzhalter ersetzen) ändert das
+Produktverhalten und ist ein eigenes Folge-Item. Wer Dokumenttitel mit
+Personennamen schicken muss, sollte sie vorher selbst entfernen.
+
 Warum nicht einfach blockieren, sobald `cited_text` da ist: das Feld ist im
 Request-Schema der Messages-API **Pflicht** und wird beim Echo ausdrücklich
 zurückerwartet. Eine Allowlist, die es blockt, lässt jede reale

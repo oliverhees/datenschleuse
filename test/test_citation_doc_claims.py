@@ -33,14 +33,6 @@ def _read(rel):
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
-def _paragraph_with(text, needle):
-    """The blank-line separated paragraph that contains `needle`."""
-    for para in re.split(r"\n\s*\n", text):
-        if needle in para:
-            return para
-    raise AssertionError(f"{needle!r} not found")
-
-
 def _comment_block_with(text, needle):
     """The run of consecutive '#' comment lines that contains `needle`."""
     lines = text.splitlines()
@@ -59,8 +51,10 @@ EXAMPLE = "Arztbrief_Mustermann.pdf"
 
 class TitleFilenameLimitTest(unittest.TestCase):
     def test_security_baseline_states_the_limit(self):
-        para = _paragraph_with(_read("docs/foundation/security-baseline.md"), EXAMPLE)
-        flat = " ".join(para.split())
+        # The example's paragraph plus the one right after it (the limit).
+        paras = re.split(r"\n\s*\n", _read("docs/foundation/security-baseline.md"))
+        i = next(k for k, p in enumerate(paras) if EXAMPLE in p)
+        flat = " ".join(" ".join(paras[i:i + 2]).split())
         self.assertIn("nicht zuverlässig", flat)
         self.assertIn("Erkennungslücke", flat)
         self.assertIn("Heuristik", flat)

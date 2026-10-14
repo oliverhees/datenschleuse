@@ -17,9 +17,10 @@ Modell einmal mit Zitaten geantwortet hatte. Vor DATENSCHLE-65 lief
 ``citations`` durch; die Regression stammt also aus diesem PR.
 
 Die Entscheidung dahinter (siehe ``PART_FIELDS_VALIDATED`` im Guardrail):
-``citations`` traegt Referenzen und Indizes, keinen Freitext -- MIT EINER
-AUSNAHME, ``cited_text``. Deshalb wird die Struktur eng validiert und das
-eine Freitext-Feld nicht durchgelassen, statt den ganzen Part zu blocken.
+``citations`` traegt Referenzen und Indizes, Freitext aber an zwei Stellen:
+``cited_text`` und ``document_title``. Deshalb wird die Struktur eng validiert
+und der Freitext maskiert (Presidio + Masker, derselbe Weg wie jeder andere
+Text), statt den ganzen Part zu blocken.
 
 Laeuft OHNE laufenden Presidio-Container und OHNE installiertes litellm.
 

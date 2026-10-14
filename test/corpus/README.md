@@ -148,7 +148,7 @@ Evaluationsmenge, ist zu leicht. Die Härtung des Korpus ist ein eigenes Work
 Item.
 
 Das eingecheckte `benchmark-results.json` ist der Lauf **mit** Wortliste über
-alle 82 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
+alle 84 Fälle und deckt sich mit den Zahlen oben (TP=54, FN=0, FP=12,
 Störquote 37,5 %, `bestanden: false`). Es wird ausschließlich durch einen
 echten Lauf ersetzt, nie von Hand editiert — eine Handeintragung wäre keine
 Korrektur. Der Rohzustand (ohne Liste) hat kein eingechecktes Artefakt; wer

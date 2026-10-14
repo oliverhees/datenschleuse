@@ -43,6 +43,17 @@ ein `False` **blockt**. Wo ein `False` etwas überspringt, dreht sie die Wirkung
 Fail-open. Der Aufruftyp-Gate in `async_pre_call_hook` ist genau so ein Fall und
 bleibt deshalb bewusst ausgenommen.
 
+## Scope und Grenze
+
+Dieses ADR deckt ausschließlich **`str`** ab. Container-Subklassen (etwa eine
+`dict`- oder `list`-Subklasse mit verändertem Iterationsverhalten) sind nicht
+Gegenstand der Entscheidung und werden von den drei Hilfsfunktionen nicht
+geprüft. Über HTTP sind sie nicht erreichbar: die JSON-Parser liefern exakte
+`dict`/`list`. Betroffen wären nur In-process-Aufrufer, die dem Guardrail
+eigene Container-Typen übergeben. Eine Prüfung `type(x) is dict` bzw.
+`type(x) is list` an den Containergrenzen ist ein **Folge-Item** und in diesem
+Work Item nicht umgesetzt.
+
 ## Alternativen
 
 - **Einzelfixes pro Fundstelle.** Verworfen: der Prüfer hatte fünf Stellen, es waren

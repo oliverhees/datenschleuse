@@ -157,7 +157,7 @@ Welche Felder einer **Nachricht** dabei wie behandelt werden, ist abschließend 
 | `cache_control` | validiert (Caching-Marker, kein Anwendertext) |
 | alles andere | **blockiert** (fail-closed) |
 
-Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Das ist die einzige Prüfung, die unabhängig davon greift, welchen Weg ein Wert genommen hat.
+Jedes Textfeld muss auch wirklich Text sein: ein `arguments` als Objekt statt als JSON-String wird blockiert, nicht stillschweigend übersprungen. Und der fertig maskierte `arguments`-String läuft noch einmal durch die Erkennung — findet sie dort noch etwas, geht die Anfrage nicht raus. Diese Nachprüfung gilt ausschließlich für `tool_calls[].function.arguments`; Text-Parts und Zitate durchlaufen sie nicht (Details: [Security-Baseline](docs/foundation/security-baseline.md)).
 
 Der Grund für diese Form: dieselbe Lücke ist viermal aufgetreten (Content-Parts, `content`-Container, Felder neben `content`, Felder innerhalb eines Parts). Ursache war jedes Mal, dass geprüft wurde, was man kannte, und der Rest still durchlief. Ein neues Feld der OpenAI-API erzwingt jetzt eine bewusste Entscheidung, statt lautlos ein Leck zu öffnen.
 
@@ -231,7 +231,7 @@ Eigene deutsche Recognizer: **Steuer-ID, Sozialversicherungsnummer, Handelsregis
 
 ### Wie gut wird erkannt — die ehrliche Fassung
 
-Gemessen wird gegen einen eigenen deutschen Testkorpus (82 Fälle, `test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py` misst den Rohzustand des Analyzers ohne Wortliste, `--stopwords presidio/de-stopwords.yml` misst mit der Nicht-PII-Wortliste, die der Guardrail seit DATENSCHLE-82 mitsendet.
+Gemessen wird gegen einen eigenen deutschen Testkorpus (84 Fälle, `test/corpus/`), jederzeit selbst wiederholbar: `python3 test/corpus-benchmark.py` misst den Rohzustand des Analyzers ohne Wortliste, `--stopwords presidio/de-stopwords.yml` misst mit der Nicht-PII-Wortliste, die der Guardrail seit DATENSCHLE-82 mitsendet.
 
 **Recall: 100 % — und genau das ist der Grund für Skepsis.** Über alle Pflicht-Entitäten wird bislang jede erwartete Entität gefunden. Als Qualitätsbeleg taugt die Zahl trotzdem nicht. Das eingesetzte Sprachmodell `de_core_news_lg` gibt für Personennamen in seinen eigenen Metadaten **92,02 % Recall** an — auf Zeitungs- und Wikipedia-Text, für den es trainiert wurde. Ein Korpus, auf dem ein Modell besser abschneidet als auf seiner eigenen Evaluationsmenge, ist nicht besonders gut, sondern zu leicht. Selbst nachsehen:
 
@@ -260,7 +260,7 @@ Die rechte Spalte ist die ausgelieferte Konfiguration. Die gemessene Nicht-PII-W
 
 Zur Reichweite der Absicherung, damit auch das nicht zu gut klingt: Der Benchmark-Runner liegt im Repo und ist jederzeit wiederholbar, und `test/test_erkennungsziel_gate.py` sichert die Schwellen gegen stilles Absenken. Was **nicht** läuft: Ein gemessener Lauf gegen diese Schwellen (`--check-targets`) ist in der CI nicht verdrahtet. Die Schwelle kann also nicht heimlich gesenkt werden — dass sie eingehalten wird, erzwingt heute noch niemand automatisch.
 
-Zum Nachschlagen: Zielpapier mit allen Schwellen und ihrer Herleitung in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md), die Entscheidung über die Wortliste in [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md). `test/corpus/benchmark-results.json` ist der letzte eingecheckte Messlauf und entspricht der **rechten** Spalte der Tabelle oben (82 Fälle, mit Wortliste), also der ausgelieferten Konfiguration.
+Zum Nachschlagen: Zielpapier mit allen Schwellen und ihrer Herleitung in [`docs/foundation/erkennungsziel.md`](docs/foundation/erkennungsziel.md), die Entscheidung über die Wortliste in [ADR-0002](docs/adr/0002-nicht-pii-wortliste.md). `test/corpus/benchmark-results.json` ist der letzte eingecheckte Messlauf und entspricht der **rechten** Spalte der Tabelle oben (84 Fälle, mit Wortliste), also der ausgelieferten Konfiguration.
 
 Was das für den Betrieb heißt: Der teure Fehler ist übersehene PII, und dort steht die Datenschleuse gut da — nur eben auf einem Korpus gemessen, der leichter ist als die Realität. Der häufige Fehler sind Fehlalarme; die kosten Nutzbarkeit, nicht Schutz. Beides steht hier, weil ein Sicherheitswerkzeug, das nur seine Bestwerte zeigt, sich nicht einschätzen lässt.
 

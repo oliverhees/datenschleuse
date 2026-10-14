@@ -451,6 +451,29 @@ cases:
         expected_recall: known_gap
 
   # ---------------------------------------------------------------------
+  # DOKUMENTTITEL IN DATEINAMEN-FORM (bekannte Lücke, DATENSCHLE-65 Sec-L1)
+  # Das citations-Feld document_title geht durch den Masker, aber die
+  # Erkennung findet in Titeln mit Unterstrich/Punkt-Trennung keinen Namen
+  # (gemessen mit lokalem Analyzer). Als known_gap festgehalten, damit die
+  # Lücke nicht still verschwindet; Recall wird nur berichtet.
+  # ---------------------------------------------------------------------
+  - id: titel-001-dateiname-unterstrich
+    text: >-
+      Arztbrief_Mustermann.pdf
+    entities:
+      - type: PERSON
+        value: "Mustermann"
+        expected_recall: known_gap
+
+  - id: titel-002-dateiname-leerzeichen
+    text: >-
+      Arztbrief Max Mustermann.pdf
+    entities:
+      - type: PERSON
+        value: "Max Mustermann"
+        expected_recall: known_gap
+
+  # ---------------------------------------------------------------------
   # NEGATIV-FÄLLE (False-Positive-Köder — sehen wie PII aus, sind es nicht)
   # Der Benchmark zählt hier False Positives, wenn Presidio hier trotzdem
   # eine Entität meldet.
