@@ -220,6 +220,9 @@ def _simulate(target):
     dummies = {
         "DATENSCHLEUSE_STATE_KEY": _fernet_key(),
         "DS_E2E_STATE_KEY": _fernet_key(),
+        # The image refuses to start without a well-formed master key (H1).
+        "DATENSCHLEUSE_MASTER_KEY": "sk-" + "0123456789abcdef" * 2,
+        "DS_E2E_MASTER_KEY": "sk-" + "0123456789abcdef" * 2,
     }
     root, svc, env = _build_root(target, dummies)
     try:
