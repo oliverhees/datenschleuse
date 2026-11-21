@@ -318,6 +318,63 @@ Aufrufe messbar. Das ist der akzeptierte Preis, keine Fehlfunktion:
 - **Der Durchlauf ist ein Netz, kein Ersatz.** Er ersetzt keine der
   vorgelagerten Prüfungen; er fängt nur, was an ihnen vorbeigekommen ist.
 
+## Block-Antwort (bindend)
+
+Eine blockierte Anfrage ist für den Client **maschinenlesbar** als Block
+erkennbar — unabhängig vom Meldungstext, der sich mit jedem neuen Block-Grund
+ändert. Vorher war ein Block nur am deutschen Freitext von anderen
+Proxy-Fehlern zu unterscheiden (beide: HTTP 500, `"type": "None"`).
+
+Jeder Block trägt:
+
+- im Körper `error.provider_specific_fields.datenschleuse` mit
+  `code` = `datenschleuse_blocked` (fest) und `reason` (geschlossene Menge, s. u.),
+- den Antwort-Header `x-datenschleuse-error: datenschleuse_blocked`.
+
+Das Feld `error.code` kann die Kennung **nicht** tragen: LiteLLM schreibt dort
+immer den HTTP-Status als String hinein. Deshalb das eigene Feld.
+
+| `reason` | Bedeutung |
+|---|---|
+| `sensitivity_tier_3` | Schutzklasse 3 (Art. 9/10) — geht nie raus |
+| `sensitivity_tier_2_approval_required` | Schutzklasse 2 ohne Freigabe |
+| `analyzer_unavailable` | Presidio nicht erreichbar oder fehlerhaft (fail-closed) |
+| `custom_rules_incomplete` | eigene Regeln konnten nicht vollständig geprüft werden |
+| `request_rejected` | alles Übrige: ungeprüfte Felder/Typen, Bild-Policy, Restbefund im Verifikationsdurchlauf |
+
+Ein neuer `reason` ist eine Vertragsänderung (Code, diese Tabelle und
+`test/test_block_error_contract.py` gemeinsam), nie ein Nebenprodukt.
+
+**Modus** über `DATENSCHLEUSE_BLOCK_RESPONSE`:
+
+| Modus | HTTP-Status | `error.type` | Zweck |
+|---|---|---|---|
+| `compat` (Standard) | 500 | `"None"` | abwärtskompatibel: Status, Typ und Meldung exakt wie vorher, nur die beiden Kennungen kommen hinzu |
+| `strict` | 422 | `"datenschleuse_blocked"` | für Clients, die den Block am Status erkennen wollen; ein OpenAI-SDK wirft dann eine 4xx-Ausnahme statt einer, die zum Wiederholen einlädt |
+
+Ein unbekannter Wert verhindert den Start (gleiche Regel wie `image_policy`).
+Meldungstext und Kennung bleiben getrennt: Die Kennung wird nie in die Meldung
+geschrieben.
+
+Gemessen gegen einen echten LiteLLM-Proxy 1.97.0 (lokal, ohne Docker; Analyzer
+durch einen Stub ersetzt), Modus `compat`, Stufe-3-Block:
+
+```
+HTTP/1.1 500 Internal Server Error
+x-datenschleuse-error: datenschleuse_blocked
+{"error":{"message":"Anfrage als Stufe 3 (...)","type":"None","param":"None","code":"500",
+ "provider_specific_fields":{"datenschleuse":{"code":"datenschleuse_blocked","reason":"sensitivity_tier_3"}}}}
+```
+
+Dieselbe Form bei `stream: true` (der Block fällt vor Beginn des Streams). Im
+Modus `strict` dieselbe Anfrage mit `HTTP/1.1 422` und
+`"type":"datenschleuse_blocked","code":"422"`. Ein Fehler des Upstream-Modells
+(kein Block) trägt keine der beiden Kennungen.
+
+**Empfehlung für Clients:** auf `provider_specific_fields.datenschleuse.code`
+oder den Header prüfen, nicht auf den Meldungstext. Ein Block ist nicht
+wiederholbar; derselbe Request blockt erneut.
+
 ## Offene Schwachstellen in eigener Doku (bindend)
 
 Eigene Doku benennt eine offene Schwachstelle im **Umfang**, nie im **Bauplan**.

@@ -795,10 +795,83 @@ def _is_filler_artifact(probe: str, entity: Dict[str, Any],
     return any(fs < end and start < fe for fs, fe in filler_spans)
 
 
+#: Stable, machine-readable identification of a blocked request. Contract:
+#: docs/foundation/security-baseline.md, section "Block-Antwort".
+BLOCK_CODE = "datenschleuse_blocked"
+BLOCK_HEADER = "x-datenschleuse-error"
+#: Closed set. A new reason is a contract change (docs + test), never ad hoc.
+BLOCK_REASONS = (
+    "request_rejected",
+    "sensitivity_tier_3",
+    "sensitivity_tier_2_approval_required",
+    "analyzer_unavailable",
+    "custom_rules_incomplete",
+)
+#: compat (default): HTTP 500 and type "None" exactly as before.
+#: strict (opt-in):   HTTP 422 and type "datenschleuse_blocked".
+BLOCK_RESPONSE_MODES = ("compat", "strict")
+BLOCK_RESPONSE_ENV = "DATENSCHLEUSE_BLOCK_RESPONSE"
+
+
+def _block_response_mode() -> str:
+    """Mode from the environment. Unknown values are refused at guardrail
+    construction; here they fall back to compat so an exception never
+    invents a third response shape."""
+    mode = str(os.getenv(BLOCK_RESPONSE_ENV) or "").strip().lower() or "compat"
+    return mode if mode in BLOCK_RESPONSE_MODES else "compat"
+
+
 class DatenschleuseBlocked(Exception):
     """Wird geworfen, wenn fail-closed greift. LiteLLM behandelt eine im
     pre_call-Hook geworfene Exception als Guardrail-Block -> Request wird
-    NICHT ans LLM weitergereicht (kein unmaskiertes PII verlaesst das System)."""
+    NICHT ans LLM weitergereicht (kein unmaskiertes PII verlaesst das System).
+
+    Block contract: LiteLLM 1.97.0 builds the error response from the
+    attributes ``status_code``, ``type``, ``param``, ``message``, ``headers``
+    and ``provider_specific_fields`` (generic path of
+    ``_handle_llm_api_exception``). In compat mode only ``headers`` and
+    ``provider_specific_fields`` are new, so status, type and message stay
+    exactly what clients saw before. ``code`` in the body cannot carry the
+    stable identifier: LiteLLM always writes the HTTP status there."""
+
+    def __init__(self, message: str = "", *, reason: Optional[str] = None) -> None:
+        super().__init__(message)
+        if reason is not None and reason not in BLOCK_REASONS:
+            raise ValueError(f"unknown block reason {reason!r}")
+        self._reason = reason
+
+    @property
+    def reason(self) -> str:
+        # Derived lazily: ``raise ... from exc`` sets __cause__ AFTER __init__.
+        if self._reason is not None:
+            return self._reason
+        cause = self.__cause__
+        if isinstance(cause, sc.Tier3Blocked):
+            return "sensitivity_tier_3"
+        if isinstance(cause, sc.Tier2ApprovalRequired):
+            return "sensitivity_tier_2_approval_required"
+        return "request_rejected"
+
+    @property
+    def status_code(self) -> int:
+        return 422 if _block_response_mode() == "strict" else 500
+
+    def __getattr__(self, name: str) -> Any:
+        # ``type`` only exists in strict mode. In compat mode LiteLLM's own
+        # fallback (the string "None") stays in charge -- byte-identical to
+        # the response before this contract existed.
+        if name == "type" and _block_response_mode() == "strict":
+            return BLOCK_CODE
+        raise AttributeError(name)
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        # Fresh dict per access: LiteLLM calls ``.update()`` on it.
+        return {BLOCK_HEADER: BLOCK_CODE}
+
+    @property
+    def provider_specific_fields(self) -> Dict[str, Any]:
+        return {"datenschleuse": {"code": BLOCK_CODE, "reason": self.reason}}
 
 
 # ===========================================================================
@@ -1328,6 +1401,17 @@ class DatenschleuseGuardrail(_GuardrailBase):
             )
         self.image_policy = policy
 
+        # --- Block-Antwort (stable error identification) ---------------------
+        # Same rule as image_policy: an unknown value refuses to start instead
+        # of silently picking a shape the operator did not ask for.
+        block_mode = str(os.getenv(BLOCK_RESPONSE_ENV) or "").strip().lower() or "compat"
+        if block_mode not in BLOCK_RESPONSE_MODES:
+            raise ValueError(
+                f"{BLOCK_RESPONSE_ENV}={block_mode!r} unbekannt -- erlaubt: "
+                f"{', '.join(BLOCK_RESPONSE_MODES)}"
+            )
+        self.block_response_mode = block_mode
+
         # --- Schutzklassen-Modell (IMMER aktiv, keine Konfigurationsoption) --
         # Laedt presidio/sensitivity-keywords.yml einmalig. Fail-closed beim
         # START: eine kaputte/fehlende Config wirft SensitivityConfigError und
@@ -1456,7 +1540,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 f"vollstaendig geprueft werden ({exc}) -- Request blockiert "
                 f"(fail-closed). Eine unvollstaendige Maskierung waere von "
                 f"einer vollstaendigen nicht zu unterscheiden. Muster pruefen "
-                f"mit: datenschleuse-rules list"
+                f"mit: datenschleuse-rules list",
+                reason="custom_rules_incomplete",
             ) from exc
         except Exception as exc:
             # ACHTUNG, ENGE GRENZE (Security-Finding S2): Hierher kommt NUR
@@ -1516,7 +1601,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
         except Exception as exc:  # fail-closed
             raise DatenschleuseBlocked(
                 f"Presidio Analyzer nicht erreichbar/fehlerhaft ({exc}); "
-                f"Request blockiert (fail-closed, kein unmaskiertes PII)."
+                f"Request blockiert (fail-closed, kein unmaskiertes PII).",
+                reason="analyzer_unavailable",
             ) from exc
 
     # ---- Presidio Image Redactor (Bild-Parts) -----------------------------

@@ -38,6 +38,7 @@ Dieses Dokument dekodiert den Jargon des Projekts. Es wird von
 | **Teil-Maskierung** | Ergebnis, bei dem ein Teil der Treffer maskiert ist und der Rest nicht. Von einem vollständigen Ergebnis äußerlich nicht unterscheidbar und deshalb die gefährlichste Fehlerform — wird nie ausgeliefert, sondern führt zum Block (fail-closed). |
 | **Platzhalter** | Der eindeutige Ersatztext, den das Modell statt echter Daten sieht (`<PERSON_0>`, `<CUSTOM_KUNDENNAME_0>`). Eigene Regeln bekommen das Präfix `CUSTOM_`, um Kollisionen mit Presidio-Typen auszuschließen. |
 | **reid_map** | Mapping Platzhalter → Klartext für einen Request. Einzige Quelle der Rück-Übersetzung; eigene Regeln nutzen dasselbe Mapping, es gibt kein zweites. |
+| **Block-Kennung** | Maschinenlesbare Markierung einer blockierten Anfrage: `error.provider_specific_fields.datenschleuse.code` = `datenschleuse_blocked` plus `reason`, dazu der Header `x-datenschleuse-error`. Modus `compat` (Standard) lässt Status 500 und `type "None"` unverändert, `strict` antwortet mit 422. Vertrag: `docs/foundation/security-baseline.md` → „Block-Antwort“. |
 | **fail-closed** | Bei Fehlern wird geblockt statt unmaskiert durchgelassen. Gilt für die Presidio-Erreichbarkeit. Der Regel-Layer ist die bewusste Ausnahme: dort verlangt ISC-26 ausdrücklich, dass ein Regelfehler die Pipeline nicht lahmlegt. |
 
 ## Architektur-Entscheidungen (ADRs)
