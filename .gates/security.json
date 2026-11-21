@@ -1,7 +1,7 @@
 {
   "gate": "security",
-  "verdict": "pass",
-  "commit": "e778d5f6029d3a04e0f2c6fe112caa6a98ae55e4",
-  "branch": "sec-verdict-94",
-  "timestamp": "2026-10-14T13:35:03Z"
+  "verdict": "fail",
+  "commit": "f6d0486bc81dc2a44cf53c3ba52fbbb8a0819fb1",
+  "branch": "feature/DATENSCHLE-105-hardening-and-images",
+  "timestamp": "2026-11-21T13:51:59Z"
 }
