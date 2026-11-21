@@ -60,13 +60,23 @@ Auf jedem Docker-Host (Reverse-Proxy/TLS stellst du dann selbst davor):
 
 ```bash
 git clone https://github.com/<dein-user>/datenschleuse.git && cd datenschleuse \
-  && cp .env.example .env && $EDITOR .env \
-  && docker compose -f deploy/coolify/docker-compose.yaml up -d --build
+  && bash tools/init-env.sh && $EDITOR .env \
+  && docker compose --env-file .env -f deploy/coolify/docker-compose.yaml up -d --build
 ```
 
-`.env` vorher mit echten Werten fuellen (siehe Tabelle oben). Ohne die
-Pflicht-Variablen bricht der Start bewusst ab (fail-closed) — kein Proxy ohne
-Master-Key, kein unverschluesselter State, kein Admin-UI mit Default-Passwort.
+`tools/init-env.sh` legt `.env` mit erzeugten Werten fuer Master-Key,
+State-Key, Admin-UI- und Datenbank-Passwort an (gibt sie nicht aus, ueberschreibt
+keine vorhandene `.env`); im Editor traegst du `EUROUTER_API_KEY` ein. Von Hand
+geht es mit den Kommandos aus der Tabelle oben. Ohne die Pflicht-Variablen
+bricht der Start bewusst ab (fail-closed) — kein Proxy ohne Master-Key, kein
+unverschluesselter State, kein Admin-UI und keine Datenbank mit Beispiel-Passwort.
+
+**Warum `--env-file .env`:** Mit `-f deploy/coolify/docker-compose.yaml` nimmt
+Compose das Verzeichnis der Compose-Datei (`deploy/coolify/`) als
+Projektverzeichnis und liest die `.env` von dort, nicht aus dem Repo-Root, wo
+`tools/init-env.sh` sie anlegt. Ohne `--env-file .env` meldet Compose die
+erzeugten Pflicht-Variablen als „missing a value“. Alle Befehle mit dieser Datei
+laufen deshalb vom Repo-Root aus und tragen `--env-file .env`.
 
 ---
 
@@ -155,9 +165,9 @@ Was die Images ohne weitere Konfiguration mitbringen:
   und mit `bad-key` bricht der Start ab, Exit-Code 3 (das Log endet mit
   „Application startup failed“); mit `sk-` plus 40 Zeichen Start. Der Image-Test dazu (`test/smoke-images.sh`)
   lief noch nicht, weil hier kein Docker vorhanden war. Nur wer bewusst ohne
-  Anmeldung hinter einem eigenen Gateway arbeitet, setzt
-  `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false` (in der `.env`, die Compose-Dateien
-  reichen den Wert durch; beim reinen `docker run` per `-e`) — nicht empfohlen.
+  Anmeldung hinter einem eigenen Gateway arbeitet, schaltet die Prüfung mit
+  `DATENSCHLEUSE_REQUIRE_MASTER_KEY` ab (die erlaubten Werte stehen in
+  „Beispiel-Zugangsdaten werden abgelehnt“ unten) — nicht empfohlen.
   Die Prüfung erzwingt die Form (`sk-` plus mindestens 32 Zeichen) und
   weist bekannte Platzhalter ab; ob ein Schlüssel zufällig und geheim ist,
   kann sie nicht beurteilen: Ein Wert wie `sk-` plus 32-mal `a` besteht.
@@ -190,6 +200,9 @@ einem älteren Stand kommt:
 | Analyzer | schreibgeschützt, Start des Proxys erst, wenn der Analyzer gesund ist | — |
 | Block-Antwort | trägt die feste Kennung, Status unverändert 500 | `DATENSCHLEUSE_BLOCK_RESPONSE=strict` für HTTP 422 (siehe README) |
 | Master-Key | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter | kein Weg zurück: ein öffentlich bekannter Key ist keine Anmeldung |
+| Admin-UI-Passwort | `UI_PASSWORD` mindestens 16 Zeichen, kein leerer oder bekannter Beispielwert (sonst startet der Proxy nicht, sobald die Datenbank konfiguriert ist) | neues Passwort setzen (siehe unten); kein Weg zurück |
+| Datenbank-Passwort | `DATENSCHLEUSE_DB_PASSWORD` ist Pflicht ohne Default (vorher im Repo-Compose `datenschleuse`); bekannte Beispielwerte werden abgelehnt | Passwort setzen, bei bestehender Datenbank zusätzlich in Postgres ändern (siehe unten) |
+| Schalter `DATENSCHLEUSE_REQUIRE_MASTER_KEY` | unter dem Proxy auch ohne gesetzte Variable an (vorher: aus, wenn die Variable fehlte) | nur ausdrücklich abschalten: `false`, `0`, `no` oder `off` |
 
 **Master-Key: Platzhalter werden abgelehnt.** Die `.env.example` lieferte früher
 den Wert `sk-datenschleuse-lokal` mit. Wer sie unverändert nach `.env` kopiert
@@ -207,8 +220,10 @@ echo "sk-$(openssl rand -hex 32)"     # Ausgabe als DATENSCHLEUSE_MASTER_KEY in 
 # Weg B / lokal (docker-compose.yml im Repo-Root), nach git pull:
 docker compose up -d --build
 
-# Weg B (deploy/coolify/docker-compose.yaml ohne Coolify), nach git pull:
-docker compose -f deploy/coolify/docker-compose.yaml up -d --build
+# Weg B (deploy/coolify/docker-compose.yaml ohne Coolify), nach git pull, vom
+# Repo-Root aus; --env-file .env, weil Compose sonst die .env im Ordner der
+# Compose-Datei sucht (Begründung: Weg B oben):
+docker compose --env-file .env -f deploy/coolify/docker-compose.yaml up -d --build
 
 # Coolify: neuen Wert unter „Environment Variables“ eintragen und „Deploy“
 # (Redeploy) auslösen; Coolify baut aus dem Compose-File neu.
@@ -258,6 +273,190 @@ Proxy **ohne** Datenbank. Startet der Proxy mit Datenbank als Nicht-Root
 nicht, ist `DATENSCHLEUSE_UID=0` ein Notausgang (läuft dann wieder als root):
 nur vorübergehend, bis der Fehler behoben ist, und bitte als Fehler melden.
 Dauerhaft als root zu laufen hebt die Sperren dieses Abschnitts auf.
+
+### Beispiel-Zugangsdaten werden abgelehnt
+
+Die `.env.example` liefert keine nutzbaren Geheimnisse mehr: Master-Key,
+Admin-UI-Passwort und Datenbank-Passwort sind leer, der State-Key ein
+Platzhalter, den der Proxy nicht annimmt. Der Proxy prüft beim Start (im
+Guardrail, auf jedem ausgelieferten Startweg):
+
+| Wert | Bedingung für den Start |
+|---|---|
+| `DATENSCHLEUSE_MASTER_KEY` | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter |
+| `UI_PASSWORD` | mindestens 16 Zeichen, nicht leer, kein bekannter Beispielwert; fehlt es, muss das Admin-UI abgeschaltet sein (dann gilt der Master-Key als Passwort) |
+| Passwort in `DATABASE_URL` (`DATENSCHLEUSE_DB_PASSWORD`) | kein bekannter Beispielwert; der Proxy prüft das Passwort nur gegen bekannte Beispielwerte, nicht auf Länge (die Datenbank kann extern sein) |
+
+Die Passwörter werden geprüft, sobald `DATABASE_URL` gesetzt ist, auch bei
+`DISABLE_ADMIN_UI=True`: In LiteLLM 1.97.0 ignoriert `POST /login` diesen
+Schalter und meldet jeden als Admin an, der `UI_USERNAME`/`UI_PASSWORD` kennt;
+ein gesetzter, aber leerer `UI_PASSWORD` bleibt leer. (Gemessen ohne Docker mit
+dem echten Proxy: leeres Passwort, `DISABLE_ADMIN_UI=True` → die Anmeldung
+kommt bis zum Datenbankschritt, ein falsches Passwort wird mit 401 abgelehnt.)
+Meldungen nennen nur den Namen der Variable, nie den Wert.
+
+**Der Schalter** `DATENSCHLEUSE_REQUIRE_MASTER_KEY` steuert alle drei Prüfungen:
+
+- Abgeschaltet wird sie nur mit einem dieser Werte (Groß-/Kleinschreibung und
+  Leerzeichen am Rand egal): `false`, `0`, `no`, `off`. Nicht empfohlen.
+  **Das Opt-out schaltet auch die Prüfung des Admin-UI-Passworts und des
+  Datenbank-Passworts ab:** Mit `off` startet der Proxy auch mit einem leeren,
+  kurzen oder bekannten Beispiel-Passwort, wie bei einer alten `.env`. Ein
+  Beispiel-Admin-Passwort wird dann angenommen.
+- Jeder andere Wert mit Inhalt (auch ein Tippfehler wie `flase`) lässt die
+  Prüfung an.
+- Fehlt die Variable oder ist sie leer, ist die Prüfung unter dem Proxy an;
+  nur ohne den Proxy-Server (Unit-Tests, Bibliotheksnutzung) bleibt sie aus.
+- Die Compose-Dateien reichen `${DATENSCHLEUSE_REQUIRE_MASTER_KEY:-true}`
+  durch. Eine in der Shell exportierte Variable hat Vorrang vor der `.env`
+  (mit `docker compose config` geprüft, 2026-11-21); ein leerer Wert in der
+  `.env` wird zu `true`.
+
+**Wenn du ein Beispiel-Passwort benutzt hast** (die `.env` stammt aus einer
+älteren `.env.example`): Der Proxy startet nach dem Update nicht mehr, das Log
+nennt die Variable. Neue Werte erzeugen und eintragen:
+
+```bash
+openssl rand -hex 32     # neues UI_PASSWORD in die .env
+openssl rand -hex 32     # neues DATENSCHLEUSE_DB_PASSWORD in die .env
+```
+
+Das Datenbank-Passwort legt Postgres nur beim **ersten** Start an. Eine
+bestehende Datenbank behält ihr altes Passwort, auch wenn du die Variable
+änderst (in der `.env` oder in der Coolify-Oberfläche); `DATABASE_URL` passt
+dann nicht mehr zur Datenbank und der Proxy kann sich nicht anmelden. Das gilt,
+wenn du das Passwort nie gesetzt hattest (früher Standard im Repo-Compose:
+`datenschleuse`) oder die Beispielzeile der alten `.env.example` benutzt hast.
+
+#### Datenbank-Passwort in einer bestehenden Installation ändern
+
+Zwei Möglichkeiten, auf jedem Weg. **Möglichkeit 1** behält die Daten (Spend-Logs:
+nur Zeit, Modell, Kosten, nie Nachrichteninhalt): das Passwort wird **in der
+laufenden Datenbank** gesetzt, solange der alte Stack noch läuft, danach kommt
+derselbe Wert in die Konfiguration. **Möglichkeit 2** verwirft die Datenbank:
+Postgres legt sie beim nächsten Start mit dem neuen Passwort neu an.
+
+Neuen Wert zuerst erzeugen und aufbewahren (er kommt gleich in die Konfiguration):
+
+```bash
+openssl rand -hex 32
+```
+
+**Weg B, Repo-Compose (`docker-compose.yml` im Repo-Root):**
+
+```bash
+# Möglichkeit 1: Passwort in der laufenden Datenbank ändern.
+# Der Vorsatz ist nur nötig, wenn Compose die Variable zum Einlesen verlangt
+# (fehlt sie in der .env); exec ändert den laufenden Container nicht.
+DATENSCHLEUSE_DB_PASSWORD=x docker compose exec datenschleuse-db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+#   in psql:   \password          (neuen Wert zweimal eingeben, dann \q)
+# Danach denselben Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose up -d --build
+
+# Möglichkeit 2: Datenbank verwerfen.
+docker compose down                       # Container entfernen; das Volume bleibt
+docker volume ls --filter label=com.docker.compose.volume=datenschleuse-db-data
+#   Name aus der Ausgabe nehmen (er enthält den Projektnamen, meist den
+#   Ordnernamen; mehrere Treffer: die Spalte zum richtigen Projekt wählen)
+docker volume rm <name-aus-der-ausgabe>
+# neuen Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose up -d --build
+```
+
+**Weg B, Coolify-Datei von Hand (`deploy/coolify/docker-compose.yaml` mit `-f`, ohne Coolify):**
+Gleiche Schritte, aber jeder Aufruf mit `-f` **und** `--env-file .env`, vom
+Repo-Root aus. Ohne `-f` würde Compose den Stack aus dem Repo-Root ansprechen
+(andere Container-Namen, andere Volumes). Ohne `--env-file .env` liest Compose
+die `.env` aus dem Projektverzeichnis `deploy/coolify/` (dem Verzeichnis der
+Compose-Datei) und findet die Werte der `.env` im Repo-Root nicht. Ein Vorsatz
+`DATENSCHLEUSE_DB_PASSWORD=x` ersetzt das nicht: Compose löst auch bei `exec`
+und `down` die ganze Datei auf, es braucht also die vollständige `.env`.
+
+```bash
+# Möglichkeit 1: Passwort in der laufenden Datenbank ändern.
+docker compose --env-file .env -f deploy/coolify/docker-compose.yaml exec datenschleuse-db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+#   in psql:   \password          (neuen Wert zweimal eingeben, dann \q)
+# Danach denselben Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose --env-file .env -f deploy/coolify/docker-compose.yaml up -d --build
+
+# Möglichkeit 2: Datenbank verwerfen.
+docker compose --env-file .env -f deploy/coolify/docker-compose.yaml down
+docker volume ls --filter label=com.docker.compose.volume=datenschleuse-db-data
+docker volume rm <name-aus-der-ausgabe>
+# neuen Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose --env-file .env -f deploy/coolify/docker-compose.yaml up -d --build
+```
+
+**Weg A, Coolify-UI:** Die Variable `DATENSCHLEUSE_DB_PASSWORD` unter
+*Environment Variables* zu ändern **ändert das Passwort in einer bestehenden
+Datenbank nicht**; sie wirkt nur, wenn Postgres ein leeres Volume anlegt. Nach
+dem Redeploy stimmen Proxy und Datenbank dann nicht mehr überein. Die
+Coolify-Vorlage erzeugt zwar Zufallswerte, aber wer dort einmal einen
+Beispielwert eingetragen hat, braucht diese Schritte:
+
+1. Möglichkeit 1 (Daten behalten): **vor** dem Ändern der Variable ein Terminal
+   in der Datenbank öffnen, entweder über den Dienst `datenschleuse-db` in
+   Coolify (Reiter *Terminal*) oder per SSH auf dem Server. Per SSH den
+   Container-Namen suchen und dort `psql` starten:
+   ```bash
+   docker ps --format '{{.Names}}' | grep datenschleuse-db
+   docker exec -it <container-name> sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+   ```
+   In psql `\password` eingeben (neuen Wert zweimal), dann `\q`.
+2. Denselben Wert als `DATENSCHLEUSE_DB_PASSWORD` unter *Environment Variables*
+   eintragen und **Redeploy** auslösen.
+3. Möglichkeit 2 (Daten verwerfen): Ressource in Coolify **stoppen**; auf dem
+   Server das Volume suchen (`docker volume ls | grep datenschleuse-db-data`,
+   der Name trägt das Präfix der Coolify-Ressource) und mit
+   `docker volume rm <name-aus-der-ausgabe>` löschen. Meldet Docker „in use“,
+   existiert der Container noch: erst `docker rm -f <container-name>`. Dann den
+   neuen Wert eintragen und Redeploy auslösen.
+
+**Weg C, fertige Images:** Die Images enthalten keine Datenbank; Postgres steht
+nur in deiner eigenen Compose-Datei, falls du eines ergänzt hast (ohne Datenbank
+gibt es kein Passwort zu ändern). Dann gelten dieselben Schritte wie bei Weg B,
+mit **deiner** Datei und **deinem** Dienstnamen (hier `<db-dienst>`):
+
+```bash
+# Möglichkeit 1:
+DATENSCHLEUSE_DB_PASSWORD=x docker compose -f <deine-compose-datei> exec <db-dienst> \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+#   in psql:   \password          (dann \q); neuen Wert in deine Konfiguration, dann:
+docker compose -f <deine-compose-datei> pull && docker compose -f <deine-compose-datei> up -d
+
+# Möglichkeit 2:
+docker compose -f <deine-compose-datei> down
+docker volume ls --filter label=com.docker.compose.volume=<name-des-volumes-in-deiner-datei>
+docker volume rm <name-aus-der-ausgabe>
+docker compose -f <deine-compose-datei> up -d
+```
+
+Der Volume-Name hängt von der Compose-Datei und vom Projektnamen ab
+(Präfix aus Ordnername oder `-p`); deshalb wird er nachgeschlagen und nicht
+fest angegeben. `docker volume rm` schlägt fehl, solange noch ein Container
+(auch ein gestoppter) das Volume benutzt; daher zuerst `down`. `down` entfernt
+nur die Container, **nicht** die Volumes; `down --volumes` würde alle benannten
+Volumes der Datei löschen, auch `datenschleuse-qi-state`.
+
+**Nicht verifiziert** (kein Docker-Daemon in der Entwicklungsumgebung; aus der
+Dokumentation von Docker, Compose und Postgres abgeleitet, nicht ausgeführt):
+alle Befehle dieses Abschnitts als Lauf, also `up`, `down` und `exec`, dass
+`psql` im Container ohne Passwort verbindet, dass `\password` das Passwort
+setzt, dass das Compose-Label `com.docker.compose.volume` am Volume steht, der
+Redeploy und der Reiter *Terminal* in Coolify und wie Coolify beim Stoppen mit
+den Containern umgeht. Gemessen mit Docker Compose v5.6.1 (nur Auflösen der
+Datei, kein Daemon): `docker compose config` bricht bei fehlendem oder leerem
+`UI_PASSWORD` und `DATENSCHLEUSE_DB_PASSWORD` mit Meldung ab (beide
+Compose-Dateien); mit `-f deploy/coolify/docker-compose.yaml` ohne
+`--env-file .env` wird die `.env` aus dem Repo-Root nicht gelesen (Meldung „missing a
+value“ für alle erzeugten Variablen), mit `--env-file .env` löst die Datei auf
+(Rückgabewert 0). `exec` und `down` brechen ohne die Werte ebenfalls schon beim
+Auflösen ab; mit vollständiger `.env` kommen sie bis zur Verbindung zum Daemon,
+der hier fehlt. Ob die Befehle gegen einen laufenden Daemon tun, was hier
+steht, ist nicht gemessen; der echte Proxy (LiteLLM 1.97.0, ohne Docker) lehnt
+die Fälle der Tabelle oben ab.
 
 ### Fehlersuche: ausführliche Logs
 

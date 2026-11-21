@@ -31,12 +31,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r litellm/requirements-guardrail.txt -r test/requirements.txt
+      # Das echte LiteLLM, in der Version des gepinnten Basis-Images (eine
+      # Quelle: litellm/Dockerfile). Ohne es laufen die Tests zur
+      # Log-Schwaerzung (test_admin_credentials.py) nie; deshalb setzt der
+      # Test-Schritt unten DS_REQUIRE_LITELLM=1 (fehlender Import = Fehler).
+      - run: pip install "litellm==$(bash .github/scripts/litellm-version.sh)"
       # -s ./test statt -s test: aus einem anderen Arbeitsverzeichnis
       # sammelt "-s test" sonst stillschweigend die Python-Stdlib-Suite
       # namens "test" ein (falsch-gruenes Gate, siehe DATENSCHLE-62). Mit
       # ./test schlaegt der Aufruf fehl statt falsch gruen zu werden, wenn
       # das Arbeitsverzeichnis mal nicht das Repo-Root ist.
       - run: python3 -m unittest discover -s ./test -p "test_*.py"
+        env:
+          DS_REQUIRE_LITELLM: "1"
 
   syntax-check:
     name: syntax-check

@@ -13,8 +13,9 @@ Decision: the check lives in the guardrail constructor, switched on by
   (not verifiable without Docker) and is skipped by ``--entrypoint``;
 * the check looks at the key LiteLLM actually resolved, so an operator's own
   config with a different key source is judged by the same rule.
-The flag is off in the code default so unit tests and library use are not
-affected. The compose files set the switch themselves (QA audit 2, F1),
+Without the proxy server module (unit tests, library use) the code default is
+off; under the proxy it is on when the variable is absent (L6, ADR-0007). The
+compose files set the switch themselves (QA audit 2, F1),
 because `up -d` does not rebuild an existing image; only an explicit ``-e DATENSCHLEUSE_REQUIRE_MASTER_KEY=false``
 switches it off in the image.
 
@@ -169,7 +170,7 @@ class TestNoPublicPlaceholderShips(unittest.TestCase):
                 dg.DatenschleuseGuardrail()
 
     def test_no_shipped_file_contains_a_known_placeholder_as_a_default(self):
-        skip = {"ISA.md", "datenschleuse_guardrail.py", "test_master_key_guard.py", "0006-veroeffentlichte-images-und-block-kennung.md", "DEPLOY.md", "smoke-images.sh"}
+        skip = {"ISA.md", "datenschleuse_guardrail.py", "test_master_key_guard.py", "0006-veroeffentlichte-images-und-block-kennung.md", "0007-example-credentials-rejected.md", "test_admin_credentials.py", "DEPLOY.md", "smoke-images.sh"}
         for path in ROOT.rglob("*"):
             if not path.is_file() or ".git" in path.parts or path.name in skip or path.suffix in (".pyc", ".png"):
                 continue
@@ -248,24 +249,46 @@ def _compose_files():
     return sorted(set(found))
 
 
+PROXY_IMAGE = "ghcr.io/oliverhees/datenschleuse"
+
+
+def _is_proxy_service(svc):
+    """A service starts the Datenschleuse proxy when it is built from
+    litellm/Dockerfile, runs LiteLLM with ``--config``, or mounts the
+    guardrail module or the litellm/ directory (which holds config.yaml).
+    The image name plays no part: a digest-only reference or another
+    registry must not hide a proxy (audit round 4, info 2). The published
+    proxy image (``ghcr.io/oliverhees/datenschleuse``, tag and/or digest, but
+    not ``-analyzer``) counts too: its CMD carries the config (S-6)."""
+    build = svc.get("build")
+    dockerfile = build.get("dockerfile", "") if isinstance(build, dict) else ""
+    if dockerfile.endswith("litellm/Dockerfile"):
+        return True
+    image = str(svc.get("image") or "")
+    repository = image.split("@", 1)[0]
+    if ":" in repository.rsplit("/", 1)[-1]:  # strip the tag, not a registry port
+        repository = repository.rsplit(":", 1)[0]
+    if repository == PROXY_IMAGE:
+        return True
+    command = svc.get("command") or []
+    if isinstance(command, str):
+        command = command.split()
+    if "--config" in [str(part) for part in command]:
+        return True
+    for volume in svc.get("volumes") or []:
+        source = volume.get("source", "") if isinstance(volume, dict) else str(volume).split(":", 1)[0]
+        source = source.rstrip("/")
+        if source.endswith("/datenschleuse_guardrail.py") or source.endswith("/litellm") or source.endswith("litellm/config.yaml"):
+            return True
+    return False
+
+
 def _proxy_services(compose_path):
-    """Services of a compose file that start the Datenschleuse proxy, i.e. are
-    built from litellm/Dockerfile or run the locally built proxy image."""
+    """Services of a compose file that start the Datenschleuse proxy."""
     import yaml
 
     data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
-    out = []
-    for name, svc in (data.get("services") or {}).items():
-        build = svc.get("build")
-        dockerfile = build.get("dockerfile", "") if isinstance(build, dict) else ""
-        image = str(svc.get("image", ""))
-        if (
-            dockerfile.endswith("litellm/Dockerfile")
-            or image.startswith("datenschleuse-datenschleuse")
-            or image.startswith("ghcr.io/oliverhees/datenschleuse:")
-        ):
-            out.append((name, svc))
-    return out
+    return [(name, svc) for name, svc in (data.get("services") or {}).items() if _is_proxy_service(svc)]
 
 
 def _env_entries(svc):
@@ -273,6 +296,17 @@ def _env_entries(svc):
     if isinstance(env, dict):
         return [f"{k}={v}" for k, v in env.items()]
     return [str(item) for item in env]
+
+
+def _switch_problems(svc):
+    """What is wrong with the switch in a proxy service's environment."""
+    entries = [e for e in _env_entries(svc) if e.startswith(REQUIRE + "=")]
+    if len(entries) != 1:
+        return [f"{REQUIRE} must be set exactly once (found {len(entries)})"]
+    value = entries[0].split("=", 1)[1]
+    if value not in ("true", "${%s:-true}" % REQUIRE):
+        return [f"{REQUIRE} must default to true, found {value!r}"]
+    return []
 
 
 class TestComposeWiring(unittest.TestCase):
@@ -288,15 +322,8 @@ class TestComposeWiring(unittest.TestCase):
         for path in _compose_files():
             for name, svc in _proxy_services(path):
                 checked += 1
-                entries = [e for e in _env_entries(svc) if e.startswith(REQUIRE + "=")]
                 with self.subTest(file=str(path.relative_to(ROOT)), service=name):
-                    self.assertEqual(
-                        len(entries), 1, f"{REQUIRE} missing in environment of {name}"
-                    )
-                    self.assertIn(
-                        entries[0].split("=", 1)[1],
-                        ("true", "${%s:-true}" % REQUIRE),
-                    )
+                    self.assertEqual(_switch_problems(svc), [])
         # repo compose, Coolify compose and the e2e stack
         self.assertGreaterEqual(checked, 3)
 
@@ -307,6 +334,104 @@ class TestComposeWiring(unittest.TestCase):
         self.assertIn("docker compose up -d --build", section)
         self.assertIn("deploy/coolify/docker-compose.yaml", section)
         self.assertNotRegex(section, r"(?m)^docker compose up -d$")
+
+
+def _write_compose(tmp, services):
+    import yaml
+
+    path = pathlib.Path(tmp) / "docker-compose.extra.yml"
+    path.write_text(yaml.safe_dump({"services": services}), encoding="utf-8")
+    return path
+
+
+class TestProxyDetectionIsNotTiedToImageNames(unittest.TestCase):
+    """Audit round 4, info 2: ``_proxy_services`` knew three image names. A
+    future service that runs the proxy under another image name (digest only,
+    other registry) would have escaped the wiring test. A proxy service is now
+    recognised by what it does: it is built from litellm/Dockerfile, or it
+    runs ``--config`` for LiteLLM, or it mounts the guardrail or the litellm
+    directory."""
+
+    def _services(self, services):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            return [name for name, _ in _proxy_services(_write_compose(tmp, services))]
+
+    def test_unknown_image_with_a_config_command_is_a_proxy(self):
+        found = self._services({"gw": {"image": "registry.example/x/gw@sha256:" + "0" * 64, "command": ["--config", "/app/config.yaml", "--port", "4000"]}})
+        self.assertEqual(found, ["gw"])
+
+    def test_unknown_image_with_the_guardrail_mounted_is_a_proxy(self):
+        found = self._services({"gw": {"image": "example/gw:1", "volumes": ["./litellm/datenschleuse_guardrail.py:/app/datenschleuse_guardrail.py:ro"]}})
+        self.assertEqual(found, ["gw"])
+
+    def test_unknown_image_with_the_litellm_directory_mounted_is_a_proxy(self):
+        found = self._services({"gw": {"image": "example/gw:1", "volumes": ["../../litellm:/mnt/litellm-src:ro"]}})
+        self.assertEqual(found, ["gw"])
+
+    def test_published_proxy_image_name_is_a_proxy_even_without_command_or_mounts(self):
+        # Security audit S-6: image CMD, no command, no mounts.
+        for image in (
+            "ghcr.io/oliverhees/datenschleuse:1.0.0",
+            "ghcr.io/oliverhees/datenschleuse@sha256:" + "2" * 64,
+            "ghcr.io/oliverhees/datenschleuse:1.0.0@sha256:" + "2" * 64,
+            "ghcr.io/oliverhees/datenschleuse",
+        ):
+            with self.subTest(image=image):
+                self.assertEqual(self._services({"gw": {"image": image}}), ["gw"])
+
+    def test_counter_example_other_published_images_are_not_proxies(self):
+        found = self._services(
+            {
+                "analyzer": {"image": "ghcr.io/oliverhees/datenschleuse-analyzer:1.0.0"},
+                "analyzer-md": {"image": "ghcr.io/oliverhees/datenschleuse-analyzer:1.0.0-md"},
+                "other": {"image": "ghcr.io/oliverhees/datenschleuse-tools@sha256:" + "3" * 64},
+                "foreign": {"image": "example.org/oliverhees/datenschleuse:1"},
+            }
+        )
+        self.assertEqual(found, [])
+
+    def test_a_published_proxy_image_without_the_switch_fails_the_wiring_check(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_compose(tmp, {"gw": {"image": "ghcr.io/oliverhees/datenschleuse:1.0.0", "environment": ["DATENSCHLEUSE_MASTER_KEY=x"]}})
+            ((name, svc),) = _proxy_services(path)
+        self.assertEqual(name, "gw")
+        self.assertTrue(_switch_problems(svc))
+
+    def test_string_command_form_is_recognised(self):
+        found = self._services({"gw": {"image": "example/gw:1", "command": "--config /app/config.yaml --port 4000"}})
+        self.assertEqual(found, ["gw"])
+
+    def test_unrelated_services_are_not_proxies(self):
+        found = self._services(
+            {
+                "db": {"image": "postgres:16-alpine@sha256:" + "1" * 64, "volumes": ["data:/var/lib/postgresql/data"]},
+                "tap": {"image": "python:3.12-slim", "command": ["python", "-u", "/app/tap.py"]},
+                "analyzer": {"image": "example/analyzer:1", "volumes": ["../../presidio:/mnt/presidio-src:ro"]},
+            }
+        )
+        self.assertEqual(found, [])
+
+    def test_counter_example_a_detected_proxy_without_the_switch_fails_the_wiring_check(self):
+        svc = {"image": "example/gw:1", "command": ["--config", "/app/config.yaml"], "environment": ["DATENSCHLEUSE_MASTER_KEY=x"]}
+        self.assertTrue(_switch_problems(svc))
+        good = dict(svc, environment=svc["environment"] + ["DATENSCHLEUSE_REQUIRE_MASTER_KEY=${DATENSCHLEUSE_REQUIRE_MASTER_KEY:-true}"])
+        self.assertEqual(_switch_problems(good), [])
+        off = dict(svc, environment=svc["environment"] + ["DATENSCHLEUSE_REQUIRE_MASTER_KEY=false"])
+        self.assertTrue(_switch_problems(off))
+        twice = dict(good, environment=good["environment"] + ["DATENSCHLEUSE_REQUIRE_MASTER_KEY=true"])
+        self.assertTrue(_switch_problems(twice))
+
+    def test_the_shipped_files_still_yield_every_known_proxy(self):
+        names = {(str(p.relative_to(ROOT)), n) for p in _compose_files() for n, _ in _proxy_services(p)}
+        self.assertIn(("docker-compose.yml", "datenschleuse"), names)
+        self.assertIn(("deploy/coolify/docker-compose.yaml", "datenschleuse"), names)
+        self.assertIn(("test/e2e/docker-compose.e2e.yml", "ds-e2e-litellm"), names)
+        # nothing else, in particular none of the helper services
+        self.assertEqual(len(names), 3, names)
 
 
 class TestImageWiring(unittest.TestCase):

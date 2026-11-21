@@ -3,6 +3,7 @@
 - Status: vorgeschlagen
 - Datum: 2026-11-21
 - Work Item: [DATENSCHLE-105]
+- Ergänzt durch: [ADR-0007](0007-example-credentials-rejected.md) (Admin- und Datenbank-Passwort, Standard des Schalters unter dem Proxy, alle Opt-out-Werte)
 
 ## Kontext
 
@@ -65,12 +66,13 @@ Wert mit 32 Zeichen (etwa `sk-` plus 32-mal `a`) besteht.
   überprüfbar ist, und `--entrypoint` am `docker run` umgeht es. Der
   Konstruktor läuft bei jedem Start des Proxys mit dieser Konfiguration.
 - **Prüfung ohne Schalter, immer aktiv.** Verworfen: Unit-Tests und
-  Bibliotheksnutzung bräuchten dann einen Schlüssel. Der Schalter ist im Code
-  aus, im Image und in den Compose-Dateien an (dort mit dem dokumentierten
-  Opt-out `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false`; den Code-Default umzudrehen
-  würde ohne Gewinn für die ausgelieferten Wege die Tests auf Schlüssel
-  umstellen); ein Tippfehler im Wert schaltet die Sperre nicht ab
-  (nur `false`, `0`, `no`, `off`, leer).
+  Bibliotheksnutzung bräuchten dann einen Schlüssel. Der Schalter ist im Image
+  und in den Compose-Dateien an (dort mit dem dokumentierten Opt-out
+  `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false`); ein Tippfehler im Wert schaltet die
+  Sperre nicht ab (nur `false`, `0`, `no`, `off` schalten ab). Der Code-Default
+  ohne Variable war hier „aus“; seit DATENSCHLE-106 (ADR-0007) ist er unter dem
+  Proxy „an“ und nur ohne den Proxy-Server (Tests, Bibliothek) „aus“; leer
+  zählt wie fehlend.
 
 - **Block mit eigenem HTTP-Status als Standard (z. B. 422).** Verworfen als
   Standard: bestehende Clients erkennen Blocks heute an Status 500 plus
@@ -105,3 +107,11 @@ Wert mit 32 Zeichen (etwa `sk-` plus 32-mal `a`) besteht.
 - Nicht verifiziert ohne Docker: echter Bau, Start mit Postgres als Nicht-Root.
   Der erste Release-Lauf (Smoke-Test, ohne Datenbank) ist die erste echte
   Probe.
+
+## Nachtrag (DATENSCHLE-106)
+
+Der Schalter `DATENSCHLEUSE_REQUIRE_MASTER_KEY` ist unter dem Proxy jetzt auch
+ohne gesetzte Variable an (Audit L6); abgeschaltet wird nur ausdrücklich mit
+`false`, `0`, `no` oder `off`. Dieselben Prüfungen gelten für das Admin-UI- und
+das Datenbank-Passwort. Begründung, Messungen und die Liste aller je
+ausgelieferten Beispielwerte: [ADR-0007](0007-example-credentials-rejected.md).

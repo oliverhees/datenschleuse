@@ -32,8 +32,8 @@ kommentieren, damit alle den Stand nachvollziehen können.
 ## Lokal entwickeln
 
 ```bash
-cp .env.example .env
-# .env mit deinem eurouter.ai-Key + generierten Secrets füllen (siehe Kommentare in .env.example)
+bash tools/init-env.sh
+# legt .env mit erzeugten Secrets an; EUROUTER_API_KEY (dein eurouter.ai-Key) selbst eintragen
 docker compose up --build
 bash test/test-anonymisierung.sh
 ```

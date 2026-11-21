@@ -111,9 +111,11 @@ services:
       - DATENSCHLEUSE_STATE_TTL_SECONDS=${DATENSCHLEUSE_STATE_TTL_SECONDS:-86400}
       # Postgres treibt das eingebaute LiteLLM-Admin-UI (/ui) + Spend-Logs an --
       # OHNE Message-Content (turn_off_message_logging in litellm/config.yaml).
-      - DATABASE_URL=postgresql://${DATENSCHLEUSE_DB_USER:-datenschleuse}:${DATENSCHLEUSE_DB_PASSWORD:?DATENSCHLEUSE_DB_PASSWORD muss gesetzt sein (starkes Passwort)}@datenschleuse-db:5432/${DATENSCHLEUSE_DB_NAME:-datenschleuse}
-      # Admin-UI Basic-Auth. UI_PASSWORD ohne Default -- damit das Admin-UI nie
-      # mit einem bekannten Passwort oeffentlich erreichbar startet.
+      - DATABASE_URL=postgresql://${DATENSCHLEUSE_DB_USER:-datenschleuse}:${DATENSCHLEUSE_DB_PASSWORD:?DATENSCHLEUSE_DB_PASSWORD muss gesetzt sein (eigenes Passwort, z. B. openssl rand -hex 32)}@datenschleuse-db:5432/${DATENSCHLEUSE_DB_NAME:-datenschleuse}
+      # Admin-UI-Login. UI_PASSWORD ohne Default: der :?-Guard lehnt einen
+      # fehlenden oder leeren Wert ab, der Proxy beim Start zusaetzlich zu
+      # kurze (unter 16 Zeichen) und bekannte Beispielwerte
+      # (litellm/datenschleuse_guardrail.py, docs/adr/0007).
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     volumes:
@@ -159,7 +161,7 @@ services:
     image: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       - POSTGRES_USER=${DATENSCHLEUSE_DB_USER:-datenschleuse}
-      - POSTGRES_PASSWORD=${DATENSCHLEUSE_DB_PASSWORD:?DATENSCHLEUSE_DB_PASSWORD muss gesetzt sein (starkes Passwort)}
+      - POSTGRES_PASSWORD=${DATENSCHLEUSE_DB_PASSWORD:?DATENSCHLEUSE_DB_PASSWORD muss gesetzt sein (eigenes Passwort, z. B. openssl rand -hex 32)}
       - POSTGRES_DB=${DATENSCHLEUSE_DB_NAME:-datenschleuse}
     volumes:
       - datenschleuse-db-data:/var/lib/postgresql/data
