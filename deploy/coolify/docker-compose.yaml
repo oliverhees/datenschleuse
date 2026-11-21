@@ -112,8 +112,10 @@ services:
       # Postgres treibt das eingebaute LiteLLM-Admin-UI (/ui) + Spend-Logs an --
       # OHNE Message-Content (turn_off_message_logging in litellm/config.yaml).
       - DATABASE_URL=postgresql://${DATENSCHLEUSE_DB_USER:-datenschleuse}:${DATENSCHLEUSE_DB_PASSWORD:?DATENSCHLEUSE_DB_PASSWORD muss gesetzt sein (starkes Passwort)}@datenschleuse-db:5432/${DATENSCHLEUSE_DB_NAME:-datenschleuse}
-      # Admin-UI Basic-Auth. UI_PASSWORD ohne Default -- damit das Admin-UI nie
-      # mit einem bekannten Passwort oeffentlich erreichbar startet.
+      # Admin-UI-Login. UI_PASSWORD ohne Default: der :?-Guard lehnt einen
+      # fehlenden oder leeren Wert ab, der Proxy beim Start zusaetzlich zu
+      # kurze (unter 16 Zeichen) und bekannte Beispielwerte
+      # (litellm/datenschleuse_guardrail.py, docs/adr/0007).
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
     volumes:

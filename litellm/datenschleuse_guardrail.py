@@ -57,6 +57,7 @@ import os
 import re
 import sys
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlsplit
 
 # httpx ist im offiziellen LiteLLM-Image bereits vorhanden (LiteLLM-Dependency)
 # und wird fuer die Presidio-REST-Calls genutzt.
@@ -825,12 +826,20 @@ def _block_response_mode() -> str:
     return mode if mode in BLOCK_RESPONSE_MODES else "compat"
 
 
-#: The published image sets this to ``true``: the guardrail then refuses to
-#: start without a usable master key (finding H1, DATENSCHLE-105). Off in the
-#: code default so unit tests and library use need no key.
+#: Switch for the credential checks at start-up (master key, admin UI
+#: password, database password). The published image and every compose file
+#: set it to ``true``. Resolution (finding L6, DATENSCHLE-106):
+#:   * an explicit opt-out value (``OPT_OUT_VALUES``) switches the checks off;
+#:   * any other non-empty value switches them on (a typo fails closed);
+#:   * absent or empty: ON when the LiteLLM proxy server module is loaded
+#:     (the guardrail then guards a real listener), OFF otherwise, so unit
+#:     tests and library use need no key.
 REQUIRE_MASTER_KEY_ENV = "DATENSCHLEUSE_REQUIRE_MASTER_KEY"
 MASTER_KEY_ENV = "DATENSCHLEUSE_MASTER_KEY"
-_FALSE_VALUES = ("", "false", "0", "no", "off")
+#: Accepted opt-out values, compared after ``strip().lower()``. Documented in
+#: docs/DEPLOY.md and ADR-0007; a test keeps the three in step.
+OPT_OUT_VALUES = ("false", "0", "no", "off")
+_PROXY_SERVER_MODULE = "litellm.proxy.proxy_server"
 #: ``sk-`` plus at least 32 characters, no whitespace (LiteLLM requires the
 #: ``sk-`` prefix; the docs generate ``sk-`` + 64 hex characters, and the
 #: Coolify template's ``random_hex_32`` yields 32 or 64 hex characters).
@@ -845,6 +854,31 @@ KNOWN_PLACEHOLDER_MASTER_KEYS = (
     "sk-smoke-upstream-dummy",
     "sk-e2e-local-ollama",
 )
+UI_PASSWORD_ENV = "UI_PASSWORD"
+DISABLE_ADMIN_UI_ENV = "DISABLE_ADMIN_UI"
+DATABASE_URL_ENV = "DATABASE_URL"
+#: ``openssl rand -hex 32`` yields 64 characters, Coolify's ``random_hex_32``
+#: at least 32; 16 keeps a short hand-typed passphrase possible.
+MIN_UI_PASSWORD_LENGTH = 16
+#: Passwords this repository has shipped (``.env.example`` for the admin UI and
+#: the database, the repository compose default for the database). Public, so
+#: they protect nothing (finding M4, DATENSCHLE-106). Compared
+#: case-insensitively after ``strip()``.
+KNOWN_PLACEHOLDER_PASSWORDS = (
+    "aendere-mich",
+    "aendere-mich-starkes-passwort",
+    "datenschleuse",
+)
+
+
+def _credentials_required() -> bool:
+    """Whether the start-up credential checks are on (see the switch above)."""
+    flag = str(os.getenv(REQUIRE_MASTER_KEY_ENV) or "").strip().lower()
+    if flag in OPT_OUT_VALUES:
+        return False
+    if flag == "":
+        return _PROXY_SERVER_MODULE in sys.modules
+    return True
 
 
 def _require_master_key() -> None:
@@ -856,10 +890,9 @@ def _require_master_key() -> None:
     config is loaded, before the guardrails are built); outside the proxy it
     falls back to the variable. The message never contains the key.
     """
-    flag = str(os.getenv(REQUIRE_MASTER_KEY_ENV) or "").strip().lower()
-    if flag in _FALSE_VALUES:
+    if not _credentials_required():
         return
-    proxy_module = sys.modules.get("litellm.proxy.proxy_server")
+    proxy_module = sys.modules.get(_PROXY_SERVER_MODULE)
     if proxy_module is not None:
         key = getattr(proxy_module, "master_key", None)
     else:
@@ -876,6 +909,69 @@ def _require_master_key() -> None:
             "without authentication (fail-closed). Set it to a value of the form "
             "'sk-' followed by at least 32 characters without spaces, e.g. "
             'echo "sk-$(openssl rand -hex 32)". docs/DEPLOY.md, "Fertige Images".'
+        )
+
+
+def _admin_ui_enabled() -> bool:
+    """Mirrors LiteLLM 1.97.0 (``secret_managers/main.py`` ``str_to_bool``):
+    only ``true`` (any case, surrounding spaces ignored) disables the UI."""
+    value = os.environ.get(DISABLE_ADMIN_UI_ENV)
+    return value is None or value.strip().lower() != "true"
+
+
+def _require_login_credentials() -> None:
+    """Fail closed on a missing, empty, short or publicly known admin
+    password, and on a publicly known database password (finding M4).
+
+    Why the condition is the database and not ``DISABLE_ADMIN_UI``: LiteLLM
+    1.97.0 ``POST /login`` ignores ``DISABLE_ADMIN_UI`` and signs an admin in
+    with ``UI_USERNAME``/``UI_PASSWORD`` as soon as ``DATABASE_URL`` is set
+    (``proxy/auth/login_utils.py``). A set-but-empty ``UI_PASSWORD`` stays
+    empty (``os.getenv`` returns ``""``; only ``None`` falls back to the master
+    key), so an empty value is an open admin login. Without a database the
+    login cannot create a session. An unset ``UI_PASSWORD`` is refused only
+    while the UI is enabled; with the UI disabled LiteLLM uses the master key,
+    which is validated above. Messages name variables, never values.
+    """
+    if not _credentials_required():
+        return
+    database_url = os.environ.get(DATABASE_URL_ENV)
+    if database_url is None:
+        return
+    password = os.environ.get(UI_PASSWORD_ENV)
+    if password is None:
+        if _admin_ui_enabled():
+            raise ValueError(
+                f"{UI_PASSWORD_ENV} is not set while the admin UI is enabled: refusing "
+                "to start. Set a password of your own, e.g. openssl rand -hex 32, or "
+                f"switch the UI off with {DISABLE_ADMIN_UI_ENV}=True. docs/DEPLOY.md."
+            )
+    elif password.strip().lower() in KNOWN_PLACEHOLDER_PASSWORDS:
+        raise ValueError(
+            f"{UI_PASSWORD_ENV} is a publicly known placeholder: refusing to start "
+            "(it is no authentication). Generate your own password: openssl rand -hex 32. "
+            "docs/DEPLOY.md."
+        )
+    elif not password.strip():
+        raise ValueError(
+            f"{UI_PASSWORD_ENV} is empty: refusing to start (an empty admin password "
+            "is an open login). Set one, e.g. openssl rand -hex 32. docs/DEPLOY.md."
+        )
+    elif len(password) < MIN_UI_PASSWORD_LENGTH:
+        raise ValueError(
+            f"{UI_PASSWORD_ENV} is shorter than {MIN_UI_PASSWORD_LENGTH} characters: "
+            "refusing to start. Generate one, e.g. openssl rand -hex 32. docs/DEPLOY.md."
+        )
+    try:
+        db_password = urlsplit(database_url).password
+    except ValueError:
+        db_password = None  # unparsable: leave it to the database driver
+    if db_password and unquote(db_password).strip().lower() in KNOWN_PLACEHOLDER_PASSWORDS:
+        raise ValueError(
+            "DATENSCHLEUSE_DB_PASSWORD (the password in DATABASE_URL) is a publicly "
+            "known placeholder: refusing to start. Set your own, e.g. "
+            "openssl rand -hex 32; for an existing database see docs/DEPLOY.md, "
+            '"Beispiel-Zugangsdaten werden abgelehnt".'
         )
 
 
@@ -1472,6 +1568,7 @@ class DatenschleuseGuardrail(_GuardrailBase):
 
         # --- Master key (image default: required) ----------------------------
         _require_master_key()
+        _require_login_credentials()
 
         # --- Block-Antwort (stable error identification) ---------------------
         # Same rule as image_policy: an unknown value refuses to start instead

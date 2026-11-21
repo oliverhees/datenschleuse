@@ -86,12 +86,15 @@ Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, 
 ## 🚀 Quickstart
 
 ```bash
-# 1. Konfiguration vorbereiten
-cp .env.example .env
-# .env öffnen und EUROUTER_API_KEY + restliche Werte eintragen
-# DATENSCHLEUSE_MASTER_KEY ist absichtlich leer; ohne eigenen Wert startet nichts:
-echo "sk-$(openssl rand -hex 32)"    # Ausgabe hinter DATENSCHLEUSE_MASTER_KEY= eintragen
-# (Fernet-Key fürs QI-Feature generieren: siehe Kommentar in .env.example)
+# 1. Konfiguration vorbereiten: legt .env mit erzeugten Zufallswerten an
+#    (Master-Key, Admin-UI-Passwort, Datenbank-Passwort, State-Key; nichts davon
+#    wird ausgegeben). Die Datenschleuse startet nicht mit Beispielwerten.
+bash tools/init-env.sh
+# Danach nur noch deinen eigenen EUROUTER_API_KEY in .env eintragen.
+# Von Hand statt Skript: .env.example nach .env kopieren und jeden leeren Wert
+# selbst erzeugen (Kommandos in den Kommentaren der Datei), zum Beispiel:
+#   echo "sk-$(openssl rand -hex 32)"    # Master-Key
+#   openssl rand -hex 32                 # Admin-UI- und Datenbank-Passwort
 
 # 2. Modelle prüfen
 # In litellm/config.yaml die Modell-IDs an die eurouter.ai-Modellliste

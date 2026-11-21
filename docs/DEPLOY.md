@@ -60,13 +60,16 @@ Auf jedem Docker-Host (Reverse-Proxy/TLS stellst du dann selbst davor):
 
 ```bash
 git clone https://github.com/<dein-user>/datenschleuse.git && cd datenschleuse \
-  && cp .env.example .env && $EDITOR .env \
+  && bash tools/init-env.sh && $EDITOR .env \
   && docker compose -f deploy/coolify/docker-compose.yaml up -d --build
 ```
 
-`.env` vorher mit echten Werten fuellen (siehe Tabelle oben). Ohne die
-Pflicht-Variablen bricht der Start bewusst ab (fail-closed) — kein Proxy ohne
-Master-Key, kein unverschluesselter State, kein Admin-UI mit Default-Passwort.
+`tools/init-env.sh` legt `.env` mit erzeugten Werten fuer Master-Key,
+State-Key, Admin-UI- und Datenbank-Passwort an (gibt sie nicht aus, ueberschreibt
+keine vorhandene `.env`); im Editor traegst du `EUROUTER_API_KEY` ein. Von Hand
+geht es mit den Kommandos aus der Tabelle oben. Ohne die Pflicht-Variablen
+bricht der Start bewusst ab (fail-closed) — kein Proxy ohne Master-Key, kein
+unverschluesselter State, kein Admin-UI und keine Datenbank mit Beispiel-Passwort.
 
 ---
 
@@ -155,9 +158,9 @@ Was die Images ohne weitere Konfiguration mitbringen:
   und mit `bad-key` bricht der Start ab, Exit-Code 3 (das Log endet mit
   „Application startup failed“); mit `sk-` plus 40 Zeichen Start. Der Image-Test dazu (`test/smoke-images.sh`)
   lief noch nicht, weil hier kein Docker vorhanden war. Nur wer bewusst ohne
-  Anmeldung hinter einem eigenen Gateway arbeitet, setzt
-  `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false` (in der `.env`, die Compose-Dateien
-  reichen den Wert durch; beim reinen `docker run` per `-e`) — nicht empfohlen.
+  Anmeldung hinter einem eigenen Gateway arbeitet, schaltet die Prüfung mit
+  `DATENSCHLEUSE_REQUIRE_MASTER_KEY` ab (die erlaubten Werte stehen in
+  „Beispiel-Zugangsdaten werden abgelehnt“ unten) — nicht empfohlen.
   Die Prüfung erzwingt die Form (`sk-` plus mindestens 32 Zeichen) und
   weist bekannte Platzhalter ab; ob ein Schlüssel zufällig und geheim ist,
   kann sie nicht beurteilen: Ein Wert wie `sk-` plus 32-mal `a` besteht.
@@ -190,6 +193,9 @@ einem älteren Stand kommt:
 | Analyzer | schreibgeschützt, Start des Proxys erst, wenn der Analyzer gesund ist | — |
 | Block-Antwort | trägt die feste Kennung, Status unverändert 500 | `DATENSCHLEUSE_BLOCK_RESPONSE=strict` für HTTP 422 (siehe README) |
 | Master-Key | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter | kein Weg zurück: ein öffentlich bekannter Key ist keine Anmeldung |
+| Admin-UI-Passwort | `UI_PASSWORD` mindestens 16 Zeichen, kein leerer oder bekannter Beispielwert (sonst startet der Proxy nicht, sobald die Datenbank konfiguriert ist) | neues Passwort setzen (siehe unten); kein Weg zurück |
+| Datenbank-Passwort | `DATENSCHLEUSE_DB_PASSWORD` ist Pflicht ohne Default (vorher im Repo-Compose `datenschleuse`); bekannte Beispielwerte werden abgelehnt | Passwort setzen, bei bestehender Datenbank zusätzlich in Postgres ändern (siehe unten) |
+| Schalter `DATENSCHLEUSE_REQUIRE_MASTER_KEY` | unter dem Proxy auch ohne gesetzte Variable an (vorher: aus, wenn die Variable fehlte) | nur ausdrücklich abschalten: `false`, `0`, `no` oder `off` |
 
 **Master-Key: Platzhalter werden abgelehnt.** Die `.env.example` lieferte früher
 den Wert `sk-datenschleuse-lokal` mit. Wer sie unverändert nach `.env` kopiert
@@ -258,6 +264,83 @@ Proxy **ohne** Datenbank. Startet der Proxy mit Datenbank als Nicht-Root
 nicht, ist `DATENSCHLEUSE_UID=0` ein Notausgang (läuft dann wieder als root):
 nur vorübergehend, bis der Fehler behoben ist, und bitte als Fehler melden.
 Dauerhaft als root zu laufen hebt die Sperren dieses Abschnitts auf.
+
+### Beispiel-Zugangsdaten werden abgelehnt
+
+Die `.env.example` liefert keine nutzbaren Geheimnisse mehr: Master-Key,
+Admin-UI-Passwort und Datenbank-Passwort sind leer, der State-Key ein
+Platzhalter, den der Proxy nicht annimmt. Der Proxy prüft beim Start (im
+Guardrail, auf jedem ausgelieferten Startweg):
+
+| Wert | Bedingung für den Start |
+|---|---|
+| `DATENSCHLEUSE_MASTER_KEY` | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter |
+| `UI_PASSWORD` | mindestens 16 Zeichen, nicht leer, kein bekannter Beispielwert; fehlt es, muss das Admin-UI abgeschaltet sein (dann gilt der Master-Key als Passwort) |
+| Passwort in `DATABASE_URL` (`DATENSCHLEUSE_DB_PASSWORD`) | kein bekannter Beispielwert; die Stärke prüft der Proxy nicht, die Datenbank kann extern sein |
+
+Die Passwörter werden geprüft, sobald `DATABASE_URL` gesetzt ist, auch bei
+`DISABLE_ADMIN_UI=True`: In LiteLLM 1.97.0 ignoriert `POST /login` diesen
+Schalter und meldet jeden als Admin an, der `UI_USERNAME`/`UI_PASSWORD` kennt;
+ein gesetzter, aber leerer `UI_PASSWORD` bleibt leer. (Gemessen ohne Docker mit
+dem echten Proxy: leeres Passwort, `DISABLE_ADMIN_UI=True` → die Anmeldung
+kommt bis zum Datenbankschritt, ein falsches Passwort wird mit 401 abgelehnt.)
+Meldungen nennen nur den Namen der Variable, nie den Wert.
+
+**Der Schalter** `DATENSCHLEUSE_REQUIRE_MASTER_KEY` steuert alle drei Prüfungen:
+
+- Abgeschaltet wird sie nur mit einem dieser Werte (Groß-/Kleinschreibung und
+  Leerzeichen am Rand egal): `false`, `0`, `no`, `off`. Nicht empfohlen.
+- Jeder andere Wert mit Inhalt (auch ein Tippfehler wie `flase`) lässt die
+  Prüfung an.
+- Fehlt die Variable oder ist sie leer, ist die Prüfung unter dem Proxy an;
+  nur ohne den Proxy-Server (Unit-Tests, Bibliotheksnutzung) bleibt sie aus.
+- Die Compose-Dateien reichen `${DATENSCHLEUSE_REQUIRE_MASTER_KEY:-true}`
+  durch. Eine in der Shell exportierte Variable hat Vorrang vor der `.env`
+  (mit `docker compose config` geprüft, 2026-11-21); ein leerer Wert in der
+  `.env` wird zu `true`.
+
+**Wenn du ein Beispiel-Passwort benutzt hast** (die `.env` stammt aus einer
+älteren `.env.example`): Der Proxy startet nach dem Update nicht mehr, das Log
+nennt die Variable. Neue Werte erzeugen und eintragen:
+
+```bash
+openssl rand -hex 32     # neues UI_PASSWORD in die .env
+openssl rand -hex 32     # neues DATENSCHLEUSE_DB_PASSWORD in die .env
+```
+
+Das Datenbank-Passwort legt Postgres nur beim **ersten** Start an. Eine
+bestehende Datenbank behält ihr altes Passwort, auch wenn du die `.env`
+änderst; `DATABASE_URL` passt dann nicht mehr zur Datenbank. Wer das Passwort
+nie gesetzt hatte (früher Standard im Repo-Compose: `datenschleuse`) oder die
+Beispielzeile der alten `.env.example` benutzt hat, ändert es **in der laufenden
+Datenbank**, solange der alte Stack noch läuft, und trägt danach denselben
+neuen Wert in die `.env` ein:
+
+```bash
+# 1. neuen Wert erzeugen und merken (er kommt gleich in die .env)
+openssl rand -hex 32
+# 2. in der laufenden Datenbank setzen (psql fragt zweimal nach dem Passwort).
+#    Der Vorsatz DATENSCHLEUSE_DB_PASSWORD=x ist nur nötig, wenn Compose die
+#    Variable zum Einlesen verlangt; exec ändert den laufenden Container nicht.
+DATENSCHLEUSE_DB_PASSWORD=x docker compose exec datenschleuse-db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+#    in psql:   \password          (dann \q)
+# 3. denselben Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose up -d --build
+```
+
+Einfacher, wenn die Spend-Logs (nur Zeit, Modell, Kosten, nie Nachrichteninhalt)
+verzichtbar sind: Stack stoppen, das Volume `datenschleuse-db-data` löschen
+(`docker volume ls` zeigt den Namen mit Projektpräfix), neue Werte in die `.env`,
+`docker compose up -d --build`. Postgres legt die Datenbank dann mit dem neuen
+Passwort neu an.
+
+Nicht mit Docker ausgeführt (kein Docker-Daemon in der Entwicklungsumgebung):
+der Start von Postgres mit dem neuen `:?`-Guard, die `psql`-Schritte oben, das
+Verhalten von `up -d` bei bestehender Datenbank und der Coolify-Redeploy.
+Gemessen ist: `docker compose config` bricht bei fehlendem oder leerem
+`UI_PASSWORD` und `DATENSCHLEUSE_DB_PASSWORD` mit Meldung ab; der echte Proxy
+(LiteLLM 1.97.0, ohne Docker) lehnt die Fälle der Tabelle ab.
 
 ### Fehlersuche: ausführliche Logs
 
