@@ -24,8 +24,8 @@
 #    Coolify-Apps) auf demselben Host laufen.
 #  - KEINE Host-`ports`-Bindings fuer interne Services: der Proxy-Service wird
 #    ausschliesslich ueber Coolifys eingebauten Reverse-Proxy (Traefik/Caddy)
-#    veroeffentlicht (SERVICE_FQDN-Magie, siehe unten). Presidio-Analyzer/
-#    -Anonymizer und Postgres bleiben rein im internen Netz.
+#    veroeffentlicht (SERVICE_FQDN-Magie, siehe unten). Presidio-Analyzer
+#    und Postgres bleiben rein im internen Netz.
 #  - `restart: unless-stopped` auf allen Services.
 #  - `DATENSCHLEUSE_MASTER_KEY` wird explizit an den Container uebergeben (im
 #    lokalen Compose fehlt das — dort loest `os.environ/DATENSCHLEUSE_MASTER_KEY`
@@ -52,9 +52,16 @@
 services:
   # 1. LiteLLM-Proxy = die Datenschleuse-Schnittstelle (OpenAI-kompatibel).
   datenschleuse:
+    # Build-Kontext Repo-Root (das Image enthaelt auch die YAML-Konfiguration
+    # aus presidio/), Dockerfile wie im lokalen Compose. Das Image laeuft als
+    # Nicht-Root (UID 65532); hier gibt es keinen Regel-Bind-Mount, deshalb
+    # kein `user:` noetig.
     build:
-      context: ../../litellm
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: litellm/Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     # SERVICE_FQDN_<IDENTIFIER>_<PORT>: Coolify erzeugt hieraus automatisch eine
     # Domain und verdrahtet den Reverse-Proxy auf den Container-Port 4000. Die
     # konkrete Domain setzt/aendert man in der Coolify-UI -- deshalb bewusst KEIN
@@ -80,8 +87,21 @@ services:
       # Master-Key, mit dem Clients die Datenschleuse ansprechen (LiteLLM erwartet
       # ein `sk-`-Praefix). Pflicht -- ohne ihn liefe der Proxy ohne Auth.
       - DATENSCHLEUSE_MASTER_KEY=${DATENSCHLEUSE_MASTER_KEY:?DATENSCHLEUSE_MASTER_KEY muss gesetzt sein (mit sk--Praefix)}
+      # Start nur mit brauchbarem Master-Key (DATENSCHLE-105): hier explizit
+      # gesetzt, nicht dem Image ueberlassen. `up -d` baut ein vorhandenes
+      # Image nicht neu, und der Guardrail-Code kommt (je nach Datei) per Mount
+      # oder Build -- ein altes Image hat die Variable nie gehabt. Ausschalten
+      # nur bewusst: DATENSCHLEUSE_REQUIRE_MASTER_KEY=false in der .env.
+      - DATENSCHLEUSE_REQUIRE_MASTER_KEY=${DATENSCHLEUSE_REQUIRE_MASTER_KEY:-true}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
-      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+      - DATENSCHLEUSE_BLOCK_RESPONSE=${DATENSCHLEUSE_BLOCK_RESPONSE:-compat}
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
+      - NO_DOCS=True
+      - NO_REDOC=True
+      - NO_OPENAPI=True
+      # Das Image schaltet das Admin-UI ab; diese Variante dokumentiert /ui
+      # (coolify-template.json) und hat die Datenbank dafuer.
+      - DISABLE_ADMIN_UI=${DATENSCHLEUSE_DISABLE_ADMIN_UI:-False}
       # Fernet-Schluessel fuer den verschluesselten Quasi-Identifier-State.
       # PFLICHT, solange der QI-Layer aktiv ist (qi_risk_preset in config.yaml
       # gesetzt, Default: aktiv). Der :?-Guard bricht den Deploy hart ab, wenn er
@@ -118,10 +138,11 @@ services:
       retries: 5
       start_period: 45s
     depends_on:
+      # Der Analyzer-Healthcheck (im Image) wird erst gruen, wenn das
+      # Sprachmodell geladen ist. Der Anonymizer ist nicht mehr Teil dieser
+      # Variante: der Guardrail ruft ihn nie auf.
       presidio-analyzer:
-        condition: service_started
-      presidio-anonymizer:
-        condition: service_started
+        condition: service_healthy
       datenschleuse-db:
         condition: service_healthy
     restart: unless-stopped
@@ -155,8 +176,16 @@ services:
   # Rein intern -- der Produktiv-Traffic laeuft nur ueber datenschleuse-net.
   presidio-analyzer:
     build:
-      context: ../../presidio
-      dockerfile: Dockerfile.analyzer
+      context: ../..
+      dockerfile: presidio/Dockerfile.analyzer
+    # Nur /tmp beschreibbar (siehe Dockerfile). Das Modell ist der Image-
+    # Standard de_core_news_lg -- passend zur gemounteten presidio/nlp-config.yml.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     environment:
       - ANALYZER_CONF_FILE=/conf/analyzer-config.yml
       - NLP_CONF_FILE=/conf/nlp-config.yml
@@ -169,15 +198,9 @@ services:
     networks:
       - datenschleuse-net
 
-  # 3. Presidio-Anonymizer (Teil des Standard-Stacks; rein intern).
-  presidio-anonymizer:
-    # Versions-Tag PLUS Digest (DATENSCHLE-59). `:latest` ist hier besonders
-    # heikel: Zwei Coolify-Deploys am selben Tag konnten unterschiedliche
-    # Anonymizer-Versionen starten, ohne dass es jemand haette nachweisen koennen.
-    image: mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483
-    restart: unless-stopped
-    networks:
-      - datenschleuse-net
+  # 3. Kein Presidio-Anonymizer mehr: der Guardrail maskiert selbst und ruft
+  # ihn nie auf (vorher startete er ungenutzt mit, samt eigenem CVE-Profil,
+  # ADR-0003). Das lokale docker-compose.yml fuehrt ihn als Profil `anonymizer`.
 
 networks:
   datenschleuse-net:

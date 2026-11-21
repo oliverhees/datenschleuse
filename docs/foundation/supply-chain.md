@@ -395,7 +395,8 @@ gehört sie fachlich hin, und zwei Branches dieselbe Datei bauen zu lassen wäre
 ein Merge-Konflikt mit Ansage (Gesetz 8). Umgesetzt sind dort:
 
 - `apt-get upgrade` in `presidio/Dockerfile.analyzer`, mit `USER root` nur für
-  diese eine Schicht und anschließendem Zurückschalten auf UID 1001.
+  die Bau-Schichten (seit dem Image-Paket auch die Modell-Installation, siehe
+  Abschnitt 5) und anschließendem Zurückschalten auf UID 1001 für den Betrieb.
 - Der Image-Redactor liegt hinter dem Compose-Profil `images` und startet bei
   `docker compose up` **nicht** mehr mit; die Bildpolitik steht per Default auf
   `block`. Damit ist das mit Abstand schlechteste Image (Zahlen: ADR-0003)
@@ -592,11 +593,78 @@ nicht eingesammelt (fehlendes `test_`-Präfix — Audit-Fund LOW-1).
   bearbeitet"): Sie ließ sich nicht belegen. Die Datei liegt seit `2d4e8f6`
   unverändert auf `main`, und kein offener PR fasst sie an. Eine Verlagerung auf
   eine Lane, die es nicht gibt, ist keine Verlagerung — sie ist ein offenes Loch
-  mit einer Fußnote. Der LiteLLM- und der Analyzer-Dienst dieser Datei bauen aus
-  `../../litellm` bzw. `../../presidio` und erben die Pins ohnehin.
-- **Kein Lockfile für die Python-Abhängigkeiten.** `litellm/requirements-guardrail.txt`
-  und `test/requirements.txt` verwenden Bereiche (`httpx>=0.27,<1.0`), keine
-  exakten Pins. Gesetz 5 verlangt ein Lockfile. Ohne eins ist eine Installation
-  von heute nicht dieselbe wie eine von morgen — dasselbe Problem wie bei
-  `:latest`, nur eine Ebene tiefer. Eigenes Work Item nötig; die Datei ist
-  ebenfalls außerhalb des Reviers von DATENSCHLE-59.
+  mit einer Fußnote. Der LiteLLM- und der Analyzer-Dienst dieser Datei bauen
+  (Build-Kontext `../..`) aus `litellm/Dockerfile` bzw.
+  `presidio/Dockerfile.analyzer` und erben die Pins ohnehin.
+- **Kein Lockfile für die Python-Abhängigkeiten der Tests und der CI.**
+  `litellm/requirements-guardrail.txt` und `test/requirements.txt` verwenden
+  Bereiche (`httpx>=0.27,<1.0`), keine exakten Pins. Gesetz 5 verlangt ein
+  Lockfile. Ohne eins ist eine Installation von heute nicht dieselbe wie eine
+  von morgen — dasselbe Problem wie bei `:latest`, nur eine Ebene tiefer.
+  **Für das Proxy-Image gilt das nicht mehr** (Abschnitt 5): es installiert
+  kein Python-Paket, die Versionen stehen exakt in `litellm/runtime-pins.txt`
+  und werden beim Bau geprüft. Für Test- und CI-Umgebung bleibt ein eigenes
+  Work Item nötig.
+
+## 5. Veröffentlichte Images
+
+Seit dem Image-Paket baut `.github/workflows/release.yml` bei einem Tag `v*`
+(oder per Hand von `main`, dann ohne `latest`) drei Images für `linux/amd64` und
+`linux/arm64`:
+
+| Image | Dockerfile | Tag |
+|---|---|---|
+| `ghcr.io/oliverhees/datenschleuse` | `litellm/Dockerfile` | `<version>`, `latest` |
+| `ghcr.io/oliverhees/datenschleuse-analyzer` | `presidio/Dockerfile.analyzer`, `de_core_news_lg` | `<version>`, `latest` |
+| `ghcr.io/oliverhees/datenschleuse-analyzer` | dasselbe, `de_core_news_md` | `<version>-md`, `latest-md` |
+
+Was beim Bau gilt:
+
+- **Basis-Images per Digest** (Abschnitt 1, unverändert).
+- **Proxy: kein `pip` im Image.** Die vier Laufzeit-Abhängigkeiten des
+  Guardrails (`httpx`, `PyYAML`, `cryptography`, `regex`) liegen bereits in der
+  venv des gepinnten LiteLLM-Basis-Images (am 2026-11-21 aus dessen
+  venv-Schicht gelesen). Vorher lief `ensurepip` + `pip install` mit Bereichen
+  — installiert wurde dabei nichts, aber am Tag, an dem das Basis-Image eine
+  der vier nicht mehr mitbringt, wäre eine ungepinnte Version geladen worden.
+  Jetzt stehen die exakten Versionen in `litellm/runtime-pins.txt`; der Bau
+  bricht ab, wenn eine abweicht (`litellm/check_runtime_pins.py`).
+- **Analyzer: genau ein Download, mit Prüfsumme.** Das Sprachmodell kommt als
+  Wheel von den GitHub-Releases von `explosion/spacy-models`, Version und
+  sha256 fest im Dockerfile (Bau-Argument `SPACY_MODEL`). `sha256sum -c`
+  prüft vor `pip install --no-index --no-deps`. Vorher löste
+  `spacy download` „eine passende Version" zur Bauzeit auf.
+- **Keine Netz-Abrufe beim Start**: LiteLLMs Kostentabelle lokal
+  (`LITELLM_LOCAL_MODEL_COST_MAP`), die Public-Suffix-Liste für den
+  E-Mail-Recognizer wird beim Bau aus dem Schnappschuss des gepinnten
+  `tldextract` erzeugt (`presidio/warm_tldextract.py`, Netz beim Erzeugen
+  gesperrt). Ohne diesen Cache lädt `tldextract` die Liste bei der ersten
+  E-Mail-Adresse von `publicsuffix.org` — lokal nachgemessen.
+- **Herkunftsnachweis und SBOM** über `docker buildx build --provenance=mode=max
+  --sbom=true`; hochgeladen wird zuerst nur per Digest, getaggt erst nach dem
+  Smoke-Test (`test/smoke-images.sh`) gegen genau diese Digests.
+- **Nur von `main`.** Der Job `version` bricht den ganzen Lauf ab, wenn der
+  Commit nicht auf `main` liegt (Versions-Tag, `sha-`-Tag und `latest`
+  gleichermaßen); ein manueller Start ist nur von `main` oder von einem Tag
+  möglich. Die Jobs `approve` und `publish` hängen am GitHub-Environment
+  `release` (Pflicht-Freigabe, Einrichtung in docs/BRANCH-PROTECTION.md,
+  Abschnitt „Release").
+- **CVE-Scan vor dem Tag.** Der Job `scan` prüft die gepushten Digests beider
+  Plattformen aller drei Images mit der in diesem Repo schon gepinnten
+  Trivy-Action (`CRITICAL,HIGH`, `ignore-unfixed`, `exit-code 1`,
+  `.trivyignore.yaml`). Behebbare Funde stoppen die Veröffentlichung; nicht
+  behebbare und alles unter HIGH bleibt im wöchentlichen Bericht von
+  `image-scan.yml`. Nicht verifiziert: ein echter Lauf (kein Docker, kein
+  GitHub in dieser Umgebung); ob der Scan auf dem amd64-Runner das arm64-Manifest
+  über `TRIVY_PLATFORM` wählt, zeigt der erste Lauf.
+- **Grenze:** Die `apt-get upgrade`-Schicht des Analyzers bleibt
+  zeitpunktabhängig (Abschnitt 3, Begründung im Dockerfile). Reproduzierbar
+  ist deshalb das **veröffentlichte Image per Digest**, nicht das Rezept. Der
+  Scan misst das gebaute Image zum Bauzeitpunkt, nicht danach: neue CVEs
+  meldet erst der wöchentliche Lauf (der noch nur die Upstream-Images prüft,
+  nicht die veröffentlichten).
+
+Betreiber pinnen das Image so, wie dieses Dokument es für Basis-Images
+verlangt: Tag plus Digest, den Digest aus der Zusammenfassung des
+Release-Laufs oder per `docker buildx imagetools inspect`.
+

@@ -45,16 +45,91 @@ FROM mcr.microsoft.com/presidio-analyzer:2.2.362@sha256:286e3fa7f3a7426e775e8564
 # Der BUILD-ZEITPUNKT bestimmt das Ergebnis. Wer bitgenaue Reproduzierbarkeit
 # braucht, referenziert das gebaute Image per Digest, nicht diese Datei.
 #
-# `USER root` ist noetig (das Basis-Image laeuft als UID 1001) und wird
-# unmittelbar danach wieder zurueckgesetzt -- ein als root laufender Container
-# waere ein schlechterer Tausch als die CVEs, die wir hier schliessen.
+# `USER root` ist noetig (das Basis-Image laeuft als UID 1001) und gilt nur
+# fuer die Bau-Schichten bis zum Ende dieser Datei; der Container selbst laeuft
+# wieder als UID 1001 -- ein als root laufender Container waere ein
+# schlechterer Tausch als die CVEs, die wir hier schliessen.
 USER root
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Language model: build argument, pinned by version AND sha256 (no
+# `spacy download`, which resolves "a compatible version" at build time).
+# ---------------------------------------------------------------------------
+# Build context is the repository root (see docker-compose.yml).
+#
+#   docker build -f presidio/Dockerfile.analyzer --build-arg SPACY_MODEL=de_core_news_md .
+#
+# de_core_news_lg (default) is the model every published recognition number
+# (README, docs/foundation/erkennungsziel.md) was measured with.
+# de_core_news_md needs considerably less memory; its recognition quality has
+# NOT been measured in this repository.
+#
+# Installed as root into the system site-packages, not into a home directory:
+# the image sets HOME=/tmp so that it can run with a read-only root
+# filesystem, and a model under ~/.local would then not be found. A model that
+# is not found is downloaded by Presidio at START -- exactly the network fetch
+# this image rules out.
+#
+# The hash is checked by sha256sum BEFORE pip sees the file, and pip installs
+# from the local file only (--no-index --no-deps): nothing else is fetched.
+# Hashes verified on 2026-11-21 against the GitHub release assets of
+# explosion/spacy-models (download + sha256sum).
+ARG SPACY_MODEL=de_core_news_lg
+ARG SPACY_MODEL_VERSION=3.8.0
+RUN set -eu; \
+    case "${SPACY_MODEL}@${SPACY_MODEL_VERSION}" in \
+      de_core_news_lg@3.8.0) sha=36fda650e476b54d5e87803635e36dadd1e8e034c4b5962088586d684f4c9fed ;; \
+      de_core_news_md@3.8.0) sha=b903f59220f1e76dd672acdaa7fa454d6703fe056c5ccd6457820e70874116d0 ;; \
+      *) echo "SPACY_MODEL must be de_core_news_lg or de_core_news_md (version 3.8.0)" >&2; exit 1 ;; \
+    esac; \
+    whl="${SPACY_MODEL}-${SPACY_MODEL_VERSION}-py3-none-any.whl"; \
+    curl -fsSL --retry 3 -o "/tmp/${whl}" \
+      "https://github.com/explosion/spacy-models/releases/download/${SPACY_MODEL}-${SPACY_MODEL_VERSION}/${whl}"; \
+    echo "${sha}  /tmp/${whl}" | sha256sum -c -; \
+    pip install --no-cache-dir --no-deps --no-index "/tmp/${whl}"; \
+    rm -f "/tmp/${whl}"; \
+    python -c "import ${SPACY_MODEL}"
+
+# Engine configuration baked into the image, so the image runs without any
+# mount. nlp-config.yml is generated for the model chosen above -- a mounted
+# nlp-config that names a different model would make Presidio download that
+# model at start. docker-compose.yml therefore no longer mounts it.
+COPY presidio/analyzer-config.yml /conf/analyzer-config.yml
+COPY presidio/recognizers-config.yml /conf/recognizers-config.yml
+RUN printf 'nlp_engine_name: spacy\nmodels:\n  - lang_code: de\n    model_name: %s\n' "${SPACY_MODEL}" \
+      > /conf/nlp-config.yml
+ENV ANALYZER_CONF_FILE=/conf/analyzer-config.yml
+ENV NLP_CONF_FILE=/conf/nlp-config.yml
+ENV RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
+
+# Public Suffix List for the e-mail recognizer (tldextract). Without a cache
+# tldextract fetches the list from publicsuffix.org on the FIRST e-mail it
+# checks and writes it below $HOME. The cache is built here from the snapshot
+# bundled with the pinned tldextract version (network calls are refused while
+# warming) and copied to the writable /tmp at start by the start script, because
+# tldextract needs a writable lock file next to its cache.
+COPY presidio/warm_tldextract.py /opt/datenschleuse/warm_tldextract.py
+RUN TLDEXTRACT_CACHE=/opt/datenschleuse/tldextract-cache python -I /opt/datenschleuse/warm_tldextract.py \
+    && chmod -R a+rX /opt/datenschleuse
+COPY presidio/analyzer-start.sh /usr/local/bin/datenschleuse-analyzer-start
+RUN chmod 0755 /usr/local/bin/datenschleuse-analyzer-start
+
+# Runtime: non-root, writable only /tmp (read_only: true + tmpfs /tmp works).
+ENV HOME=/tmp
+ENV TLDEXTRACT_CACHE=/tmp/tldextract-cache
+ENV PYTHONDONTWRITEBYTECODE=1
 USER 1001
 
-# Sprachmodell bewusst NACH dem Zurueckschalten auf UID 1001 -- so gehoert es
-# demselben Nutzer wie zuvor und die Schicht verhaelt sich unveraendert.
-RUN python -m spacy download de_core_news_lg
+# Health: the analyzer answers GET /health once the model is loaded.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=5 \
+    CMD ["curl", "-fsS", "http://127.0.0.1:3000/health"]
+
+# gunicorn 25.1.0 (version in the pinned base image, read from its SBOM)
+# creates a control socket `gunicorn.ctl` in the working directory by default
+# and serves it from an extra thread. /app is read-only at runtime, so the
+# start script passes --no-control-socket (option exists since 25.1.0).
+CMD ["/usr/local/bin/datenschleuse-analyzer-start"]

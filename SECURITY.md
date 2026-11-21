@@ -16,6 +16,14 @@ Das Projekt befindet sich in der Beta-Phase (siehe Status-Badge in der
 [README](README.md)). Es gibt noch keine versionierten Releases mit
 langfristigem Support — Sicherheitsfixes fließen direkt in `main`.
 
+Ab der ersten veröffentlichten Version (Git-Tag `v*`) entstehen fertige
+Images auf GHCR (`ghcr.io/oliverhees/datenschleuse`,
+`ghcr.io/oliverhees/datenschleuse-analyzer`, siehe
+[DEPLOY.md](docs/DEPLOY.md)). Ein Sicherheitsfix fließt weiterhin in `main`
+und erscheint mit der nächsten Version als neues Image. Wer per Digest pinnt,
+wechselt dafür aktiv auf den neuen Digest — ein gepinntes Image ändert sich
+nie von selbst.
+
 ## Sicherheitslücke melden
 
 **Bitte keine Sicherheitslücken über öffentliche GitHub Issues melden.**

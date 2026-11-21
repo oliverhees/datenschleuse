@@ -30,6 +30,14 @@ install -m 600 rules/custom-rules.example.yml rules/custom-rules.yml
 dann für jeden Benutzer der Maschine lesbar, obwohl echte Kundennamen darin
 stehen. `datenschleuse-rules list` warnt euch, falls das passiert ist.
 
+**Nutzer-ID des Containers.** Weil die Datei nur für ihren Eigentümer lesbar
+ist, muss der Proxy-Container unter derselben Nutzer-ID laufen. Das lokale
+`docker-compose.yml` nimmt `DATENSCHLEUSE_UID`/`DATENSCHLEUSE_GID` (Standard
+`1000`). Gehört die Datei jemand anderem (`stat -c '%u:%g'
+rules/custom-rules.yml`), die beiden Werte in der `.env` setzen. Sonst kann
+der Proxy die Datei nicht lesen, und die eigenen Regeln sind aus — das Log
+meldet es, Presidio maskiert weiter.
+
 Begriff hinterlegen — das `--example` ist Pflicht und ist zugleich der
 Testfall der Regel:
 
