@@ -878,6 +878,40 @@ class TestDatabasePasswordChangeIsDocumentedPerInstallPath(unittest.TestCase):
         self.assertRegex(section, r"(?s)(Beispiel|bekannt).{0,60}(angenommen|nicht mehr abgelehnt|startet)")
 
 
+class TestDatabasePasswordWordingIsExact(unittest.TestCase):
+    """QA audit 3, I-2: the code compares the database password only with the
+    known example values; it does not check its length (``MIN_UI_PASSWORD_LENGTH``
+    applies to ``UI_PASSWORD`` only). No wording may suggest more."""
+
+    def _read(self, rel):
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    def test_the_code_really_does_not_check_the_length(self):
+        # The behaviour the wording describes.
+        self.assertEqual(dg._database_password_candidates(DB_URL.format(pw="x")), ["x"])
+        self.assertFalse(dg._database_password_is_known(DB_URL.format(pw="x")))
+
+    def test_deploy_says_known_values_only_and_no_length_check(self):
+        row = next(ln for ln in self._read("docs/DEPLOY.md").splitlines() if ln.startswith("| Passwort in `DATABASE_URL`"))
+        self.assertIn("nur gegen bekannte Beispielwerte", row)
+        self.assertRegex(row, r"nicht auf (die )?Länge")
+        self.assertNotRegex(row, r"(?i)stärke|starkes")
+
+    def test_the_adr_says_known_values_only_and_no_length_check(self):
+        text = self._read("docs/adr/0007-example-credentials-rejected.md")
+        paragraph = " ".join(next(p for p in text.split("\n\n") if "database password is checked only" in " ".join(p.split())).split())
+        self.assertIn("only against the known example values", paragraph)
+        self.assertIn("not for length", paragraph)
+        self.assertNotRegex(paragraph, r"(?i)strength|strong")
+
+    def test_no_message_or_template_text_promises_a_strong_database_password(self):
+        for rel in ("deploy/coolify/docker-compose.yaml", "docker-compose.yml", "coolify-template.json", ".env.example"):
+            for number, line in enumerate(self._read(rel).splitlines(), 1):
+                if "DATENSCHLEUSE_DB_PASSWORD" in line:
+                    with self.subTest(file=rel, line=number):
+                        self.assertNotRegex(line, r"(?i)starkes? passwort|strong password")
+
+
 class TestContributingUsesTheHelperScript(unittest.TestCase):
     def test_quick_start_generates_the_credentials(self):
         text = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")

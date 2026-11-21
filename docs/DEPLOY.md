@@ -285,7 +285,7 @@ Guardrail, auf jedem ausgelieferten Startweg):
 |---|---|
 | `DATENSCHLEUSE_MASTER_KEY` | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter |
 | `UI_PASSWORD` | mindestens 16 Zeichen, nicht leer, kein bekannter Beispielwert; fehlt es, muss das Admin-UI abgeschaltet sein (dann gilt der Master-Key als Passwort) |
-| Passwort in `DATABASE_URL` (`DATENSCHLEUSE_DB_PASSWORD`) | kein bekannter Beispielwert; die Stärke prüft der Proxy nicht, die Datenbank kann extern sein |
+| Passwort in `DATABASE_URL` (`DATENSCHLEUSE_DB_PASSWORD`) | kein bekannter Beispielwert; der Proxy prüft das Passwort nur gegen bekannte Beispielwerte, nicht auf Länge (die Datenbank kann extern sein) |
 
 Die Passwörter werden geprüft, sobald `DATABASE_URL` gesetzt ist, auch bei
 `DISABLE_ADMIN_UI=True`: In LiteLLM 1.97.0 ignoriert `POST /login` diesen

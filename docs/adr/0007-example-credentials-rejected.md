@@ -71,8 +71,9 @@ The condition is the database, not `DISABLE_ADMIN_UI`, because of the
 (`str_to_bool`, `secret_managers/main.py`): only `true` disables, anything else
 leaves the UI on. The known values are `KNOWN_PLACEHOLDER_PASSWORDS` in the
 guardrail (compared after `strip().lower()`). Messages name variables and never
-values. The database password is checked only against known examples, not for
-strength: it may belong to an external database that this repository does not
+values. The database password is checked only against the known example
+values, not for length (`MIN_UI_PASSWORD_LENGTH` applies to `UI_PASSWORD`
+only): it may belong to an external database that this repository does not
 control.
 
 **Compose and `.env.example`.** The secret slots in `.env.example` are empty
