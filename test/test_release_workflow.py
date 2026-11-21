@@ -45,7 +45,7 @@ class StaticShape(unittest.TestCase):
             perms = job.get("permissions")
             if name in ("build-amd64", "build-arm64", "publish"):
                 self.assertEqual(perms, {"contents": "read", "packages": "write"}, name)
-            elif name == "smoke":
+            elif name in ("smoke", "scan"):
                 self.assertEqual(perms, {"contents": "read", "packages": "read"}, name)
             else:
                 self.assertIsNone(perms, f"{name} must inherit contents: read")
@@ -67,7 +67,76 @@ class StaticShape(unittest.TestCase):
         self.assertIn("test", self.jobs["build-arm64"]["needs"])
         self.assertIn("build-amd64", self.jobs["smoke"]["needs"])
         self.assertIn("smoke", self.jobs["publish"]["needs"])
+        self.assertIn("scan", self.jobs["publish"]["needs"])
         self.assertEqual(self.jobs["build-arm64"]["runs-on"], "ubuntu-24.04-arm")
+
+    def test_release_needs_an_approval_environment(self):
+        # M1: the job that pushes untagged digests and the job that tags them
+        # sit behind a GitHub environment with required reviewers (set up by
+        # the repository owner, docs/BRANCH-PROTECTION.md).
+        self.assertEqual(self.jobs["publish"].get("environment"), "release")
+        approve = self.jobs["approve"]
+        self.assertEqual(approve.get("environment"), "release")
+        self.assertIn("version", approve["needs"])
+        for name in ("build-amd64", "build-arm64"):
+            self.assertIn("approve", self.jobs[name]["needs"], name)
+        # nothing that writes packages may run before the approval
+        for name, job in self.jobs.items():
+            if (job.get("permissions") or {}).get("packages") == "write" and name != "approve":
+                self.assertIn("approve", self._closure(name), name)
+
+    def _closure(self, name):
+        seen, todo = set(), list(self._needs(name))
+        while todo:
+            n = todo.pop()
+            if n not in seen:
+                seen.add(n)
+                todo.extend(self._needs(n))
+        return seen
+
+    def _needs(self, name):
+        needs = self.jobs[name].get("needs", [])
+        return [needs] if isinstance(needs, str) else list(needs)
+
+    def test_manual_start_only_from_main_is_checked_in_the_version_job(self):
+        run = next(s["run"] for s in self.jobs["version"]["steps"] if s.get("id") == "v")
+        self.assertIn("is-ancestor", run)
+        self.assertNotIn("no latest", run)  # a commit off main is refused, not downgraded
+
+    def test_scan_gate_before_publish(self):
+        # M2: pushed digests of both platforms are scanned before any tag.
+        self.assertIn("scan", self.jobs["publish"]["needs"])
+        scan = self.jobs["scan"]
+        self.assertIn("build-amd64", scan["needs"])
+        self.assertIn("build-arm64", scan["needs"])
+        include = scan["strategy"]["matrix"]["include"]
+        combos = {(e["image"], e["platform"]) for e in include}
+        self.assertEqual(
+            combos,
+            {(i, p) for i in ("proxy", "analyzer", "analyzer_md") for p in ("linux/amd64", "linux/arm64")},
+        )
+        self.assertIs(scan["strategy"]["fail-fast"], False)
+        for entry in include:
+            self.assertIn("@", entry["ref"])  # a digest, never a tag
+            self.assertIn("needs.build-", entry["ref"])
+        trivy = [s for s in scan["steps"] if str(s.get("uses", "")).startswith("aquasecurity/trivy-action@")]
+        self.assertEqual(len(trivy), 1)
+        with_ = trivy[0]["with"]
+        self.assertEqual(with_["scan-type"], "image")
+        self.assertEqual(with_["severity"], "CRITICAL,HIGH")
+        self.assertIs(with_["ignore-unfixed"], True)
+        self.assertEqual(str(with_["exit-code"]), "1")
+        self.assertEqual(with_["trivyignores"], ".trivyignore.yaml")
+        self.assertEqual(with_["scanners"], "vuln")
+        env = trivy[0].get("env", {})
+        self.assertEqual(env.get("TRIVY_PLATFORM"), "${{ matrix.platform }}")
+        self.assertEqual(env.get("TRIVY_PASSWORD"), "${{ secrets.GITHUB_TOKEN }}")
+
+    def test_scan_uses_the_same_trivy_pin_as_the_image_scan_workflow(self):
+        scan_wf = ROOT / ".github" / "workflows" / "image-scan.yml"
+        pins = {u for u in _uses(WF) if u.startswith("aquasecurity/trivy-action@")}
+        self.assertEqual(len(pins), 1)
+        self.assertTrue(pins <= _uses(scan_wf))
 
     def test_tests_match_ci(self):
         runs = [s.get("run", "") for s in self.jobs["test"]["steps"]]
@@ -134,8 +203,25 @@ class VersionStep(unittest.TestCase):
     def test_prerelease_never_latest(self):
         self.assertEqual(self._run("push", "tag", "v1.2.3-rc.1", self.on_main)[1]["latest"], "false")
 
-    def test_tag_off_main_not_latest(self):
-        self.assertEqual(self._run("push", "tag", "v1.2.3", self.off_main), (0, {"version": "1.2.3", "latest": "false"}))
+    def test_tag_off_main_is_refused(self):
+        # M1: nothing is published from a commit that is not on main.
+        code, values = self._run("push", "tag", "v1.2.3", self.off_main)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+
+    def test_prerelease_tag_off_main_is_refused(self):
+        self.assertNotEqual(self._run("push", "tag", "v1.2.3-rc.1", self.off_main)[0], 0)
+
+    def test_manual_start_on_a_feature_branch_is_refused(self):
+        code, values = self._run("workflow_dispatch", "branch", "side", self.off_main)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+
+    def test_manual_start_on_a_branch_other_than_main_is_refused_even_if_on_main(self):
+        self.assertNotEqual(self._run("workflow_dispatch", "branch", "side", self.on_main)[0], 0)
+
+    def test_manual_start_on_a_tag_off_main_is_refused(self):
+        self.assertNotEqual(self._run("workflow_dispatch", "tag", "v1.2.3", self.off_main)[0], 0)
 
     def test_manual_start_never_latest(self):
         code, values = self._run("workflow_dispatch", "branch", "main", self.on_main)

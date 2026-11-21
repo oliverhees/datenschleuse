@@ -609,7 +609,7 @@ nicht eingesammelt (fehlendes `test_`-Präfix — Audit-Fund LOW-1).
 ## 5. Veröffentlichte Images
 
 Seit dem Image-Paket baut `.github/workflows/release.yml` bei einem Tag `v*`
-(oder per Hand, dann ohne `latest`) drei Images für `linux/amd64` und
+(oder per Hand von `main`, dann ohne `latest`) drei Images für `linux/amd64` und
 `linux/arm64`:
 
 | Image | Dockerfile | Tag |
@@ -643,10 +643,26 @@ Was beim Bau gilt:
 - **Herkunftsnachweis und SBOM** über `docker buildx build --provenance=mode=max
   --sbom=true`; hochgeladen wird zuerst nur per Digest, getaggt erst nach dem
   Smoke-Test (`test/smoke-images.sh`) gegen genau diese Digests.
+- **Nur von `main`.** Der Job `version` bricht den ganzen Lauf ab, wenn der
+  Commit nicht auf `main` liegt (Versions-Tag, `sha-`-Tag und `latest`
+  gleichermaßen); ein manueller Start ist nur von `main` oder von einem Tag
+  möglich. Die Jobs `approve` und `publish` hängen am GitHub-Environment
+  `release` (Pflicht-Freigabe, Einrichtung in docs/BRANCH-PROTECTION.md,
+  Abschnitt „Release").
+- **CVE-Scan vor dem Tag.** Der Job `scan` prüft die gepushten Digests beider
+  Plattformen aller drei Images mit der in diesem Repo schon gepinnten
+  Trivy-Action (`CRITICAL,HIGH`, `ignore-unfixed`, `exit-code 1`,
+  `.trivyignore.yaml`). Behebbare Funde stoppen die Veröffentlichung; nicht
+  behebbare und alles unter HIGH bleibt im wöchentlichen Bericht von
+  `image-scan.yml`. Nicht verifiziert: ein echter Lauf (kein Docker, kein
+  GitHub in dieser Umgebung); ob der Scan auf dem amd64-Runner das arm64-Manifest
+  über `TRIVY_PLATFORM` wählt, zeigt der erste Lauf.
 - **Grenze:** Die `apt-get upgrade`-Schicht des Analyzers bleibt
   zeitpunktabhängig (Abschnitt 3, Begründung im Dockerfile). Reproduzierbar
-  ist deshalb das **veröffentlichte Image per Digest**, nicht das Rezept. Das
-  gebaute Image wird weiterhin nicht automatisch auf CVEs gescannt.
+  ist deshalb das **veröffentlichte Image per Digest**, nicht das Rezept. Der
+  Scan misst das gebaute Image zum Bauzeitpunkt, nicht danach: neue CVEs
+  meldet erst der wöchentliche Lauf (der noch nur die Upstream-Images prüft,
+  nicht die veröffentlichten).
 
 Betreiber pinnen das Image so, wie dieses Dokument es für Basis-Images
 verlangt: Tag plus Digest, den Digest aus der Zusammenfassung des

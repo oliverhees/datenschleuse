@@ -8,20 +8,34 @@
 #
 # Flow:
 #   1. version  - version from the tag (v1.2.3 -> 1.2.3); manual start: sha-<commit>.
+#                 REFUSES (the whole run stops) unless the commit is on main;
+#                 a manual start is only accepted from the main branch or a tag.
 #   2. test     - the unit suite and the pin check, exactly as in ci.yml.
-#   3. build-*  - per platform on a native runner, with provenance (mode=max)
+#   3. approve  - environment `release`: a person with the required-reviewer
+#                 role confirms before anything is pushed to the registry.
+#   4. build-*  - per platform on a native runner, with provenance (mode=max)
 #                 and SBOM attestations, pushed BY DIGEST ONLY (no tag yet).
-#   4. smoke    - pulls the amd64 digests and runs test/smoke-images.sh:
+#   5. smoke    - pulls the amd64 digests and runs test/smoke-images.sh:
 #                 read-only, non-root, analyzer without network, block contract.
-#   5. publish  - only after a green smoke test: both platforms under one tag
-#                 per image; digests in the job summary.
+#   6. scan     - Trivy on the pushed digests of both platforms; fixable
+#                 CRITICAL/HIGH findings stop the release (.trivyignore.yaml
+#                 rules apply).
+#   7. publish  - environment `release` again; only after a green smoke test and
+#                 a clean scan: both platforms under one tag per image; digests
+#                 in the job summary.
 #
 # Tags: <version> always (plus <version>-md for the md analyzer). `latest`
 # (and `latest-md`) only for a pushed tag v<major>.<minor>.<patch> WITHOUT a
-# pre-release suffix whose commit is on main -- never on a manual start.
+# pre-release suffix -- never on a manual start. Every release commit is on
+# main (step 1).
+#
+# The environment `release` (required reviewers) and the protection rule for
+# tags `v*` are repository settings the owner creates; they cannot be set from
+# this file. Without the environment the jobs run without a pause. See
+# docs/BRANCH-PROTECTION.md, section "Release".
 #
 # Permissions: contents: read for the whole workflow; packages: write only in
-# the jobs that push (build-*, publish), packages: read in smoke. No secret
+# the jobs that push (build-*, publish), packages: read in smoke and scan. No secret
 # except the run's GITHUB_TOKEN.
 #
 # SUPPLY-CHAIN RULE (DATENSCHLE-59, see ci.yml): every `uses:` is pinned to a
@@ -74,6 +88,12 @@ jobs:
         run: |
           set -eu
           latest=false
+          # A manual start is only accepted from the default branch (or a tag).
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF_TYPE" = "branch" ] \
+            && [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "Manual start only from $DEFAULT_BRANCH (got branch $REF_NAME)." >&2
+            exit 1
+          fi
           if [ "$REF_TYPE" = "tag" ]; then
             if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
               echo "Tag $REF_NAME is not of the form v<major>.<minor>.<patch>[-<pre>]." >&2
@@ -87,9 +107,11 @@ jobs:
           else
             version="sha-$(printf '%s' "$COMMIT" | cut -c1-12)"
           fi
-          if [ "$latest" = "true" ] && ! git merge-base --is-ancestor "$COMMIT" "origin/$DEFAULT_BRANCH"; then
-            echo "Commit $COMMIT is not on $DEFAULT_BRANCH: no latest." >&2
-            latest=false
+          # Nothing is published from a commit that is not on the default
+          # branch (finding M1): no version tag, no sha- tag, no `latest` tag.
+          if ! git merge-base --is-ancestor "$COMMIT" "origin/$DEFAULT_BRANCH"; then
+            echo "Commit $COMMIT is not on $DEFAULT_BRANCH: refusing to release." >&2
+            exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
@@ -111,8 +133,20 @@ jobs:
       - run: python3 -m compileall -q litellm test presidio
       - run: python3 test/check_image_pins.py
 
-  build-amd64:
+  # Approval gate before anything is pushed to the registry. The job does
+  # nothing itself; the environment's required reviewers are the control.
+  approve:
     needs: [version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    steps:
+      - run: echo "Release approved for $VERSION (commit $GITHUB_SHA)."
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+
+  build-amd64:
+    needs: [version, test, approve]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -141,7 +175,7 @@ jobs:
         run: docker logout ghcr.io
 
   build-arm64:
-    needs: [version, test]
+    needs: [version, test, approve]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     permissions:
@@ -199,10 +233,69 @@ jobs:
         if: always()
         run: docker logout ghcr.io
 
+  # Scan the pushed (still untagged) digests of both platforms. Fixable
+  # CRITICAL/HIGH findings stop the release; unfixed ones and everything below
+  # HIGH stay with the weekly image-scan.yml report (same threshold as the
+  # dependency gate in ci.yml, same ignore file and rules).
+  scan:
+    name: scan (${{ matrix.image }} ${{ matrix.platform }})
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: proxy
+            platform: linux/amd64
+            ref: ${{ format('ghcr.io/oliverhees/datenschleuse@{0}', needs.build-amd64.outputs.proxy) }}
+          - image: proxy
+            platform: linux/arm64
+            ref: ${{ format('ghcr.io/oliverhees/datenschleuse@{0}', needs.build-arm64.outputs.proxy) }}
+          - image: analyzer
+            platform: linux/amd64
+            ref: ${{ format('ghcr.io/oliverhees/datenschleuse-analyzer@{0}', needs.build-amd64.outputs.analyzer) }}
+          - image: analyzer
+            platform: linux/arm64
+            ref: ${{ format('ghcr.io/oliverhees/datenschleuse-analyzer@{0}', needs.build-arm64.outputs.analyzer) }}
+          - image: analyzer_md
+            platform: linux/amd64
+            ref: ${{ format('ghcr.io/oliverhees/datenschleuse-analyzer@{0}', needs.build-amd64.outputs.analyzer_md) }}
+          - image: analyzer_md
+            platform: linux/arm64
+            ref: ${{ format('ghcr.io/oliverhees/datenschleuse-analyzer@{0}', needs.build-arm64.outputs.analyzer_md) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Trivy, fixable CRITICAL/HIGH stop the release
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # The package is private until its first release; read access via
+          # the run's token. TRIVY_PLATFORM picks the arm64 manifest on the
+          # amd64 runner.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TRIVY_PLATFORM: ${{ matrix.platform }}
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.ref }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+          timeout: "20m"
+          cache: true
+
   publish:
-    needs: [version, build-amd64, build-arm64, smoke]
+    needs: [version, build-amd64, build-arm64, smoke, scan]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: read
       packages: write

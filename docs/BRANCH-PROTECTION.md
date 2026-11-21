@@ -205,3 +205,24 @@ uebersprungen werden und den Merge blockieren. Alle vier waren auf den PRs #5 un
 Zu bedenken: `gates` und `security` haengen an externen Faktoren (Verdict-Dateien
 bzw. der gitleaks-Action). Faellt eines davon aus, blockiert es zu Recht — der
 Umgang damit steht unter "Wenn CI ausfaellt".
+
+---
+
+## Release (Veroeffentlichung der Images)
+
+`.github/workflows/release.yml` verweigert jede Veroeffentlichung von einem
+Commit, der nicht auf `main` liegt, und einen manuellen Start von einem anderen
+Branch. Zwei Einstellungen kann nur der Repo-Eigentuemer vornehmen; sie lassen
+sich aus der Workflow-Datei weder anlegen noch pruefen (nicht verifiziert):
+
+1. **Environment `release`** (Settings > Environments > New environment):
+   *Required reviewers* = Oliver, *Deployment branches and tags* = nur `main`
+   und Tags `v*`. Ohne dieses Environment laufen die Jobs `approve` und
+   `publish` ohne Pause durch. Es gibt zwei Freigaben je Release: vor dem Push
+   der Digests (`approve`) und vor dem Taggen (`publish`, nach Smoke-Test und
+   CVE-Scan).
+2. **Tag-Schutz fuer `v*`** (Settings > Rules > Rulesets > New tag ruleset,
+   Ziel `v*`): Erstellen, Aktualisieren und Loeschen nur fuer Oliver, keine
+   Umgehung. Die Pruefung im Workflow faengt einen Tag auf einem fremden
+   Commit ab; der Tag-Schutz verhindert, dass ein bestehender Release-Tag
+   verschoben wird.
