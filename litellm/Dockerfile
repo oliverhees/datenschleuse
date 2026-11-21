@@ -85,10 +85,14 @@ COPY presidio/recognizers-config.yml /app/config/recognizers-config.yml
 # 4. Writable places: /tmp and /app/state, nothing else
 # ---------------------------------------------------------------------------
 # /app/state: encrypted QI session state (SQLite), a volume in compose.
-# Mode 1777 so that any UID the operator runs the container as (compose sets
-# `user:` to match the owner of the custom-rules file) can create the database;
-# Docker copies these permissions into a NEW named volume. The content is
-# encrypted (Fernet) regardless.
+# Mode 1777 (world-writable, sticky) is a DECISION, not an oversight (security
+# audit L4): the repository compose runs the proxy under the host user's UID
+# (default 1000, because the rules file written by the CLI is owner-only),
+# not under the image's 65532, and a NEW named volume inherits owner and mode
+# of this directory. An owner-only directory (0700, 65532) would lock the
+# compose default out of its own state. The container holds one process (the
+# proxy) and the content is Fernet-encrypted regardless. Tighten to owner-only
+# once the compose default and the image user are the same UID.
 # /app/rules: custom rules (DATENSCHLE-7), a READ-ONLY bind mount from the
 # host; without a mount the guardrail simply sees no custom rules. The CLI
 # (tools/datenschleuse-rules) stays on the host on purpose.

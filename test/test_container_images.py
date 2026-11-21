@@ -20,7 +20,7 @@ And the compose defaults (docker-compose.yml, deploy/coolify/):
 
 Nothing here builds an image (no Docker daemon in the test environment). A
 real build and start run in .github/workflows/release.yml (job ``smoke``,
-script test/smoke-images.sh) before anything is pushed.
+script test/smoke-images.sh) before any tag is set.
 """
 import importlib.util
 import pathlib
@@ -121,6 +121,30 @@ class ProxyImage(unittest.TestCase):
     def test_state_dir_writable_for_any_uid(self):
         self.assertIn("chmod 1777 /app/state", self.text)
 
+    def test_state_dir_mode_is_a_decision_not_an_oversight(self):
+        # Security finding L4: 1777 is world-writable inside the container. It
+        # stays, because the repository compose runs the proxy under the host
+        # user's UID (default 1000, not the image's 65532) and a NEW named
+        # volume inherits the image directory's owner and mode; owner-only
+        # (0700, 65532) would lock that default out. The only process in the
+        # container is the proxy and the content is Fernet-encrypted. The
+        # comment in the Dockerfile must say so, and this test breaks when the
+        # compose default and the image user stop differing (then tighten).
+        compose_user = yaml.safe_load(_read(COMPOSE))["services"]["datenschleuse"]["user"]
+        self.assertNotEqual(compose_user.split(":")[0], "${DATENSCHLEUSE_UID:-65532}")
+        raw = _read(PROXY_DF)  # self.text has the comments stripped
+        self.assertRegex(raw, r"(?m)^USER 65532:65532$")
+        self.assertIn("${DATENSCHLEUSE_UID:-1000}", compose_user)
+        self.assertRegex(raw, r"(?s)world-writable.*Fernet")
+        self.assertIn("owner-only", raw)
+
+    def test_smoke_test_does_not_claim_nothing_is_pushed_yet(self):
+        # Security finding L3: the digests are pushed (untagged) before the
+        # smoke test runs; the comment must not say otherwise.
+        text = _read(ROOT / "test" / "smoke-images.sh")
+        self.assertNotIn("before anything is pushed", text)
+        self.assertIn("untagged", text)
+
 
 class RuntimePins(unittest.TestCase):
     def setUp(self):
@@ -132,7 +156,7 @@ class RuntimePins(unittest.TestCase):
         for raw in _read(ROOT / "litellm" / "requirements-guardrail.txt").splitlines():
             line = raw.split("#", 1)[0].strip()
             if line:
-                name = re.split(r"[<>=!~]", line, 1)[0].strip()
+                name = re.split(r"[<>=!~]", line, maxsplit=1)[0].strip()
                 reqs[name.lower()] = line[len(name):]
         self.assertEqual({k.lower() for k in self.pins}, set(reqs))
 
@@ -144,7 +168,7 @@ class RuntimePins(unittest.TestCase):
         for raw in _read(ROOT / "litellm" / "requirements-guardrail.txt").splitlines():
             line = raw.split("#", 1)[0].strip()
             if line:
-                name = re.split(r"[<>=!~]", line, 1)[0].strip()
+                name = re.split(r"[<>=!~]", line, maxsplit=1)[0].strip()
                 reqs[name.lower()] = [c.strip() for c in line[len(name):].split(",")]
         for name, version in self.pins.items():
             for cond in reqs[name.lower()]:
@@ -281,6 +305,14 @@ class ComposeDefaults(unittest.TestCase):
 
     def test_proxy_runs_as_rules_owner(self):
         self.assertEqual(self.svc["datenschleuse"]["user"], "${DATENSCHLEUSE_UID:-1000}:${DATENSCHLEUSE_GID:-1000}")
+
+    def test_root_fallback_is_marked_temporary(self):
+        # Security audit, Info: DATENSCHLEUSE_UID=0 is an emergency exit only.
+        deploy = _read(ROOT / "docs" / "DEPLOY.md")
+        i = deploy.index("`DATENSCHLEUSE_UID=0`")
+        window = deploy[i - 400 : i + 600]
+        self.assertIn("nur vorübergehend", window)
+        self.assertIn("Fehler", window)
 
 
 class DockerIgnore(unittest.TestCase):

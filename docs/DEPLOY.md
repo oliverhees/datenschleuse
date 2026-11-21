@@ -210,7 +210,9 @@ Nicht verifiziert (kein Docker-Test in dieser Umgebung): der Start des
 Repo-Compose mit Postgres und Admin-UI als Nicht-Root. Den ersten echten
 Lauf zeigt der Smoke-Test des Release-Workflows — der prüft allerdings den
 Proxy **ohne** Datenbank. Startet der Proxy mit Datenbank als Nicht-Root
-nicht, ist `DATENSCHLEUSE_UID=0` der Rückweg (läuft dann wieder als root).
+nicht, ist `DATENSCHLEUSE_UID=0` ein Notausgang (läuft dann wieder als root):
+nur vorübergehend, bis der Fehler behoben ist, und bitte als Fehler melden.
+Dauerhaft als root zu laufen hebt die Sperren dieses Abschnitts auf.
 
 ### Fehlersuche: ausführliche Logs
 
