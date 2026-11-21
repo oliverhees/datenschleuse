@@ -30,7 +30,9 @@ measured responses in docs/foundation/security-baseline.md.
 Runs without litellm and without a Presidio container.
 """
 
+import copy
 import os
+import pickle
 import sys
 import unittest
 from unittest import mock
@@ -202,6 +204,57 @@ class TestRaiseSitesTagTheirReason(unittest.IsolatedAsyncioTestCase):
                 user_api_key_dict=None, cache=None, data=data, call_type="completion"
             )
         self.assertEqual(ctx.exception.reason, "request_rejected")
+
+
+    async def test_unreachable_image_redactor_is_analyzer_unavailable(self):
+        # The image redactor is a Presidio service: its outage is the same
+        # kind of failure as an unreachable analyzer, not "request rejected".
+        guard = dg.DatenschleuseGuardrail(
+            presidio_analyzer_url="http://127.0.0.1:9",
+            image_redactor_url="http://127.0.0.1:9",
+            image_policy="redact",
+            request_timeout=0.5,
+        )
+        with self.assertRaises(dg.DatenschleuseBlocked) as ctx:
+            await guard._redact_image("data:image/png;base64,aGVsbG8=")
+        self.assertEqual(ctx.exception.reason, "analyzer_unavailable")
+
+
+class TestReasonSurvivesCopying(unittest.TestCase):
+    """deepcopy/pickle drop ``__cause__``; the reason must not depend on it."""
+
+    def _cases(self):
+        return {
+            "tier_3": (_raise_from(sc.Tier3Blocked("stufe 3")), "sensitivity_tier_3"),
+            "tier_2": (_raise_from(sc.Tier2ApprovalRequired("stufe 2")), "sensitivity_tier_2_approval_required"),
+            "explicit": (dg.DatenschleuseBlocked("x", reason="analyzer_unavailable"), "analyzer_unavailable"),
+            "plain": (dg.DatenschleuseBlocked("x"), "request_rejected"),
+        }
+
+    def test_deepcopy_keeps_the_reason(self):
+        for name, (exc, expected) in self._cases().items():
+            with self.subTest(case=name):
+                clone = copy.deepcopy(exc)
+                self.assertEqual(clone.reason, expected)
+                self.assertEqual(str(clone), str(exc))
+
+    def test_copy_keeps_the_reason(self):
+        for name, (exc, expected) in self._cases().items():
+            with self.subTest(case=name):
+                self.assertEqual(copy.copy(exc).reason, expected)
+
+    def test_pickle_keeps_the_reason(self):
+        for name, (exc, expected) in self._cases().items():
+            with self.subTest(case=name):
+                clone = pickle.loads(pickle.dumps(exc))
+                self.assertEqual(clone.reason, expected)
+                self.assertEqual(clone.provider_specific_fields["datenschleuse"]["reason"], expected)
+
+    def test_copy_stays_a_block_with_the_same_contract(self):
+        clone = copy.deepcopy(dg.DatenschleuseBlocked("Text", reason="custom_rules_incomplete"))
+        self.assertIsInstance(clone, dg.DatenschleuseBlocked)
+        self.assertEqual(clone.headers, {"x-datenschleuse-error": "datenschleuse_blocked"})
+        self.assertEqual(clone.status_code, 500)
 
 
 if __name__ == "__main__":

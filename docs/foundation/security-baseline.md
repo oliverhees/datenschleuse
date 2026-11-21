@@ -338,9 +338,12 @@ immer den HTTP-Status als String hinein. Deshalb das eigene Feld.
 |---|---|
 | `sensitivity_tier_3` | Schutzklasse 3 (Art. 9/10) — geht nie raus |
 | `sensitivity_tier_2_approval_required` | Schutzklasse 2 ohne Freigabe |
-| `analyzer_unavailable` | Presidio nicht erreichbar oder fehlerhaft (fail-closed) |
+| `analyzer_unavailable` | ein Presidio-Dienst (Analyzer oder Image-Redactor) ist nicht erreichbar oder fehlerhaft (fail-closed) |
 | `custom_rules_incomplete` | eigene Regeln konnten nicht vollständig geprüft werden |
 | `request_rejected` | alles Übrige: ungeprüfte Felder/Typen, Bild-Policy, Restbefund im Verifikationsdurchlauf |
+
+Der Grund bleibt bei einer Kopie der Ausnahme (`copy`, `deepcopy`, `pickle`)
+erhalten; er wird dabei festgeschrieben, nicht aus der Ursache neu abgeleitet.
 
 Ein neuer `reason` ist eine Vertragsänderung (Code, diese Tabelle und
 `test/test_block_error_contract.py` gemeinsam), nie ein Nebenprodukt.

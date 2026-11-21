@@ -889,6 +889,12 @@ class DatenschleuseBlocked(Exception):
             return "sensitivity_tier_2_approval_required"
         return "request_rejected"
 
+    def __reduce__(self) -> Any:
+        # copy.copy/deepcopy/pickle do not carry ``__cause__``, and the reason
+        # of a tier block is derived from it. Fix the reason at copy time so a
+        # copy answers with the same contract as the original.
+        return (_rebuild_blocked, (str(self), self.reason))
+
     @property
     def status_code(self) -> int:
         return 422 if _block_response_mode() == "strict" else 500
@@ -909,6 +915,11 @@ class DatenschleuseBlocked(Exception):
     @property
     def provider_specific_fields(self) -> Dict[str, Any]:
         return {"datenschleuse": {"code": BLOCK_CODE, "reason": self.reason}}
+
+
+def _rebuild_blocked(message: str, reason: str) -> "DatenschleuseBlocked":
+    """Reconstructor for ``DatenschleuseBlocked.__reduce__`` (copy, pickle)."""
+    return DatenschleuseBlocked(message, reason=reason)
 
 
 # ===========================================================================
@@ -1710,7 +1721,8 @@ class DatenschleuseGuardrail(_GuardrailBase):
         except Exception as exc:  # fail-closed
             raise DatenschleuseBlocked(
                 f"Presidio Image Redactor nicht erreichbar/fehlerhaft ({exc}); "
-                f"Request blockiert (fail-closed, kein ungeprueftes Bild)."
+                f"Request blockiert (fail-closed, kein ungeprueftes Bild).",
+                reason="analyzer_unavailable",
             ) from exc
         return _to_data_url(redacted, mime or "image/png")
 
