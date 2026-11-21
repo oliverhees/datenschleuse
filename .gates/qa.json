@@ -1,7 +1,7 @@
 {
   "gate": "qa",
   "verdict": "pass",
-  "commit": "e778d5f6029d3a04e0f2c6fe112caa6a98ae55e4",
-  "branch": "qa-verdict-94",
-  "timestamp": "2026-10-14T13:33:33Z"
+  "commit": "76ce5cafdd2cdf5db357b0130fd8dc50c8442507",
+  "branch": "feature/DATENSCHLE-105-hardening-and-images",
+  "timestamp": "2026-11-21T13:51:42Z"
 }
