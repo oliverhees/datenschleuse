@@ -12,13 +12,18 @@
 #   4. the Public Suffix List cache was prepared (no fetch on the first e-mail),
 #   5. the proxy serves no API documentation pages,
 #   6. a block carries the stable identification (header + body field),
-#   7. a request with an e-mail address is NOT blocked (the analyzer works
+#   7. the proxy image started without a master key, with an empty one and with
+#      a malformed one exits with an error and never serves requests (H1),
+#   8. a request with an e-mail address is NOT blocked (the analyzer works
 #      offline; the unreachable dummy upstream makes it fail afterwards, which
 #      is expected and carries no block identification).
 #
+# Not run in the development environment of DATENSCHLE-105 (no Docker daemon);
+# its first real run is the first release run.
+#
 # Usage:  PROXY_IMAGE=<ref> ANALYZER_IMAGE=<ref> sh test/smoke-images.sh
-# Needs:  docker, curl, python3. Runs in .github/workflows/release.yml before
-#         anything is pushed; locally with any Docker installation.
+# Needs:  docker, curl, python3. Runs in .github/workflows/release.yml against the
+#         pushed (still untagged) digests; locally with any Docker installation.
 set -eu
 
 : "${PROXY_IMAGE:?PROXY_IMAGE is required}"
@@ -93,6 +98,44 @@ docker run -d --name "$P-analyzer" --network "$P-int" --network-alias presidio-a
     "$ANALYZER_IMAGE" >/dev/null
 wait_healthy "$P-analyzer" 300
 ok "analyzer healthy (internal network, read-only)"
+
+# H1: the image must refuse to start without a usable master key. Each case
+# runs with the same config and mounts as below and must EXIT (not become
+# healthy, not stay running); the log must name the variable and must not
+# contain the value that was passed.
+check_refuses_without_key() {
+    label=$1
+    shift
+    name="$P-nokey"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker run -d --name "$name" --network "$P-ext" \
+        --read-only --tmpfs /tmp:size=64m --tmpfs /app/state:size=16m,mode=1777 \
+        --cap-drop ALL --security-opt no-new-privileges:true \
+        -v "$WORK/config.yaml:/app/config.yaml:ro" \
+        -e "DATENSCHLEUSE_STATE_KEY=$STATE_KEY" \
+        -e PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000 \
+        "$@" "$PROXY_IMAGE" >/dev/null
+    i=0
+    while [ "$i" -lt 120 ]; do
+        running="$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || echo gone)"
+        [ "$running" = "false" ] && break
+        i=$((i + 3))
+        sleep 3
+    done
+    [ "$running" = "false" ] || fail "proxy image without a master key ($label) is still running"
+    [ "$(docker inspect -f '{{.State.ExitCode}}' "$name")" != "0" ] || fail "proxy image without a master key ($label) exited with 0"
+    docker logs "$name" 2>&1 | grep -q 'DATENSCHLEUSE_MASTER_KEY is missing, empty or malformed' \
+        || fail "proxy image without a master key ($label): error message missing"
+    if [ "${LEAK_CHECK:-}" ] && docker logs "$name" 2>&1 | grep -qF "$LEAK_CHECK"; then
+        fail "proxy image ($label): log contains the rejected value"
+    fi
+    docker rm -f "$name" >/dev/null
+    ok "image refuses to start without a master key ($label)"
+}
+check_refuses_without_key "variable not set"
+check_refuses_without_key "empty" -e "DATENSCHLEUSE_MASTER_KEY="
+LEAK_CHECK="not-a-valid-key-value" check_refuses_without_key "wrong form" \
+    -e "DATENSCHLEUSE_MASTER_KEY=not-a-valid-key-value"
 
 docker run -d --name "$P-proxy" --network "$P-ext" -p "127.0.0.1:$PORT:4000" \
     --read-only --tmpfs /tmp:size=64m --tmpfs /app/state:size=16m,mode=1777 \

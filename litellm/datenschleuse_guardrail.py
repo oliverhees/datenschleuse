@@ -821,6 +821,43 @@ def _block_response_mode() -> str:
     return mode if mode in BLOCK_RESPONSE_MODES else "compat"
 
 
+#: The published image sets this to ``true``: the guardrail then refuses to
+#: start without a usable master key (finding H1, DATENSCHLE-105). Off in the
+#: code default so unit tests and library use need no key.
+REQUIRE_MASTER_KEY_ENV = "DATENSCHLEUSE_REQUIRE_MASTER_KEY"
+MASTER_KEY_ENV = "DATENSCHLEUSE_MASTER_KEY"
+_FALSE_VALUES = ("", "false", "0", "no", "off")
+#: ``sk-`` plus at least 16 characters, no whitespace (LiteLLM requires the
+#: ``sk-`` prefix; the docs generate ``sk-`` + 64 hex characters).
+_MASTER_KEY_FORM = re.compile(r"sk-[^\s]{16,}")
+
+
+def _require_master_key() -> None:
+    """Fail closed when the master key is missing or malformed.
+
+    Without a master key LiteLLM 1.97.0 only logs a warning and then treats
+    EVERY request as an internal user. The check looks at the key the proxy
+    actually resolved (``litellm.proxy.proxy_server.master_key``, set while the
+    config is loaded, before the guardrails are built); outside the proxy it
+    falls back to the variable. The message never contains the key.
+    """
+    flag = str(os.getenv(REQUIRE_MASTER_KEY_ENV) or "").strip().lower()
+    if flag in _FALSE_VALUES:
+        return
+    proxy_module = sys.modules.get("litellm.proxy.proxy_server")
+    if proxy_module is not None:
+        key = getattr(proxy_module, "master_key", None)
+    else:
+        key = os.environ.get(MASTER_KEY_ENV)
+    if not isinstance(key, str) or not _MASTER_KEY_FORM.fullmatch(key):
+        raise ValueError(
+            f"{MASTER_KEY_ENV} is missing, empty or malformed: refusing to start "
+            "without authentication (fail-closed). Set it to a value of the form "
+            "'sk-' followed by at least 16 characters without spaces, e.g. "
+            "sk-$(openssl rand -hex 32). docs/DEPLOY.md, 'Fertige Images'."
+        )
+
+
 class DatenschleuseBlocked(Exception):
     """Wird geworfen, wenn fail-closed greift. LiteLLM behandelt eine im
     pre_call-Hook geworfene Exception als Guardrail-Block -> Request wird
@@ -1400,6 +1437,9 @@ class DatenschleuseGuardrail(_GuardrailBase):
                 "konfiguriert sein, sonst waere jedes Bild ein Blindflug."
             )
         self.image_policy = policy
+
+        # --- Master key (image default: required) ----------------------------
+        _require_master_key()
 
         # --- Block-Antwort (stable error identification) ---------------------
         # Same rule as image_policy: an unknown value refuses to start instead

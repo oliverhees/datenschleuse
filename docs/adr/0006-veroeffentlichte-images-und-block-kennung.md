@@ -20,7 +20,12 @@ betreiben. Drei Befunde aus dem Nachbau:
    Der E-Mail-Recognizer lädt bei der ersten E-Mail-Adresse die
    Public-Suffix-Liste aus dem Netz; gunicorn 25.1 legt einen Steuer-Socket im
    Arbeitsordner an.
-3. Eine blockierte Anfrage war für Clients nur am deutschen Freitext von
+3. Ein Image, das ohne `DATENSCHLEUSE_MASTER_KEY` gestartet wird, nahm jede
+   Anfrage an (LiteLLM 1.97.0 warnt nur und behandelt dann jeden Aufrufer als
+   internen Nutzer; das Image lauscht auf `0.0.0.0`). Die Compose-Dateien
+   verhindern das mit `${...:?}`, `docker run` des Images nicht (Sicherheits-
+   Audit H1).
+4. Eine blockierte Anfrage war für Clients nur am deutschen Freitext von
    anderen Proxy-Fehlern zu unterscheiden (beide HTTP 500, `type "None"`).
 
 ## Entscheidung
@@ -31,7 +36,21 @@ und mit schreibgeschütztem Dateisystem, laden beim Start nichts und werden per
 veröffentlicht; jeder Block trägt eine feste Kennung, deren Standardmodus
 Status, Typ und Meldung unverändert lässt.
 
+Der Proxy verweigert den Start ohne brauchbaren Master-Key
+(`DATENSCHLEUSE_REQUIRE_MASTER_KEY=true` im Image). Die Prüfung sitzt im
+Konstruktor des Guardrails und liest den Schlüssel, den LiteLLM auflöst
+(Fallback: die Variable).
+
 ## Alternativen
+
+- **Start-Prüfung in einem Entrypoint-Skript.** Verworfen: das Skript müsste den
+  Entrypoint des Basis-Images aufrufen, dessen Pfad ohne Docker nicht
+  überprüfbar ist, und `--entrypoint` am `docker run` umgeht es. Der
+  Konstruktor läuft bei jedem Start des Proxys mit dieser Konfiguration.
+- **Prüfung ohne Schalter, immer aktiv.** Verworfen: Unit-Tests und
+  Bibliotheksnutzung bräuchten dann einen Schlüssel. Der Schalter ist im Code
+  aus und im Image an; ein Tippfehler im Wert schaltet die Sperre nicht ab
+  (nur `false`, `0`, `no`, `off`, leer).
 
 - **Block mit eigenem HTTP-Status als Standard (z. B. 422).** Verworfen als
   Standard: bestehende Clients erkennen Blocks heute an Status 500 plus

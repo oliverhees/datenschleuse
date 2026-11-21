@@ -140,6 +140,18 @@ Was die Images ohne weitere Konfiguration mitbringen:
   will, setzt `DISABLE_ADMIN_UI=False` und betreibt die Datenbank wie im
   Repo-Compose.
 - **Bilder blockiert** (`DATENSCHLEUSE_IMAGE_POLICY=block`).
+- **Kein Start ohne Master-Key.** Fehlt `DATENSCHLEUSE_MASTER_KEY`, ist er leer
+  oder hat er nicht die Form `sk-` plus mindestens 16 Zeichen ohne Leerzeichen,
+  beendet sich der Proxy beim Start mit einer Fehlermeldung (ohne den Wert zu
+  nennen). Das gilt auch bei `docker run` ohne Compose; ohne diese Sperre würde
+  LiteLLM nur warnen und jede Anfrage durchlassen, obwohl der Proxy im Container
+  auf `0.0.0.0` lauscht. Geprüft wird der Schlüssel, den LiteLLM aus deiner
+  Konfiguration auflöst (nicht nur die Variable). Gemessen mit LiteLLM 1.97.0
+  ohne Docker: ohne Schlüssel und mit `bad-key` Abbruch (Exit-Code 3), mit
+  `sk-` plus 40 Zeichen Start. Der Image-Test dazu (`test/smoke-images.sh`)
+  lief noch nicht, weil hier kein Docker vorhanden war. Nur wer bewusst ohne
+  Anmeldung hinter einem eigenen Gateway arbeitet, setzt
+  `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false` — nicht empfohlen.
 
 Pflicht-Variablen bleiben dieselben wie oben (`DATENSCHLEUSE_MASTER_KEY`,
 `DATENSCHLEUSE_STATE_KEY`, solange `qi_risk_preset` gesetzt ist, und der

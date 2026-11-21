@@ -106,6 +106,13 @@ ENV DATENSCHLEUSE_RECOGNIZERS_PATH=/app/config/recognizers-config.yml
 ENV DATENSCHLEUSE_CUSTOM_RULES_PATH=/app/rules/custom-rules.yml
 ENV DATENSCHLEUSE_STATE_DB=/app/state/qi_state.db
 ENV DATENSCHLEUSE_IMAGE_POLICY=block
+# Fail closed without authentication (DATENSCHLE-105, H1): without a master
+# key LiteLLM only logs a warning and then accepts every request while the
+# image listens on 0.0.0.0. With this flag the guardrail refuses to start
+# unless DATENSCHLEUSE_MASTER_KEY (or the key the config resolves) is `sk-`
+# followed by at least 16 characters. The compose files fail earlier with
+# `${DATENSCHLEUSE_MASTER_KEY:?}`; this covers `docker run` without compose.
+ENV DATENSCHLEUSE_REQUIRE_MASTER_KEY=true
 # No network fetch at start: LiteLLM otherwise downloads its model cost map
 # from GitHub on import.
 ENV LITELLM_LOCAL_MODEL_COST_MAP=True
