@@ -186,6 +186,33 @@ class TestDatabasePassword(_Env):
                     message = self.assertRefuses("DATENSCHLEUSE_DB_PASSWORD", "placeholder")
                     self.assertNotIn(value, message.lower().replace("datenschleuse_db_password", ""))
 
+    def test_a_percent_encoded_known_password_in_the_user_info_is_rejected(self):
+        # QA audit 3, I-1: ``urlsplit(...).password`` keeps the percent
+        # encoding, so ``%64atenschleuse`` is ``datenschleuse`` to the driver
+        # but not to a plain comparison. ``unquote`` in
+        # ``_database_password_candidates`` closes that.
+        import urllib.parse
+
+        for value in dg.KNOWN_PLACEHOLDER_PASSWORDS:
+            encodings = {
+                "first letter": "%" + format(ord(value[0]), "02X") + value[1:],
+                "dash": value.replace("-", "%2D"),
+                "everything": urllib.parse.quote(value, safe="").replace("a", "%61").replace("e", "%65"),
+                "lower-case hex": "%" + format(ord(value[0]), "02x") + value[1:],
+            }
+            for label, encoded in encodings.items():
+                if encoded == value:
+                    continue  # this value has no dash to encode
+                with self.subTest(value=value, encoding=label):
+                    self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": DB_URL.format(pw=encoded)})
+                    message = self.assertRefuses("DATENSCHLEUSE_DB_PASSWORD", "placeholder")
+                    self.assertNotIn(value, message.lower().replace("datenschleuse_db_password", ""))
+
+    def test_an_encoded_own_password_in_the_user_info_starts(self):
+        # Counter-case: decoding must not turn a good password into a refusal.
+        self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": DB_URL.format(pw="Zq%2Fx" * 5)})
+        dg.DatenschleuseGuardrail()
+
     def test_an_own_password_as_query_parameter_starts(self):
         base = "postgresql://datenschleuse@datenschleuse-db:5432/datenschleuse"
         self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": base + "?password=" + "Zq" * 12})
