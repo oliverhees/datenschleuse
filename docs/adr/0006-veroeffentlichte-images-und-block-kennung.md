@@ -37,7 +37,11 @@ veröffentlicht; jeder Block trägt eine feste Kennung, deren Standardmodus
 Status, Typ und Meldung unverändert lässt.
 
 Der Proxy verweigert den Start ohne brauchbaren Master-Key
-(`DATENSCHLEUSE_REQUIRE_MASTER_KEY=true` im Image). Die Prüfung sitzt im
+(`DATENSCHLEUSE_REQUIRE_MASTER_KEY=true` im Image und ausdrücklich im
+`environment:` des Proxys in allen drei Compose-Dateien; QA-Audit Runde 2, F1:
+`docker compose up -d` baut ein vorhandenes Image nicht neu, und das Repo-Compose
+mountet neuen Guardrail-Code über ein altes Image ohne die Variable. Ein Test
+liest die Compose-Dateien). Die Prüfung sitzt im
 Konstruktor des Guardrails und liest den Schlüssel, den LiteLLM auflöst
 (Fallback: die Variable). Verlangt wird `sk-` plus mindestens 32 Zeichen, und
 bekannte Platzhalter werden abgelehnt (Sicherheits-Audit Runde 2, M3): Die
@@ -49,8 +53,10 @@ Die Mindestlänge 32 passt zu `openssl rand -hex 32` (64 Zeichen) und zum
 Coolify-Generator `random_hex_32` des Templates (ob 32 oder 64 Zeichen, ist
 nicht geprüft; beides besteht). Folge für Bestandsinstallationen mit dem alten
 Platzhalter: sie starten nach dem Update nicht mehr; Anleitung in
-`docs/DEPLOY.md`. Die Prüfung erkennt nur bekannte Werte, keine Zufälligkeit:
-ein eigener, schwacher Wert mit 32 Zeichen besteht.
+`docs/DEPLOY.md` (Neubau mit `up -d --build`, je Installationsweg). Die Prüfung
+erzwingt die Form und weist bekannte Platzhalter ab; sie kann Zufälligkeit nicht
+beurteilen, und es gibt dafür bewusst keine Heuristik: ein eigener, schwacher
+Wert mit 32 Zeichen (etwa `sk-` plus 32-mal `a`) besteht.
 
 ## Alternativen
 
@@ -60,7 +66,10 @@ ein eigener, schwacher Wert mit 32 Zeichen besteht.
   Konstruktor läuft bei jedem Start des Proxys mit dieser Konfiguration.
 - **Prüfung ohne Schalter, immer aktiv.** Verworfen: Unit-Tests und
   Bibliotheksnutzung bräuchten dann einen Schlüssel. Der Schalter ist im Code
-  aus und im Image an; ein Tippfehler im Wert schaltet die Sperre nicht ab
+  aus, im Image und in den Compose-Dateien an (dort mit dem dokumentierten
+  Opt-out `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false`; den Code-Default umzudrehen
+  würde ohne Gewinn für die ausgelieferten Wege die Tests auf Schlüssel
+  umstellen); ein Tippfehler im Wert schaltet die Sperre nicht ab
   (nur `false`, `0`, `no`, `off`, leer).
 
 - **Block mit eigenem HTTP-Status als Standard (z. B. 422).** Verworfen als

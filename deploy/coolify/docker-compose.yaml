@@ -87,6 +87,12 @@ services:
       # Master-Key, mit dem Clients die Datenschleuse ansprechen (LiteLLM erwartet
       # ein `sk-`-Praefix). Pflicht -- ohne ihn liefe der Proxy ohne Auth.
       - DATENSCHLEUSE_MASTER_KEY=${DATENSCHLEUSE_MASTER_KEY:?DATENSCHLEUSE_MASTER_KEY muss gesetzt sein (mit sk--Praefix)}
+      # Start nur mit brauchbarem Master-Key (DATENSCHLE-105): hier explizit
+      # gesetzt, nicht dem Image ueberlassen. `up -d` baut ein vorhandenes
+      # Image nicht neu, und der Guardrail-Code kommt (je nach Datei) per Mount
+      # oder Build -- ein altes Image hat die Variable nie gehabt. Ausschalten
+      # nur bewusst: DATENSCHLEUSE_REQUIRE_MASTER_KEY=false in der .env.
+      - DATENSCHLEUSE_REQUIRE_MASTER_KEY=${DATENSCHLEUSE_REQUIRE_MASTER_KEY:-true}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - DATENSCHLEUSE_BLOCK_RESPONSE=${DATENSCHLEUSE_BLOCK_RESPONSE:-compat}
       - LITELLM_LOCAL_MODEL_COST_MAP=True

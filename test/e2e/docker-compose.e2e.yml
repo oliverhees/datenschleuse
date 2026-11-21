@@ -60,6 +60,8 @@ services:
       - DATENSCHLEUSE_CUSTOM_RULES_PATH=/app/rules/custom-rules.yml
       # Frisch erzeugt in run-e2e-roundtrip.sh -- niemals aus .env gelesen.
       - DATENSCHLEUSE_MASTER_KEY=${DS_E2E_MASTER_KEY:?DS_E2E_MASTER_KEY fehlt -- test/run-e2e-roundtrip.sh benutzen}
+      # Das lokale Image kann aelter sein als dieser Stand (kein ENV darin).
+      - DATENSCHLEUSE_REQUIRE_MASTER_KEY=true
       - E2E_UPSTREAM_KEY=${DS_E2E_UPSTREAM_KEY:-sk-e2e-local-ollama}
       - DATENSCHLEUSE_STATE_KEY=${DS_E2E_STATE_KEY:?DS_E2E_STATE_KEY fehlt -- test/run-e2e-roundtrip.sh benutzen}
       - DATENSCHLEUSE_STATE_DB=/tmp/qi_state_e2e.db

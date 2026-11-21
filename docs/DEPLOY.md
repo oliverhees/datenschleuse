@@ -140,7 +140,10 @@ Was die Images ohne weitere Konfiguration mitbringen:
   will, setzt `DISABLE_ADMIN_UI=False` und betreibt die Datenbank wie im
   Repo-Compose.
 - **Bilder blockiert** (`DATENSCHLEUSE_IMAGE_POLICY=block`).
-- **Kein Start ohne Master-Key.** Fehlt `DATENSCHLEUSE_MASTER_KEY`, ist er leer,
+- **Kein Start ohne Master-Key.** (Image: `ENV DATENSCHLEUSE_REQUIRE_MASTER_KEY=true`;
+  die drei Compose-Dateien dieses Repos setzen den Schalter zusätzlich selbst
+  im `environment:` des Proxys, damit auch ein älteres, nicht neu gebautes
+  Image geprüft wird.) Fehlt `DATENSCHLEUSE_MASTER_KEY`, ist er leer,
   hat er nicht die Form `sk-` plus mindestens 32 Zeichen ohne Leerzeichen
   oder ist er ein öffentlich bekannter Platzhalter (zum Beispiel der frühere
   Wert aus der `.env.example`), beendet sich der Proxy beim Start mit einer
@@ -148,11 +151,16 @@ Was die Images ohne weitere Konfiguration mitbringen:
   LiteLLM nur warnen und jede Anfrage durchlassen, obwohl der Proxy im Container
   auf `0.0.0.0` lauscht. Geprüft wird der Schlüssel, den LiteLLM aus deiner
   Konfiguration auflöst (nicht nur die Variable). Gemessen mit LiteLLM 1.97.0
-  ohne Docker: ohne Schlüssel und mit `bad-key` Abbruch (Exit-Code 3), mit
-  `sk-` plus 40 Zeichen Start. Der Image-Test dazu (`test/smoke-images.sh`)
+  ohne Docker (Prozess-Exit-Code selbst gelesen, 2026-11-21): ohne Schlüssel
+  und mit `bad-key` bricht der Start ab, Exit-Code 3 (das Log endet mit
+  „Application startup failed“); mit `sk-` plus 40 Zeichen Start. Der Image-Test dazu (`test/smoke-images.sh`)
   lief noch nicht, weil hier kein Docker vorhanden war. Nur wer bewusst ohne
   Anmeldung hinter einem eigenen Gateway arbeitet, setzt
-  `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false` — nicht empfohlen.
+  `DATENSCHLEUSE_REQUIRE_MASTER_KEY=false` (in der `.env`, die Compose-Dateien
+  reichen den Wert durch; beim reinen `docker run` per `-e`) — nicht empfohlen.
+  Die Prüfung erzwingt die Form (`sk-` plus mindestens 32 Zeichen) und
+  weist bekannte Platzhalter ab; ob ein Schlüssel zufällig und geheim ist,
+  kann sie nicht beurteilen: Ein Wert wie `sk-` plus 32-mal `a` besteht.
 
 Pflicht-Variablen bleiben dieselben wie oben (`DATENSCHLEUSE_MASTER_KEY`,
 `DATENSCHLEUSE_STATE_KEY`, solange `qi_risk_preset` gesetzt ist, und der
@@ -178,7 +186,7 @@ einem älteren Stand kommt:
 | Debug-Log | aus (`--detailed_debug` und `set_verbose` entfernt) | siehe „Fehlersuche" |
 | Presidio-Anonymizer | nicht mehr im Standard-Stack (der Guardrail ruft ihn nie auf) | `docker compose --profile anonymizer up -d` |
 | API-Doku-Seiten | aus | — |
-| Admin-UI | bleibt an (`DISABLE_ADMIN_UI=False`), das Image allein hat es aus | `DATENSCHLEUSE_DISABLE_ADMIN_UI=True` schaltet es auch hier ab |
+| Admin-UI | bleibt an (`DISABLE_ADMIN_UI=False`), das Image allein hat es aus | `DATENSCHLEUSE_DISABLE_ADMIN_UI=True` schaltet es auch hier ab; LiteLLM erkennt nur `True`/`False`, jeder andere Wert (auch `1`, `yes`) lässt das UI an |
 | Analyzer | schreibgeschützt, Start des Proxys erst, wenn der Analyzer gesund ist | — |
 | Block-Antwort | trägt die feste Kennung, Status unverändert 500 | `DATENSCHLEUSE_BLOCK_RESPONSE=strict` für HTTP 422 (siehe README) |
 | Master-Key | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter | kein Weg zurück: ein öffentlich bekannter Key ist keine Anmeldung |
@@ -188,12 +196,32 @@ den Wert `sk-datenschleuse-lokal` mit. Wer sie unverändert nach `.env` kopiert
 hat, dessen Datenschleuse startet nach dem Update nicht mehr (das Log nennt den
 Grund, nie den Wert); dasselbe gilt für andere bekannte Platzhalter und für
 Keys mit weniger als 32 Zeichen nach `sk-`. Neuen Key erzeugen, in die `.env`
-eintragen und neu starten:
+eintragen und **neu bauen und starten**. `docker compose up -d` allein baut ein
+vorhandenes Image nicht neu; die Compose-Dateien dieses Repos setzen den
+Schalter zwar selbst, ein Neubau holt aber auch den übrigen Code des neuen
+Stands ins Image. Je nach Installationsweg:
 
 ```bash
 echo "sk-$(openssl rand -hex 32)"     # Ausgabe als DATENSCHLEUSE_MASTER_KEY in die .env
-docker compose up -d
+
+# Weg B / lokal (docker-compose.yml im Repo-Root), nach git pull:
+docker compose up -d --build
+
+# Weg B (deploy/coolify/docker-compose.yaml ohne Coolify), nach git pull:
+docker compose -f deploy/coolify/docker-compose.yaml up -d --build
+
+# Coolify: neuen Wert unter „Environment Variables“ eintragen und „Deploy“
+# (Redeploy) auslösen; Coolify baut aus dem Compose-File neu.
+
+# Weg C (fertige Images): neue Image-Version (Tag und Digest) eintragen, dann
+docker compose pull && docker compose up -d
 ```
+
+Nicht mit Docker ausgeführt (kein Docker-Daemon in der Entwicklungsumgebung):
+das Verhalten von `up -d` ohne `--build` und der Coolify-Redeploy sind aus den
+Compose-Dateien und der Compose-Dokumentation abgeleitet, nicht gemessen. Die
+Compose-Dateien sind per Test geprüft (der Schalter steht in jedem
+`environment:` des Proxys), geparst und mit `docker compose config` gelesen.
 
 Danach den neuen Key in allen Tools eintragen, die die Datenschleuse
 ansprechen (der alte war öffentlich bekannt).
@@ -220,7 +248,7 @@ Der Inhalt ist nur der TTL-begrenzte Sitzungszustand der Quasi-Identifier
 docker compose stop datenschleuse
 docker compose rm -f datenschleuse
 docker volume rm datenschleuse_datenschleuse-qi-state   # Projektname ggf. anders: docker volume ls
-docker compose up -d
+docker compose up -d --build
 ```
 
 Nicht verifiziert (kein Docker-Test in dieser Umgebung): der Start des

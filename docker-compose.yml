@@ -86,6 +86,12 @@ services:
       # os.environ/DATENSCHLEUSE_MASTER_KEY, aber ohne diese Env-Var kam der Key
       # nie im Container an. Der Proxy lief dadurch faktisch OHNE Auth-Pruefung.
       - DATENSCHLEUSE_MASTER_KEY=${DATENSCHLEUSE_MASTER_KEY:?DATENSCHLEUSE_MASTER_KEY muss in .env gesetzt sein -- kein Default, damit der Proxy nie ohne Auth startet}
+      # Start nur mit brauchbarem Master-Key (DATENSCHLE-105): hier explizit
+      # gesetzt, nicht dem Image ueberlassen. `up -d` baut ein vorhandenes
+      # Image nicht neu, und der Guardrail-Code kommt (je nach Datei) per Mount
+      # oder Build -- ein altes Image hat die Variable nie gehabt. Ausschalten
+      # nur bewusst: DATENSCHLEUSE_REQUIRE_MASTER_KEY=false in der .env.
+      - DATENSCHLEUSE_REQUIRE_MASTER_KEY=${DATENSCHLEUSE_REQUIRE_MASTER_KEY:-true}
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       # Block-Antwort (feste Kennung, docs/foundation/security-baseline.md):

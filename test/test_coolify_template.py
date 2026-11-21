@@ -35,6 +35,15 @@ class CoolifyTemplate(unittest.TestCase):
         self.assertEqual(var["default"], "False")
         self.assertFalse(var.get("required", False))
         self.assertIn("/ui", var["description"])
+        # LiteLLM 1.97.0 reads the flag with str_to_bool: only true/false are
+        # recognised (secret_managers/main.py:115-135); anything else leaves
+        # the UI on. The description must say so.
+        self.assertIn("nur", var["description"])
+        self.assertIn("True", var["description"])
+        self.assertIn("False", var["description"])
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertRegex(env_example, r"(?s)Admin-UI unter /ui abschalten[^\n]*\n(#[^\n]*\n)*# DATENSCHLEUSE_DISABLE_ADMIN_UI=False")
+        self.assertIn("nur True oder False", env_example)
         compose = COMPOSE.read_text(encoding="utf-8")
         self.assertIn("DISABLE_ADMIN_UI=${DATENSCHLEUSE_DISABLE_ADMIN_UI:-False}", compose)
         self.assertIn("DATENSCHLEUSE_DISABLE_ADMIN_UI", (ROOT / ".env.example").read_text(encoding="utf-8"))

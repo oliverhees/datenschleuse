@@ -14,7 +14,8 @@ Decision: the check lives in the guardrail constructor, switched on by
 * the check looks at the key LiteLLM actually resolved, so an operator's own
   config with a different key source is judged by the same rule.
 The flag is off in the code default so unit tests and library use are not
-affected; only an explicit ``-e DATENSCHLEUSE_REQUIRE_MASTER_KEY=false``
+affected. The compose files set the switch themselves (QA audit 2, F1),
+because `up -d` does not rebuild an existing image; only an explicit ``-e DATENSCHLEUSE_REQUIRE_MASTER_KEY=false``
 switches it off in the image.
 
 Runs without litellm and without a Presidio container.
@@ -234,6 +235,78 @@ class TestResolvedKeyOfTheProxy(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 dg.DatenschleuseGuardrail()
         self.assertNotIn("changeme", str(ctx.exception))
+
+
+def _compose_files():
+    """Every compose file in the repository (tracked layout, no .git)."""
+    found = []
+    for pattern in ("*compose*.yml", "*compose*.yaml"):
+        for path in ROOT.rglob(pattern):
+            if ".git" in path.parts or "node_modules" in path.parts:
+                continue
+            found.append(path)
+    return sorted(set(found))
+
+
+def _proxy_services(compose_path):
+    """Services of a compose file that start the Datenschleuse proxy, i.e. are
+    built from litellm/Dockerfile or run the locally built proxy image."""
+    import yaml
+
+    data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    out = []
+    for name, svc in (data.get("services") or {}).items():
+        build = svc.get("build")
+        dockerfile = build.get("dockerfile", "") if isinstance(build, dict) else ""
+        image = str(svc.get("image", ""))
+        if (
+            dockerfile.endswith("litellm/Dockerfile")
+            or image.startswith("datenschleuse-datenschleuse")
+            or image.startswith("ghcr.io/oliverhees/datenschleuse:")
+        ):
+            out.append((name, svc))
+    return out
+
+
+def _env_entries(svc):
+    env = svc.get("environment") or []
+    if isinstance(env, dict):
+        return [f"{k}={v}" for k, v in env.items()]
+    return [str(item) for item in env]
+
+
+class TestComposeWiring(unittest.TestCase):
+    """QA audit 2, F1: the switch must not depend on the image's ENV.
+
+    ``docker compose up -d`` does not rebuild an existing image, and the
+    repository compose mounts the NEW guardrail code over an OLD image that
+    has no ``ENV DATENSCHLEUSE_REQUIRE_MASTER_KEY``. So the compose files set
+    it themselves (default on, explicit opt-out via the same variable)."""
+
+    def test_every_compose_file_that_starts_the_proxy_sets_the_switch(self):
+        checked = 0
+        for path in _compose_files():
+            for name, svc in _proxy_services(path):
+                checked += 1
+                entries = [e for e in _env_entries(svc) if e.startswith(REQUIRE + "=")]
+                with self.subTest(file=str(path.relative_to(ROOT)), service=name):
+                    self.assertEqual(
+                        len(entries), 1, f"{REQUIRE} missing in environment of {name}"
+                    )
+                    self.assertIn(
+                        entries[0].split("=", 1)[1],
+                        ("true", "${%s:-true}" % REQUIRE),
+                    )
+        # repo compose, Coolify compose and the e2e stack
+        self.assertGreaterEqual(checked, 3)
+
+    def test_update_docs_rebuild_the_image(self):
+        text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+        section = text.split("**Master-Key: Platzhalter werden abgelehnt.**", 1)[1]
+        section = section.split("**Nutzer-ID und eigene Regeln.**", 1)[0]
+        self.assertIn("docker compose up -d --build", section)
+        self.assertIn("deploy/coolify/docker-compose.yaml", section)
+        self.assertNotRegex(section, r"(?m)^docker compose up -d$")
 
 
 class TestImageWiring(unittest.TestCase):
