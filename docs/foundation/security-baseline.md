@@ -334,13 +334,13 @@ Jeder Block trägt:
 Das Feld `error.code` kann die Kennung **nicht** tragen: LiteLLM schreibt dort
 immer den HTTP-Status als String hinein. Deshalb das eigene Feld.
 
-| `reason` | Bedeutung |
-|---|---|
-| `sensitivity_tier_3` | Schutzklasse 3 (Art. 9/10) — geht nie raus |
-| `sensitivity_tier_2_approval_required` | Schutzklasse 2 ohne Freigabe |
-| `analyzer_unavailable` | ein Presidio-Dienst (Analyzer oder Image-Redactor) ist nicht erreichbar oder fehlerhaft (fail-closed) |
-| `custom_rules_incomplete` | eigene Regeln konnten nicht vollständig geprüft werden |
-| `request_rejected` | alles Übrige: ungeprüfte Felder/Typen, Bild-Policy, Restbefund im Verifikationsdurchlauf |
+| `reason` | Bedeutung | Später wiederholen? |
+|---|---|---|
+| `sensitivity_tier_3` | Schutzklasse 3 (Art. 9/10) — geht nie raus | Nein |
+| `sensitivity_tier_2_approval_required` | Schutzklasse 2 ohne Freigabe | Nein |
+| `analyzer_unavailable` | ein Presidio-Dienst (Analyzer oder Image-Redactor) ist nicht erreichbar oder fehlerhaft (fail-closed) | Ja, vorübergehender Ausfall |
+| `custom_rules_incomplete` | eigene Regeln konnten nicht vollständig geprüft werden | Nein |
+| `request_rejected` | alles Übrige: ungeprüfte Felder/Typen, Bild-Policy, Restbefund im Verifikationsdurchlauf | Nein |
 
 Der Grund bleibt bei einer Kopie der Ausnahme (`copy`, `deepcopy`, `pickle`)
 erhalten; er wird dabei festgeschrieben, nicht aus der Ursache neu abgeleitet.

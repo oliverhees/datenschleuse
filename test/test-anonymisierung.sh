@@ -6,7 +6,13 @@
 
 set -euo pipefail
 
-MASTER_KEY="${DATENSCHLEUSE_MASTER_KEY:-sk-datenschleuse-lokal}"
+# Kein Standardwert: ein oeffentlich bekannter Key waere keine Anmeldung.
+if [ -z "${DATENSCHLEUSE_MASTER_KEY:-}" ]; then
+  echo "DATENSCHLEUSE_MASTER_KEY ist nicht gesetzt. Nimm den Wert aus deiner .env:" >&2
+  echo "  set -a; . ./.env; set +a; bash test/test-anonymisierung.sh" >&2
+  exit 2
+fi
+MASTER_KEY="$DATENSCHLEUSE_MASTER_KEY"
 PROXY="${PROXY:-http://localhost:4000}"
 
 echo "== Testprompt mit Fake-PII an die Datenschleuse =="

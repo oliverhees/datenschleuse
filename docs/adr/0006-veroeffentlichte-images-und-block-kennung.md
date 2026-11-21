@@ -39,7 +39,18 @@ Status, Typ und Meldung unverändert lässt.
 Der Proxy verweigert den Start ohne brauchbaren Master-Key
 (`DATENSCHLEUSE_REQUIRE_MASTER_KEY=true` im Image). Die Prüfung sitzt im
 Konstruktor des Guardrails und liest den Schlüssel, den LiteLLM auflöst
-(Fallback: die Variable).
+(Fallback: die Variable). Verlangt wird `sk-` plus mindestens 32 Zeichen, und
+bekannte Platzhalter werden abgelehnt (Sicherheits-Audit Runde 2, M3): Die
+`.env.example` lieferte `sk-datenschleuse-lokal` mit, ein öffentlich bekannter
+Wert, der die erste Formprüfung (16 Zeichen) bestand. Jetzt ist der Wert in
+der `.env.example` leer, `KNOWN_PLACEHOLDER_MASTER_KEYS` im Code enthält jeden
+Wert, den das Repo je ausgeliefert hat, und die Meldung nennt den Wert nie.
+Die Mindestlänge 32 passt zu `openssl rand -hex 32` (64 Zeichen) und zum
+Coolify-Generator `random_hex_32` des Templates (ob 32 oder 64 Zeichen, ist
+nicht geprüft; beides besteht). Folge für Bestandsinstallationen mit dem alten
+Platzhalter: sie starten nach dem Update nicht mehr; Anleitung in
+`docs/DEPLOY.md`. Die Prüfung erkennt nur bekannte Werte, keine Zufälligkeit:
+ein eigener, schwacher Wert mit 32 Zeichen besteht.
 
 ## Alternativen
 

@@ -13,7 +13,7 @@
 #   5. the proxy serves no API documentation pages,
 #   6. a block carries the stable identification (header + body field),
 #   7. the proxy image started without a master key, with an empty one and with
-#      a malformed one exits with an error and never serves requests (H1),
+#      a malformed one or a known placeholder exits with an error and never serves requests (H1),
 #   8. a request with an e-mail address is NOT blocked (the analyzer works
 #      offline; the unreachable dummy upstream makes it fail afterwards, which
 #      is expected and carries no block identification).
@@ -124,7 +124,7 @@ check_refuses_without_key() {
     done
     [ "$running" = "false" ] || fail "proxy image without a master key ($label) is still running"
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$name")" != "0" ] || fail "proxy image without a master key ($label) exited with 0"
-    docker logs "$name" 2>&1 | grep -q 'DATENSCHLEUSE_MASTER_KEY is missing, empty or malformed' \
+    docker logs "$name" 2>&1 | grep -Eq 'DATENSCHLEUSE_MASTER_KEY is missing, empty or malformed|DATENSCHLEUSE_MASTER_KEY is a publicly known placeholder' \
         || fail "proxy image without a master key ($label): error message missing"
     if [ "${LEAK_CHECK:-}" ] && docker logs "$name" 2>&1 | grep -qF "$LEAK_CHECK"; then
         fail "proxy image ($label): log contains the rejected value"
@@ -136,6 +136,10 @@ check_refuses_without_key "variable not set"
 check_refuses_without_key "empty" -e "DATENSCHLEUSE_MASTER_KEY="
 LEAK_CHECK="not-a-valid-key-value" check_refuses_without_key "wrong form" \
     -e "DATENSCHLEUSE_MASTER_KEY=not-a-valid-key-value"
+# M3: the placeholder that used to ship in .env.example (a public value).
+# The message must say "placeholder"; the value itself must not be logged.
+LEAK_CHECK="sk-datenschleuse-lokal" check_refuses_without_key "known placeholder" \
+    -e "DATENSCHLEUSE_MASTER_KEY=sk-datenschleuse-lokal"
 
 docker run -d --name "$P-proxy" --network "$P-ext" -p "127.0.0.1:$PORT:4000" \
     --read-only --tmpfs /tmp:size=64m --tmpfs /app/state:size=16m,mode=1777 \

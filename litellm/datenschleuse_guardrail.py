@@ -807,6 +807,10 @@ BLOCK_REASONS = (
     "analyzer_unavailable",
     "custom_rules_incomplete",
 )
+#: Reasons that stand for a temporary outage: the same request can succeed
+#: later. Every other reason is a decision about the content; retrying the
+#: same request blocks again. Docs: security-baseline.md, "Block-Antwort".
+TEMPORARY_BLOCK_REASONS = ("analyzer_unavailable",)
 #: compat (default): HTTP 500 and type "None" exactly as before.
 #: strict (opt-in):   HTTP 422 and type "datenschleuse_blocked".
 BLOCK_RESPONSE_MODES = ("compat", "strict")
@@ -827,9 +831,20 @@ def _block_response_mode() -> str:
 REQUIRE_MASTER_KEY_ENV = "DATENSCHLEUSE_REQUIRE_MASTER_KEY"
 MASTER_KEY_ENV = "DATENSCHLEUSE_MASTER_KEY"
 _FALSE_VALUES = ("", "false", "0", "no", "off")
-#: ``sk-`` plus at least 16 characters, no whitespace (LiteLLM requires the
-#: ``sk-`` prefix; the docs generate ``sk-`` + 64 hex characters).
-_MASTER_KEY_FORM = re.compile(r"sk-[^\s]{16,}")
+#: ``sk-`` plus at least 32 characters, no whitespace (LiteLLM requires the
+#: ``sk-`` prefix; the docs generate ``sk-`` + 64 hex characters, and the
+#: Coolify template's ``random_hex_32`` yields 32 or 64 hex characters).
+_MASTER_KEY_FORM = re.compile(r"sk-[^\s]{32,}")
+#: Values this repository has shipped in ``.env.example``, test scripts or
+#: docs. They are public, so a proxy protected by one of them is not
+#: protected (finding M3, DATENSCHLE-105). Compared case-insensitively.
+KNOWN_PLACEHOLDER_MASTER_KEYS = (
+    "sk-datenschleuse-lokal",
+    "sk-dein-eurouter-key",
+    "sk-1234",
+    "sk-smoke-upstream-dummy",
+    "sk-e2e-local-ollama",
+)
 
 
 def _require_master_key() -> None:
@@ -849,12 +864,18 @@ def _require_master_key() -> None:
         key = getattr(proxy_module, "master_key", None)
     else:
         key = os.environ.get(MASTER_KEY_ENV)
+    if isinstance(key, str) and key.strip().lower() in KNOWN_PLACEHOLDER_MASTER_KEYS:
+        raise ValueError(
+            f"{MASTER_KEY_ENV} is a publicly known placeholder: refusing to start "
+            "(it is no authentication). Generate your own key: "
+            'echo "sk-$(openssl rand -hex 32)". docs/DEPLOY.md, "Fertige Images".'
+        )
     if not isinstance(key, str) or not _MASTER_KEY_FORM.fullmatch(key):
         raise ValueError(
             f"{MASTER_KEY_ENV} is missing, empty or malformed: refusing to start "
             "without authentication (fail-closed). Set it to a value of the form "
-            "'sk-' followed by at least 16 characters without spaces, e.g. "
-            "sk-$(openssl rand -hex 32). docs/DEPLOY.md, 'Fertige Images'."
+            "'sk-' followed by at least 32 characters without spaces, e.g. "
+            'echo "sk-$(openssl rand -hex 32)". docs/DEPLOY.md, "Fertige Images".'
         )
 
 

@@ -114,7 +114,7 @@ ENV DATENSCHLEUSE_IMAGE_POLICY=block
 # key LiteLLM only logs a warning and then accepts every request while the
 # image listens on 0.0.0.0. With this flag the guardrail refuses to start
 # unless DATENSCHLEUSE_MASTER_KEY (or the key the config resolves) is `sk-`
-# followed by at least 16 characters. The compose files fail earlier with
+# followed by at least 32 characters, and not a publicly known placeholder. The compose files fail earlier with
 # `${DATENSCHLEUSE_MASTER_KEY:?}`; this covers `docker run` without compose.
 ENV DATENSCHLEUSE_REQUIRE_MASTER_KEY=true
 # No network fetch at start: LiteLLM otherwise downloads its model cost map

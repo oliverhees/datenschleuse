@@ -140,10 +140,11 @@ Was die Images ohne weitere Konfiguration mitbringen:
   will, setzt `DISABLE_ADMIN_UI=False` und betreibt die Datenbank wie im
   Repo-Compose.
 - **Bilder blockiert** (`DATENSCHLEUSE_IMAGE_POLICY=block`).
-- **Kein Start ohne Master-Key.** Fehlt `DATENSCHLEUSE_MASTER_KEY`, ist er leer
-  oder hat er nicht die Form `sk-` plus mindestens 16 Zeichen ohne Leerzeichen,
-  beendet sich der Proxy beim Start mit einer Fehlermeldung (ohne den Wert zu
-  nennen). Das gilt auch bei `docker run` ohne Compose; ohne diese Sperre würde
+- **Kein Start ohne Master-Key.** Fehlt `DATENSCHLEUSE_MASTER_KEY`, ist er leer,
+  hat er nicht die Form `sk-` plus mindestens 32 Zeichen ohne Leerzeichen
+  oder ist er ein öffentlich bekannter Platzhalter (zum Beispiel der frühere
+  Wert aus der `.env.example`), beendet sich der Proxy beim Start mit einer
+  Fehlermeldung (ohne den Wert zu nennen). Das gilt auch bei `docker run` ohne Compose; ohne diese Sperre würde
   LiteLLM nur warnen und jede Anfrage durchlassen, obwohl der Proxy im Container
   auf `0.0.0.0` lauscht. Geprüft wird der Schlüssel, den LiteLLM aus deiner
   Konfiguration auflöst (nicht nur die Variable). Gemessen mit LiteLLM 1.97.0
@@ -180,6 +181,22 @@ einem älteren Stand kommt:
 | Admin-UI | bleibt an (`DISABLE_ADMIN_UI=False`), das Image allein hat es aus | `DATENSCHLEUSE_DISABLE_ADMIN_UI=True` schaltet es auch hier ab |
 | Analyzer | schreibgeschützt, Start des Proxys erst, wenn der Analyzer gesund ist | — |
 | Block-Antwort | trägt die feste Kennung, Status unverändert 500 | `DATENSCHLEUSE_BLOCK_RESPONSE=strict` für HTTP 422 (siehe README) |
+| Master-Key | `sk-` plus mindestens 32 Zeichen, kein bekannter Platzhalter | kein Weg zurück: ein öffentlich bekannter Key ist keine Anmeldung |
+
+**Master-Key: Platzhalter werden abgelehnt.** Die `.env.example` lieferte früher
+den Wert `sk-datenschleuse-lokal` mit. Wer sie unverändert nach `.env` kopiert
+hat, dessen Datenschleuse startet nach dem Update nicht mehr (das Log nennt den
+Grund, nie den Wert); dasselbe gilt für andere bekannte Platzhalter und für
+Keys mit weniger als 32 Zeichen nach `sk-`. Neuen Key erzeugen, in die `.env`
+eintragen und neu starten:
+
+```bash
+echo "sk-$(openssl rand -hex 32)"     # Ausgabe als DATENSCHLEUSE_MASTER_KEY in die .env
+docker compose up -d
+```
+
+Danach den neuen Key in allen Tools eintragen, die die Datenschleuse
+ansprechen (der alte war öffentlich bekannt).
 
 **Nutzer-ID und eigene Regeln.** Die CLI legt `rules/custom-rules.yml` mit den
 Rechten `0600` an, lesbar nur für ihren Eigentümer. Läuft der Proxy unter

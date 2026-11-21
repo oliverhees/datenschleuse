@@ -37,7 +37,7 @@ import datenschleuse_guardrail as dg  # noqa: E402
 ROOT = pathlib.Path(_HERE).parent
 REQUIRE = "DATENSCHLEUSE_REQUIRE_MASTER_KEY"
 KEY = "DATENSCHLEUSE_MASTER_KEY"
-GOOD = "sk-" + "a1" * 16
+GOOD = "sk-" + "a1" * 16  # 32 characters after the prefix
 _CLEAN = {REQUIRE: "", KEY: ""}
 
 
@@ -62,7 +62,7 @@ class TestRequiredKey(unittest.TestCase):
                     dg.DatenschleuseGuardrail()
 
     def test_wrong_form_refuses_to_start_without_leaking_the_value(self):
-        for value in ("hunter2-not-a-key", "SK-upper", "sk-", "sk-short", "sk-" + "a" * 15, "sk-" + "a" * 15 + " x", "xsk-" + "a" * 20, " " + GOOD):
+        for value in ("hunter2-not-a-key", "SK-upper", "sk-", "sk-short", "sk-" + "a" * 31, "sk-" + "a" * 31 + " x", "xsk-" + "a" * 20, " " + GOOD):
             with self.subTest(value=value), _env(**{REQUIRE: "true", KEY: value}):
                 with self.assertRaises(ValueError) as ctx:
                     dg.DatenschleuseGuardrail()
@@ -87,6 +87,123 @@ class TestRequiredKey(unittest.TestCase):
                 os.environ.pop(KEY, None)
                 with self.assertRaises(ValueError):
                     dg.DatenschleuseGuardrail()
+
+
+class TestPlaceholdersAndLength(unittest.TestCase):
+    """Finding M3 (DATENSCHLE-105, round 2): the placeholder that ships in the
+    public repository passed the first form check (``sk-`` + 16 characters)
+    and so did every other short value. A publicly known key is no
+    authentication."""
+
+    def test_every_shipped_placeholder_is_known(self):
+        for value in ("sk-datenschleuse-lokal", "sk-dein-eurouter-key", "sk-1234", "sk-smoke-upstream-dummy", "sk-e2e-local-ollama"):
+            self.assertIn(value, dg.KNOWN_PLACEHOLDER_MASTER_KEYS)
+
+    def test_known_placeholders_refuse_to_start_without_leaking_them(self):
+        for value in dg.KNOWN_PLACEHOLDER_MASTER_KEYS:
+            for variant in (value, value.upper(), f" {value} "):
+                with self.subTest(value=variant), _env(**{REQUIRE: "true", KEY: variant}):
+                    with self.assertRaises(ValueError) as ctx:
+                        dg.DatenschleuseGuardrail()
+                    self.assertIn("placeholder", str(ctx.exception))
+                    self.assertNotIn(value, str(ctx.exception).lower())
+
+    def test_placeholder_is_rejected_also_if_the_proxy_resolved_it(self):
+        mod = types.ModuleType("litellm.proxy.proxy_server")
+        mod.master_key = "sk-datenschleuse-lokal"
+        with _env(**{REQUIRE: "true"}), mock.patch.dict(sys.modules, {"litellm.proxy.proxy_server": mod}):
+            with self.assertRaises(ValueError) as ctx:
+                dg.DatenschleuseGuardrail()
+        self.assertIn("placeholder", str(ctx.exception))
+
+    def test_random_part_needs_32_characters(self):
+        with _env(**{REQUIRE: "true", KEY: "sk-" + "a1" * 15 + "a"}):
+            with self.assertRaises(ValueError):
+                dg.DatenschleuseGuardrail()
+        with _env(**{REQUIRE: "true", KEY: "sk-" + "a1" * 16}):
+            dg.DatenschleuseGuardrail()
+
+    def test_message_names_the_required_length(self):
+        with _env(**{REQUIRE: "true", KEY: "sk-short"}):
+            with self.assertRaises(ValueError) as ctx:
+                dg.DatenschleuseGuardrail()
+        self.assertIn("32", str(ctx.exception))
+        self.assertNotIn("at least 16", str(ctx.exception))
+
+    def test_documented_generators_produce_accepted_keys(self):
+        # The command documented in .env.example, README and DEPLOY.md.
+        import re
+        import shutil
+        import subprocess
+
+        command = 'echo "sk-$(openssl rand -hex 32)"'
+        for doc in (".env.example", "README.md", "docs/DEPLOY.md"):
+            self.assertIn(command, (ROOT / doc).read_text(encoding="utf-8"), doc)
+        if shutil.which("openssl") is None:
+            self.skipTest("openssl not installed")
+        out = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertRegex(out, r"sk-[0-9a-f]{64}")
+        with _env(**{REQUIRE: "true", KEY: out}):
+            dg.DatenschleuseGuardrail()
+        # Coolify generator "random_hex_32" (+ prefix "sk-"): we do not know
+        # whether that means 32 or 64 hex characters; both pass the rule.
+        with _env(**{REQUIRE: "true", KEY: "sk-" + "0f" * 16}):
+            dg.DatenschleuseGuardrail()
+
+
+class TestNoPublicPlaceholderShips(unittest.TestCase):
+    def test_env_example_leaves_the_master_key_empty(self):
+        text = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?m)^DATENSCHLEUSE_MASTER_KEY=$")
+
+    def test_env_example_copied_as_is_does_not_start(self):
+        # A user who only runs ``cp .env.example .env`` must be stopped.
+        values = {}
+        for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                name, _, value = line.partition("=")
+                values[name] = value
+        with _env(**{REQUIRE: "true", KEY: values["DATENSCHLEUSE_MASTER_KEY"]}):
+            with self.assertRaises(ValueError):
+                dg.DatenschleuseGuardrail()
+
+    def test_no_shipped_file_contains_a_known_placeholder_as_a_default(self):
+        skip = {"ISA.md", "datenschleuse_guardrail.py", "test_master_key_guard.py", "0006-veroeffentlichte-images-und-block-kennung.md", "DEPLOY.md", "smoke-images.sh"}
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or ".git" in path.parts or path.name in skip or path.suffix in (".pyc", ".png"):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for value in ("sk-datenschleuse-lokal",):
+                self.assertNotIn(value, text, str(path.relative_to(ROOT)))
+
+    def test_anonymisation_script_requires_the_key(self):
+        import subprocess
+
+        script = ROOT / "test" / "test-anonymisierung.sh"
+        self.assertNotRegex(script.read_text(encoding="utf-8"), r"MASTER_KEY:-sk-")
+        env = {k: v for k, v in os.environ.items() if k != KEY}
+        result = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DATENSCHLEUSE_MASTER_KEY", result.stderr)
+
+    def test_smoke_test_covers_the_known_placeholder(self):
+        text = (ROOT / "test" / "smoke-images.sh").read_text(encoding="utf-8")
+        self.assertIn('check_refuses_without_key "known placeholder"', text)
+        self.assertIn('-e "DATENSCHLEUSE_MASTER_KEY=sk-datenschleuse-lokal"', text)
+
+    def test_upgrade_note_and_adr(self):
+        deploy = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+        self.assertIn("sk-datenschleuse-lokal", deploy)
+        self.assertRegex(deploy, r"(?s)Platzhalter.{0,600}startet nach dem Update nicht mehr")
+        adr = (ROOT / "docs" / "adr" / "0006-veroeffentlichte-images-und-block-kennung.md").read_text(encoding="utf-8")
+        self.assertIn("Platzhalter", adr)
+        self.assertIn("32", adr)
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quick = readme.split("## 🚀 Quickstart", 1)[1].split("Deine Tools sprechen", 1)[0]
+        self.assertIn("openssl rand -hex 32", quick)
 
 
 class TestResolvedKeyOfTheProxy(unittest.TestCase):
@@ -131,6 +248,7 @@ class TestImageWiring(unittest.TestCase):
             self.assertIn(f"check_refuses_without_key {case}", text)
         self.assertIn('-e "DATENSCHLEUSE_MASTER_KEY="', text)
         self.assertIn("is missing, empty or malformed", text)
+        self.assertIn("a publicly known placeholder", text)
 
     def test_shipped_config_reads_the_variable(self):
         text = (ROOT / "litellm" / "config.yaml").read_text(encoding="utf-8")

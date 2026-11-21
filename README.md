@@ -79,7 +79,7 @@ Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, 
 - **Eingebautes Admin-Dashboard** — LiteLLM Admin-UI (`/ui`) zeigt Zeitpunkt, Modell, Kosten, Guardrail-Ergebnisse — **nie Klartext-Content** (`turn_off_message_logging`, live verifiziert: die Spalten sind komplett leer).
 - **Zitate (`citations`) im Multi-Turn** — Anthropic hängt Zitat-Blöcke an Assistant-Nachrichten; schickt dein Client die Historie zurück, laufen die **Dokument-Zitate** durch: Struktur wird geprüft, der Freitext darin (zitierte Textstelle, Dokumenttitel) läuft durch denselben Masker wie jeder andere Text — ob ein Name darin erkannt wird, entscheidet die Erkennung, und die ist bei Dokumenttiteln in Dateinamen-Form **nicht zuverlässig** —, und in der Antwort stehen wieder die echten Werte — gestreamt wie ungestreamt. Zitate aus Web- und Suchergebnissen sind **nicht** dabei: [Zitate: was durchgeht und was nicht](#zitate-citations-was-durchgeht-und-was-nicht).
 - **Fail-closed by default** — Presidio nicht erreichbar → Request wird geblockt, nie unmaskiert durchgelassen.
-- **Blocks maschinenlesbar** — jede blockierte Anfrage trägt eine feste Kennung (`datenschleuse_blocked` plus Grund), damit dein Client „blockiert, nicht wiederholen" von „Anbieter gestört" unterscheiden kann: [Blockierte Anfragen erkennen](#blockierte-anfragen-erkennen).
+- **Blocks maschinenlesbar** — jede blockierte Anfrage trägt eine feste Kennung (`datenschleuse_blocked` plus Grund), damit dein Client „blockiert aus inhaltlichem Grund" von „Dienst vorübergehend nicht erreichbar" unterscheiden kann: [Blockierte Anfragen erkennen](#blockierte-anfragen-erkennen).
 - **Sichere Standards** — Ports nur auf `127.0.0.1`, kein Debug-Log, keine API-Doku-Seiten, Container ohne Root, Erkennung mit schreibgeschütztem Dateisystem: [DEPLOY.md → Sichere Standards](docs/DEPLOY.md#sichere-standards-und-was-sich-beim-update-ändert).
 - **AGPL-3.0** — der Kern ist echtes Open Source, keine Marketing-Lizenz.
 
@@ -89,6 +89,8 @@ Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, 
 # 1. Konfiguration vorbereiten
 cp .env.example .env
 # .env öffnen und EUROUTER_API_KEY + restliche Werte eintragen
+# DATENSCHLEUSE_MASTER_KEY ist absichtlich leer; ohne eigenen Wert startet nichts:
+echo "sk-$(openssl rand -hex 32)"    # Ausgabe hinter DATENSCHLEUSE_MASTER_KEY= eintragen
 # (Fernet-Key fürs QI-Feature generieren: siehe Kommentar in .env.example)
 
 # 2. Modelle prüfen
@@ -100,7 +102,8 @@ cp .env.example .env
 # 3. Starten (baut beide Images aus diesem Repo)
 docker compose up --build
 
-# 4. Testen (in zweitem Terminal)
+# 4. Testen (in zweitem Terminal; der Master-Key kommt aus deiner .env)
+set -a; . ./.env; set +a
 bash test/test-anonymisierung.sh
 ```
 
@@ -196,7 +199,7 @@ Blockt die Datenschleuse eine Anfrage (fail-closed, Schutzklasse, ungeprüftes F
   "provider_specific_fields": {"datenschleuse": {"code": "datenschleuse_blocked", "reason": "sensitivity_tier_3"}}}}
 ```
 
-`reason` ist einer von `sensitivity_tier_3`, `sensitivity_tier_2_approval_required`, `analyzer_unavailable`, `custom_rules_incomplete`, `request_rejected`. Prüfe im Client auf diese Kennung, nicht auf den Meldungstext — der ändert sich mit jedem neuen Block-Grund. Ein Block ist nicht wiederholbar.
+`reason` ist einer von `sensitivity_tier_3`, `sensitivity_tier_2_approval_required`, `analyzer_unavailable`, `custom_rules_incomplete`, `request_rejected`. Prüfe im Client auf diese Kennung, nicht auf den Meldungstext — der ändert sich mit jedem neuen Block-Grund. Ein Block aus inhaltlichem Grund (`sensitivity_tier_3`, `sensitivity_tier_2_approval_required`, `custom_rules_incomplete`, `request_rejected`) ist nicht wiederholbar: dieselbe Anfrage blockt erneut. `analyzer_unavailable` ist dagegen ein vorübergehender Ausfall der Erkennung (fail-closed, nichts ging raus); sobald der Dienst wieder läuft, kann dieselbe Anfrage später erneut gesendet werden.
 
 Standard ist `DATENSCHLEUSE_BLOCK_RESPONSE=compat`: Status 500, `type` und Meldung bleiben genau wie vorher, nur die Kennung kommt dazu — bestehende Clients merken nichts. Mit `strict` antwortet die Datenschleuse mit **HTTP 422** und `type: "datenschleuse_blocked"`. Das Feld `error.code` kann die Kennung nicht tragen, LiteLLM schreibt dort immer den Status hinein. Vertrag und Messung: [`docs/foundation/security-baseline.md`](docs/foundation/security-baseline.md) → „Block-Antwort".
 
