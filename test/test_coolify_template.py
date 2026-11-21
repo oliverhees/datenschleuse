@@ -30,6 +30,15 @@ class CoolifyTemplate(unittest.TestCase):
         compose = COMPOSE.read_text(encoding="utf-8")
         self.assertIn("DATENSCHLEUSE_BLOCK_RESPONSE=${DATENSCHLEUSE_BLOCK_RESPONSE:-compat}", compose)
 
+    def test_disable_admin_ui_is_offered_with_the_compose_default(self):
+        var = self.variables["DATENSCHLEUSE_DISABLE_ADMIN_UI"]
+        self.assertEqual(var["default"], "False")
+        self.assertFalse(var.get("required", False))
+        self.assertIn("/ui", var["description"])
+        compose = COMPOSE.read_text(encoding="utf-8")
+        self.assertIn("DISABLE_ADMIN_UI=${DATENSCHLEUSE_DISABLE_ADMIN_UI:-False}", compose)
+        self.assertIn("DATENSCHLEUSE_DISABLE_ADMIN_UI", (ROOT / ".env.example").read_text(encoding="utf-8"))
+
     def test_every_required_compose_variable_is_in_the_template(self):
         text = COMPOSE.read_text(encoding="utf-8")
         required = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?", text))
