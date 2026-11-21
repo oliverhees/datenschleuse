@@ -1,7 +1,7 @@
 {
   "gate": "qa",
-  "verdict": "fail",
-  "commit": "345af54f606aab244a301b6bbf20d3df9f232a05",
+  "verdict": "pass",
+  "commit": "490fe6ea64f91f6848824b3189e9dc8d1200f235",
   "branch": "feature/DATENSCHLE-106-example-defaults",
-  "timestamp": "2026-11-21T16:31:26Z"
+  "timestamp": "2026-11-21T17:00:26Z"
 }
