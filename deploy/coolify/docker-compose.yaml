@@ -92,6 +92,7 @@ services:
       - LITELLM_LOCAL_MODEL_COST_MAP=True
       - NO_DOCS=True
       - NO_REDOC=True
+      - NO_OPENAPI=True
       # Das Image schaltet das Admin-UI ab; diese Variante dokumentiert /ui
       # (coolify-template.json) und hat die Datenbank dafuer.
       - DISABLE_ADMIN_UI=${DATENSCHLEUSE_DISABLE_ADMIN_UI:-False}

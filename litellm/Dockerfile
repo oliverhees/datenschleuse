@@ -109,12 +109,17 @@ ENV DATENSCHLEUSE_IMAGE_POLICY=block
 # No network fetch at start: LiteLLM otherwise downloads its model cost map
 # from GitHub on import.
 ENV LITELLM_LOCAL_MODEL_COST_MAP=True
-# No API documentation pages (/ and /redoc) -- not needed to use the proxy.
+# No API documentation pages (/docs, /redoc) and no machine-readable API
+# schema (/openapi.json) -- none of them is needed to use the proxy.
 ENV NO_DOCS=True
 ENV NO_REDOC=True
-# No admin UI by default in the IMAGE. It needs a database anyway; the
-# repository's docker-compose.yml switches it back on (DISABLE_ADMIN_UI=False)
-# because the README documents /ui for that setup.
+ENV NO_OPENAPI=True
+# Admin UI off by default in the IMAGE. Measured against LiteLLM 1.97.0: the
+# flag makes the UI report itself disabled and refuses SSO login; the static UI
+# files are still served and POST /login still exists -- without a database it
+# cannot create a session ("Not connected to DB"). The repository's
+# docker-compose.yml switches the UI back on (DISABLE_ADMIN_UI=False), because
+# the README documents /ui for that setup with its Postgres.
 ENV DISABLE_ADMIN_UI=True
 
 # Non-root (65532 = "nonroot" convention of the Wolfi/Chainguard base). The

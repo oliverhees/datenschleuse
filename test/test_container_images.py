@@ -112,6 +112,7 @@ class ProxyImage(unittest.TestCase):
         self.assertEqual(envs["LITELLM_LOCAL_MODEL_COST_MAP"], "True")
         self.assertEqual(envs["NO_DOCS"], "True")
         self.assertEqual(envs["NO_REDOC"], "True")
+        self.assertEqual(envs["NO_OPENAPI"], "True")
         self.assertEqual(envs["DISABLE_ADMIN_UI"], "True")
         cmd = [rest for kw, rest in self.ins if kw == "CMD"][-1]
         self.assertNotIn("detailed_debug", cmd)
@@ -267,6 +268,12 @@ class ComposeDefaults(unittest.TestCase):
     def test_admin_ui_stays_available_where_documented(self):
         for path in (COMPOSE, COOLIFY):
             self.assertIn("DISABLE_ADMIN_UI=${DATENSCHLEUSE_DISABLE_ADMIN_UI:-False}", _read(path))
+
+    def test_api_doc_pages_off(self):
+        for path in (COMPOSE, COOLIFY):
+            text = _read(path)
+            for flag in ("NO_DOCS=True", "NO_REDOC=True", "NO_OPENAPI=True"):
+                self.assertIn(flag, text, f"{path.name}: {flag}")
 
     def test_block_response_mode_is_passed_through(self):
         for path in (COMPOSE, COOLIFY):

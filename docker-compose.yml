@@ -95,6 +95,7 @@ services:
       - LITELLM_LOCAL_MODEL_COST_MAP=True
       - NO_DOCS=True
       - NO_REDOC=True
+      - NO_OPENAPI=True
       # Bild-Parts: Standard ist seit DATENSCHLE-83 'block' -- der
       # Image-Redactor ist nicht mehr Teil des Standard-Stacks (ADR-0003:
       # er trug den Grossteil der CVE-Befunde). Wer Bilder verarbeiten
