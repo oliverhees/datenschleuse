@@ -290,6 +290,10 @@ Meldungen nennen nur den Namen der Variable, nie den Wert.
 
 - Abgeschaltet wird sie nur mit einem dieser Werte (Groß-/Kleinschreibung und
   Leerzeichen am Rand egal): `false`, `0`, `no`, `off`. Nicht empfohlen.
+  **Das Opt-out schaltet auch die Prüfung des Admin-UI-Passworts und des
+  Datenbank-Passworts ab:** Mit `off` startet der Proxy auch mit einem leeren,
+  kurzen oder bekannten Beispiel-Passwort, wie bei einer alten `.env`. Ein
+  Beispiel-Admin-Passwort wird dann angenommen.
 - Jeder andere Wert mit Inhalt (auch ein Tippfehler wie `flase`) lässt die
   Prüfung an.
 - Fehlt die Variable oder ist sie leer, ist die Prüfung unter dem Proxy an;
@@ -309,38 +313,130 @@ openssl rand -hex 32     # neues DATENSCHLEUSE_DB_PASSWORD in die .env
 ```
 
 Das Datenbank-Passwort legt Postgres nur beim **ersten** Start an. Eine
-bestehende Datenbank behält ihr altes Passwort, auch wenn du die `.env`
-änderst; `DATABASE_URL` passt dann nicht mehr zur Datenbank. Wer das Passwort
-nie gesetzt hatte (früher Standard im Repo-Compose: `datenschleuse`) oder die
-Beispielzeile der alten `.env.example` benutzt hat, ändert es **in der laufenden
-Datenbank**, solange der alte Stack noch läuft, und trägt danach denselben
-neuen Wert in die `.env` ein:
+bestehende Datenbank behält ihr altes Passwort, auch wenn du die Variable
+änderst (in der `.env` oder in der Coolify-Oberfläche); `DATABASE_URL` passt
+dann nicht mehr zur Datenbank und der Proxy kann sich nicht anmelden. Das gilt,
+wenn du das Passwort nie gesetzt hattest (früher Standard im Repo-Compose:
+`datenschleuse`) oder die Beispielzeile der alten `.env.example` benutzt hast.
+
+#### Datenbank-Passwort in einer bestehenden Installation ändern
+
+Zwei Möglichkeiten, auf jedem Weg. **Möglichkeit 1** behält die Daten (Spend-Logs:
+nur Zeit, Modell, Kosten, nie Nachrichteninhalt): das Passwort wird **in der
+laufenden Datenbank** gesetzt, solange der alte Stack noch läuft, danach kommt
+derselbe Wert in die Konfiguration. **Möglichkeit 2** verwirft die Datenbank:
+Postgres legt sie beim nächsten Start mit dem neuen Passwort neu an.
+
+Neuen Wert zuerst erzeugen und aufbewahren (er kommt gleich in die Konfiguration):
 
 ```bash
-# 1. neuen Wert erzeugen und merken (er kommt gleich in die .env)
 openssl rand -hex 32
-# 2. in der laufenden Datenbank setzen (psql fragt zweimal nach dem Passwort).
-#    Der Vorsatz DATENSCHLEUSE_DB_PASSWORD=x ist nur nötig, wenn Compose die
-#    Variable zum Einlesen verlangt; exec ändert den laufenden Container nicht.
+```
+
+**Weg B, Repo-Compose (`docker-compose.yml` im Repo-Root):**
+
+```bash
+# Möglichkeit 1: Passwort in der laufenden Datenbank ändern.
+# Der Vorsatz ist nur nötig, wenn Compose die Variable zum Einlesen verlangt
+# (fehlt sie in der .env); exec ändert den laufenden Container nicht.
 DATENSCHLEUSE_DB_PASSWORD=x docker compose exec datenschleuse-db \
   sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-#    in psql:   \password          (dann \q)
-# 3. denselben Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+#   in psql:   \password          (neuen Wert zweimal eingeben, dann \q)
+# Danach denselben Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose up -d --build
+
+# Möglichkeit 2: Datenbank verwerfen.
+docker compose down                       # Container entfernen; das Volume bleibt
+docker volume ls --filter label=com.docker.compose.volume=datenschleuse-db-data
+#   Name aus der Ausgabe nehmen (er enthält den Projektnamen, meist den
+#   Ordnernamen; mehrere Treffer: die Spalte zum richtigen Projekt wählen)
+docker volume rm <name-aus-der-ausgabe>
+# neuen Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
 docker compose up -d --build
 ```
 
-Einfacher, wenn die Spend-Logs (nur Zeit, Modell, Kosten, nie Nachrichteninhalt)
-verzichtbar sind: Stack stoppen, das Volume `datenschleuse-db-data` löschen
-(`docker volume ls` zeigt den Namen mit Projektpräfix), neue Werte in die `.env`,
-`docker compose up -d --build`. Postgres legt die Datenbank dann mit dem neuen
-Passwort neu an.
+**Weg B, Coolify-Datei von Hand (`deploy/coolify/docker-compose.yaml` mit `-f`, ohne Coolify):**
+Gleiche Schritte, aber jeder Aufruf mit `-f`. Ohne `-f` würde Compose den Stack
+aus dem Repo-Root ansprechen (andere Container-Namen, andere Volumes).
 
-Nicht mit Docker ausgeführt (kein Docker-Daemon in der Entwicklungsumgebung):
-der Start von Postgres mit dem neuen `:?`-Guard, die `psql`-Schritte oben, das
-Verhalten von `up -d` bei bestehender Datenbank und der Coolify-Redeploy.
-Gemessen ist: `docker compose config` bricht bei fehlendem oder leerem
-`UI_PASSWORD` und `DATENSCHLEUSE_DB_PASSWORD` mit Meldung ab; der echte Proxy
-(LiteLLM 1.97.0, ohne Docker) lehnt die Fälle der Tabelle ab.
+```bash
+# Möglichkeit 1: Passwort in der laufenden Datenbank ändern.
+DATENSCHLEUSE_DB_PASSWORD=x docker compose -f deploy/coolify/docker-compose.yaml exec datenschleuse-db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+#   in psql:   \password          (neuen Wert zweimal eingeben, dann \q)
+# Danach denselben Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose -f deploy/coolify/docker-compose.yaml up -d --build
+
+# Möglichkeit 2: Datenbank verwerfen.
+docker compose -f deploy/coolify/docker-compose.yaml down
+docker volume ls --filter label=com.docker.compose.volume=datenschleuse-db-data
+docker volume rm <name-aus-der-ausgabe>
+# neuen Wert als DATENSCHLEUSE_DB_PASSWORD in die .env, dann:
+docker compose -f deploy/coolify/docker-compose.yaml up -d --build
+```
+
+**Weg A, Coolify-UI:** Die Variable `DATENSCHLEUSE_DB_PASSWORD` unter
+*Environment Variables* zu ändern **ändert das Passwort in einer bestehenden
+Datenbank nicht**; sie wirkt nur, wenn Postgres ein leeres Volume anlegt. Nach
+dem Redeploy stimmen Proxy und Datenbank dann nicht mehr überein. Die
+Coolify-Vorlage erzeugt zwar Zufallswerte, aber wer dort einmal einen
+Beispielwert eingetragen hat, braucht diese Schritte:
+
+1. Möglichkeit 1 (Daten behalten): **vor** dem Ändern der Variable ein Terminal
+   in der Datenbank öffnen, entweder über den Dienst `datenschleuse-db` in
+   Coolify (Reiter *Terminal*) oder per SSH auf dem Server. Per SSH den
+   Container-Namen suchen und dort `psql` starten:
+   ```bash
+   docker ps --format '{{.Names}}' | grep datenschleuse-db
+   docker exec -it <container-name> sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+   ```
+   In psql `\password` eingeben (neuen Wert zweimal), dann `\q`.
+2. Denselben Wert als `DATENSCHLEUSE_DB_PASSWORD` unter *Environment Variables*
+   eintragen und **Redeploy** auslösen.
+3. Möglichkeit 2 (Daten verwerfen): Ressource in Coolify **stoppen**; auf dem
+   Server das Volume suchen (`docker volume ls | grep datenschleuse-db-data`,
+   der Name trägt das Präfix der Coolify-Ressource) und mit
+   `docker volume rm <name-aus-der-ausgabe>` löschen. Meldet Docker „in use“,
+   existiert der Container noch: erst `docker rm -f <container-name>`. Dann den
+   neuen Wert eintragen und Redeploy auslösen.
+
+**Weg C, fertige Images:** Die Images enthalten keine Datenbank; Postgres steht
+nur in deiner eigenen Compose-Datei, falls du eines ergänzt hast (ohne Datenbank
+gibt es kein Passwort zu ändern). Dann gelten dieselben Schritte wie bei Weg B,
+mit **deiner** Datei und **deinem** Dienstnamen (hier `<db-dienst>`):
+
+```bash
+# Möglichkeit 1:
+DATENSCHLEUSE_DB_PASSWORD=x docker compose -f <deine-compose-datei> exec <db-dienst> \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+#   in psql:   \password          (dann \q); neuen Wert in deine Konfiguration, dann:
+docker compose -f <deine-compose-datei> pull && docker compose -f <deine-compose-datei> up -d
+
+# Möglichkeit 2:
+docker compose -f <deine-compose-datei> down
+docker volume ls --filter label=com.docker.compose.volume=<name-des-volumes-in-deiner-datei>
+docker volume rm <name-aus-der-ausgabe>
+docker compose -f <deine-compose-datei> up -d
+```
+
+Der Volume-Name hängt von der Compose-Datei und vom Projektnamen ab
+(Präfix aus Ordnername oder `-p`); deshalb wird er nachgeschlagen und nicht
+fest angegeben. `docker volume rm` schlägt fehl, solange noch ein Container
+(auch ein gestoppter) das Volume benutzt; daher zuerst `down`. `down` entfernt
+nur die Container, **nicht** die Volumes; `down --volumes` würde alle benannten
+Volumes der Datei löschen, auch `datenschleuse-qi-state`.
+
+**Nicht verifiziert** (kein Docker-Daemon in der Entwicklungsumgebung; aus der
+Dokumentation von Docker, Compose und Postgres abgeleitet, nicht ausgeführt):
+alle Befehle dieses Abschnitts, insbesondere dass `psql` im Container ohne
+Passwort verbindet, dass `\password` das Passwort setzt, dass das Compose-Label
+`com.docker.compose.volume` am Volume steht, dass `docker compose exec` ohne
+gesetzte Variable die Interpolation verlangt (daher der Vorsatz), der
+Redeploy und der Reiter *Terminal* in Coolify und wie Coolify beim Stoppen mit
+den Containern umgeht. Gemessen ist nur: `docker compose config` bricht bei
+fehlendem oder leerem `UI_PASSWORD` und `DATENSCHLEUSE_DB_PASSWORD` mit Meldung
+ab (beide Compose-Dateien); der echte Proxy (LiteLLM 1.97.0, ohne Docker) lehnt
+die Fälle der Tabelle oben ab.
 
 ### Fehlersuche: ausführliche Logs
 

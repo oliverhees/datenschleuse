@@ -60,7 +60,8 @@ class _Env(unittest.TestCase):
         self._patchers = []
 
     def tearDown(self):
-        for patcher in self._patchers:
+        # reverse order: each patcher restores the snapshot it took at start
+        for patcher in reversed(self._patchers):
             patcher.stop()
 
     def env(self, **values):
@@ -105,6 +106,26 @@ class TestAdminUiPassword(_Env):
                     self.env(**self.base, UI_PASSWORD=variant)
                     message = self.assertRefuses("UI_PASSWORD", "placeholder")
                     self.assertNotIn(value, message.lower())
+
+    def test_surrounding_whitespace_does_not_count_towards_the_length(self):
+        # Security audit S-3: 15 spaces plus one character used to pass.
+        for value in (" " * 15 + "x", "x" + " " * 15, "\t" * 8 + "abcdefgh", "  " + "x" * 13 + "  "):
+            with self.subTest(value=repr(value)):
+                self.env(**self.base, UI_PASSWORD=value)
+                self.assertRefuses("UI_PASSWORD", "16")
+
+    def test_a_password_of_exactly_16_real_characters_with_padding_starts(self):
+        self.env(**self.base, UI_PASSWORD="  " + "x9" * 8 + "  ")
+        dg.DatenschleuseGuardrail()
+
+    def test_the_empty_password_has_its_own_message(self):
+        # QA audit 2: removing the "empty" branch was not noticed, because the
+        # length check still refuses -- only the wording changed.
+        for value in ("", "   ", "\t"):
+            with self.subTest(value=repr(value)):
+                self.env(**self.base, UI_PASSWORD=value)
+                message = self.assertRefuses("UI_PASSWORD", "is empty")
+                self.assertNotIn("shorter than", message)
 
     def test_missing_password_refuses_when_the_ui_is_enabled(self):
         for disable in (None, "False", "false", "1", "yes", ""):
@@ -152,6 +173,24 @@ class TestDatabasePassword(_Env):
 
     def test_own_password_starts(self):
         self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": DB_URL.format(pw="Zq" * 12)})
+        dg.DatenschleuseGuardrail()
+
+    def test_a_known_password_as_query_parameter_is_rejected(self):
+        # Security audit S-5. Whether Prisma reads ``?password=`` is not
+        # verified; refusing a known value there costs nothing.
+        base = "postgresql://datenschleuse@datenschleuse-db:5432/datenschleuse"
+        for value in dg.KNOWN_PLACEHOLDER_PASSWORDS:
+            for query in (f"?password={value}", f"?sslmode=disable&password={value}", f"?password={value.upper()}", f"?PASSWORD=%20{value}%20"):
+                with self.subTest(query=query):
+                    self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": base + query})
+                    message = self.assertRefuses("DATENSCHLEUSE_DB_PASSWORD", "placeholder")
+                    self.assertNotIn(value, message.lower().replace("datenschleuse_db_password", ""))
+
+    def test_an_own_password_as_query_parameter_starts(self):
+        base = "postgresql://datenschleuse@datenschleuse-db:5432/datenschleuse"
+        self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": base + "?password=" + "Zq" * 12})
+        dg.DatenschleuseGuardrail()
+        self.env(**{REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": base + "?sslmode=disable&application_name=datenschleuse"})
         dg.DatenschleuseGuardrail()
 
     def test_unparsable_url_never_leaks_and_does_not_crash(self):
@@ -357,6 +396,57 @@ class TestEveryShippedExampleIsAccountedFor(unittest.TestCase):
         self.assertEqual(values["DATENSCHLEUSE_DB_USER"], "datenschleuse")
 
 
+class TestMessagesSurviveLiteLlmLogRedaction(_Env):
+    """QA audit 2, F3: LiteLLM 1.97.0 scrubs log lines with ``redact_string``
+    (``litellm/litellm_core_utils/secret_redaction.py``, line 83, the regex in
+    ``_build_secret_patterns``, lines 47 to 50: ``<name>password`` followed by
+    ``:`` or ``=`` and a word). The hint "Generate your own password: openssl
+    ..." came out as "Generate your own REDACTED rand -hex 32". The start-up
+    message must reach the log unchanged, so the same function is applied to
+    every refusal message here."""
+
+    def _redact(self):
+        try:
+            from litellm.litellm_core_utils.secret_redaction import redact_string
+        except Exception as exc:  # litellm not installed
+            self.skipTest(f"litellm not importable: {exc}")
+        return redact_string
+
+    def _messages(self):
+        good = {REQUIRE: "true", KEY: GOOD_KEY, "UI_PASSWORD": GOOD_PASSWORD, "DATABASE_URL": DB_URL.format(pw="Zq" * 12)}
+        cases = [
+            {**good, "UI_PASSWORD": "aendere-mich"},
+            {**good, "UI_PASSWORD": ""},
+            {**good, "UI_PASSWORD": "short"},
+            {**good, "DATABASE_URL": DB_URL.format(pw="datenschleuse")},
+            {**good, "DATABASE_URL": "postgresql://u@h/d?password=datenschleuse"},
+            {k: v for k, v in good.items() if k != "UI_PASSWORD"},
+            {**good, KEY: "sk-datenschleuse-lokal"},
+            {**good, KEY: "changeme"},
+        ]
+        messages = []
+        for case in cases:
+            self.env(**case)
+            with self.assertRaises(ValueError) as ctx:
+                dg.DatenschleuseGuardrail()
+            messages.append(str(ctx.exception))
+        return messages
+
+    def test_the_redaction_does_hit_the_old_wording(self):
+        # Proves the check below can fail: the old hint is rewritten.
+        redact = self._redact()
+        old = "UI_PASSWORD is a publicly known placeholder: refusing to start. Generate your own password: openssl rand -hex 32. docs/DEPLOY.md."
+        self.assertNotEqual(redact(old), old)
+        self.assertIn("REDACTED", redact(old))
+
+    def test_every_refusal_message_is_unchanged_by_the_redaction(self):
+        redact = self._redact()
+        for message in self._messages():
+            with self.subTest(message=message[:60]):
+                self.assertEqual(redact(message), message)
+                self.assertNotIn("REDACTED", message)
+
+
 class TestInitEnvScript(unittest.TestCase):
     """README quick start: a fresh user ends up with generated credentials."""
 
@@ -448,6 +538,121 @@ class TestInitEnvScript(unittest.TestCase):
                 values.append(dict(line.split("=", 1) for line in (root / ".env").read_text(encoding="utf-8").splitlines() if line and not line.startswith("#") and "=" in line))
         self.assertNotEqual(values[0]["DATENSCHLEUSE_MASTER_KEY"], values[1]["DATENSCHLEUSE_MASTER_KEY"])
 
+    # --- failure handling (QA audit 2 F2, security audit S-1) -----------------
+
+    def _shim(self, tmp, body):
+        """A directory with an ``openssl`` that runs ``body`` (sh), put first
+        on the PATH; ``REAL_OPENSSL`` points at the real one."""
+        import shutil
+
+        real = shutil.which("openssl")
+        if real is None:
+            self.skipTest("openssl not installed")
+        bindir = pathlib.Path(tmp) / "shim-bin"
+        bindir.mkdir()
+        shim = bindir / "openssl"
+        shim.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        shim.chmod(0o755)
+        return {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "REAL_OPENSSL": real}
+
+    def _run_with(self, root, extra_env):
+        import subprocess
+
+        env = dict(os.environ)
+        env.update(extra_env)
+        return subprocess.run(["bash", str(root / "tools" / "init-env.sh")], capture_output=True, text=True, cwd=root, timeout=60, env=env)
+
+    def _assert_nothing_left(self, root):
+        self.assertFalse((root / ".env").exists() or (root / ".env").is_symlink())
+        self.assertEqual([p.name for p in root.glob(".env.*") if p.name != ".env.example"], [])
+
+    def test_failing_openssl_exits_non_zero_and_leaves_no_env(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._prepare(tmp)
+            result = self._run_with(root, self._shim(tmp, "exit 1\n"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Erzeugt", result.stdout)
+            self._assert_nothing_left(root)
+
+    def test_failing_openssl_in_a_later_call_leaves_no_env(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._prepare(tmp)
+            counter = pathlib.Path(tmp) / "count"
+            body = (
+                f'n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"\n'
+                'if [ "$n" -ge 3 ]; then exit 1; fi\nexec "$REAL_OPENSSL" "$@"\n'
+            )
+            result = self._run_with(root, self._shim(tmp, body))
+            self.assertNotEqual(result.returncode, 0)
+            self._assert_nothing_left(root)
+
+    def test_malformed_generated_values_are_refused_before_writing(self):
+        import tempfile
+
+        for output in ("", "abc", "g" * 64, "a" * 63, "a" * 65, "not base64 at all!"):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as tmp:
+                root = self._prepare(tmp)
+                result = self._run_with(root, self._shim(tmp, f"printf '%s\\n' '{output}'\n"))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Erzeugt", result.stdout)
+                self._assert_nothing_left(root)
+
+    def test_a_good_openssl_shim_still_works(self):
+        # The shim machinery itself must not be what makes the tests red.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._prepare(tmp)
+            result = self._run_with(root, self._shim(tmp, 'exec "$REAL_OPENSSL" "$@"\n'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((root / ".env").is_file())
+
+    # --- never replace an existing target (security audit S-2, QA note) -------
+
+    def test_an_env_created_while_the_script_runs_is_not_replaced(self):
+        # The race: .env appears between the first check and the final step.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._prepare(tmp)
+            body = f'printf "KEEP=me\\n" > "{root}/.env"\nexec "$REAL_OPENSSL" "$@"\n'
+            result = self._run_with(root, self._shim(tmp, body))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((root / ".env").read_text(encoding="utf-8"), "KEEP=me\n")
+            self.assertEqual([p.name for p in root.glob(".env.*") if p.name != ".env.example"], [])
+
+    def test_a_dangling_symlink_is_refused_not_replaced(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._prepare(tmp)
+            (root / ".env").symlink_to(root / "nowhere" / "target.env")
+            result = subprocess_run(["bash", str(root / "tools" / "init-env.sh")], root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue((root / ".env").is_symlink())
+            self.assertEqual(os.readlink(root / ".env"), str(root / "nowhere" / "target.env"))
+            self.assertFalse((root / "nowhere").exists())
+            self.assertIn("Symlink", result.stderr)
+            self.assertEqual([p.name for p in root.glob(".env.*") if p.name != ".env.example"], [])
+
+    def test_a_symlink_to_an_existing_file_is_refused_and_the_file_untouched(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._prepare(tmp)
+            real = root / "real.env"
+            real.write_text("KEEP=me\n", encoding="utf-8")
+            (root / ".env").symlink_to(real)
+            result = subprocess_run(["bash", str(root / "tools" / "init-env.sh")], root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(real.read_text(encoding="utf-8"), "KEEP=me\n")
+            self.assertTrue((root / ".env").is_symlink())
+            self.assertIn("Symlink", result.stderr)
+
     def test_shellcheck_clean_if_available(self):
         import shutil
 
@@ -515,6 +720,102 @@ class TestDocsStayInStep(unittest.TestCase):
         self.assertIn("Beispiel", variables["DATENSCHLEUSE_DB_PASSWORD"]["description"])
         self.assertTrue(variables["UI_PASSWORD"]["required"])
         self.assertEqual(variables["UI_PASSWORD"]["generate"], "random_hex_32")
+
+
+class TestDatabasePasswordChangeIsDocumentedPerInstallPath(unittest.TestCase):
+    """QA audit 2, F1: the update steps for the database password must be
+    right for every install path the document defines, not only for the
+    compose file in the repository root."""
+
+    HEADING = "#### Datenbank-Passwort in einer bestehenden Installation ändern"
+
+    def setUp(self):
+        self.text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+        self.assertIn(self.HEADING, self.text, "section for changing the database password is missing")
+        self.section = self.text.split(self.HEADING, 1)[1].split("\n### ", 1)[0]
+
+    def _blocks(self):
+        """Label -> text, one block per ``**Weg X ...**`` paragraph."""
+        import re
+
+        parts = re.split(r"(?m)^(?=\*\*Weg [A-Z])", self.section)
+        return {part.split("\n", 1)[0]: part for part in parts if part.startswith("**Weg ")}
+
+    def test_every_install_path_of_the_document_has_its_own_block(self):
+        import re
+
+        defined = sorted(set(re.findall(r"(?m)^## Weg ([A-Z]) ", self.text)))
+        self.assertGreaterEqual(len(defined), 3, defined)
+        labels = list(self._blocks())
+        for letter in defined:
+            with self.subTest(path=f"Weg {letter}"):
+                self.assertTrue(any(label.startswith(f"**Weg {letter}") for label in labels), labels)
+
+    def test_weg_b_has_both_compose_files_and_the_coolify_file_uses_dash_f(self):
+        labels = list(self._blocks())
+        repo = [b for label, b in self._blocks().items() if "docker-compose.yml" in label]
+        coolify = [b for label, b in self._blocks().items() if "deploy/coolify/docker-compose.yaml" in label]
+        self.assertEqual(len(repo), 1, labels)
+        self.assertEqual(len(coolify), 1, labels)
+        for block in coolify:
+            for command in ("exec", "down", "up"):
+                self.assertRegex(block, rf"docker compose -f deploy/coolify/docker-compose\.yaml {command}\b")
+
+    def test_no_compose_command_in_a_block_addresses_the_wrong_file(self):
+        import re
+
+        for label, block in self._blocks().items():
+            commands = [ln for ln in block.splitlines() if re.match(r"\s*(\S+=\S+ )?docker compose ", ln.strip()) and not ln.strip().startswith("#")]
+            with self.subTest(label=label):
+                if "deploy/coolify/docker-compose.yaml" in label:
+                    self.assertTrue(commands)
+                    for ln in commands:
+                        self.assertIn("-f deploy/coolify/docker-compose.yaml", ln)
+                elif "docker-compose.yml" in label:
+                    self.assertTrue(commands)
+                    for ln in commands:
+                        self.assertNotIn(" -f ", ln)
+                elif label.startswith("**Weg A"):
+                    self.assertEqual(commands, [], "Coolify UI: no compose command against the repo files")
+                elif label.startswith("**Weg C"):
+                    for ln in commands:
+                        self.assertIn(" -f ", ln)
+
+    def test_containers_are_removed_before_the_volume_and_the_name_is_looked_up(self):
+        import re
+
+        for label, block in self._blocks().items():
+            lines = [ln.strip() for ln in block.splitlines()]
+            removal = [i for i, ln in enumerate(lines) if ln.startswith("docker volume rm")]
+            with self.subTest(label=label):
+                for i in removal:
+                    earlier = "\n".join(lines[:i])
+                    self.assertRegex(earlier, r"docker compose( -f \S+)? down|docker rm -f|docker compose( -f \S+)? rm", label)
+                    self.assertIn("docker volume ls", earlier)
+        self.assertNotIn("datenschleuse_datenschleuse-db-data", self.section)
+        self.assertNotRegex(self.section, r"docker volume rm +datenschleuse")
+
+    def test_the_coolify_ui_says_that_the_variable_alone_changes_nothing(self):
+        block = next(b for label, b in self._blocks().items() if label.startswith("**Weg A"))
+        self.assertRegex(block, r"(?s)Variable.{0,200}(allein|nicht).{0,200}Datenbank")
+
+    def test_unverified_steps_are_marked_in_the_document(self):
+        self.assertRegex(self.section, r"(?i)nicht (mit Docker )?(ausgeführt|verifiziert|geprüft)")
+
+    def test_the_opt_out_is_said_to_disable_the_admin_password_check_too(self):
+        # Security audit S-4.
+        section = self.text.split("**Der Schalter**", 1)[1].split("**Wenn du ein Beispiel-Passwort", 1)[0]
+        self.assertRegex(section, r"(?s)Opt-out|abgeschaltet")
+        self.assertRegex(section, r"(?s)auch.{0,80}(Admin-UI-Passwort|UI_PASSWORD)")
+        self.assertRegex(section, r"(?s)(Beispiel|bekannt).{0,60}(angenommen|nicht mehr abgelehnt|startet)")
+
+
+class TestContributingUsesTheHelperScript(unittest.TestCase):
+    def test_quick_start_generates_the_credentials(self):
+        text = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        local = text.split("## Lokal entwickeln", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("tools/init-env.sh", local)
+        self.assertNotRegex(local, r"(?m)^cp \.env\.example \.env")
 
 
 if __name__ == "__main__":

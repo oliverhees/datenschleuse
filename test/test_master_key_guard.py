@@ -249,15 +249,26 @@ def _compose_files():
     return sorted(set(found))
 
 
+PROXY_IMAGE = "ghcr.io/oliverhees/datenschleuse"
+
+
 def _is_proxy_service(svc):
     """A service starts the Datenschleuse proxy when it is built from
     litellm/Dockerfile, runs LiteLLM with ``--config``, or mounts the
     guardrail module or the litellm/ directory (which holds config.yaml).
     The image name plays no part: a digest-only reference or another
-    registry must not hide a proxy (audit round 4, info 2)."""
+    registry must not hide a proxy (audit round 4, info 2). The published
+    proxy image (``ghcr.io/oliverhees/datenschleuse``, tag and/or digest, but
+    not ``-analyzer``) counts too: its CMD carries the config (S-6)."""
     build = svc.get("build")
     dockerfile = build.get("dockerfile", "") if isinstance(build, dict) else ""
     if dockerfile.endswith("litellm/Dockerfile"):
+        return True
+    image = str(svc.get("image") or "")
+    repository = image.split("@", 1)[0]
+    if ":" in repository.rsplit("/", 1)[-1]:  # strip the tag, not a registry port
+        repository = repository.rsplit(":", 1)[0]
+    if repository == PROXY_IMAGE:
         return True
     command = svc.get("command") or []
     if isinstance(command, str):
@@ -358,6 +369,37 @@ class TestProxyDetectionIsNotTiedToImageNames(unittest.TestCase):
     def test_unknown_image_with_the_litellm_directory_mounted_is_a_proxy(self):
         found = self._services({"gw": {"image": "example/gw:1", "volumes": ["../../litellm:/mnt/litellm-src:ro"]}})
         self.assertEqual(found, ["gw"])
+
+    def test_published_proxy_image_name_is_a_proxy_even_without_command_or_mounts(self):
+        # Security audit S-6: image CMD, no command, no mounts.
+        for image in (
+            "ghcr.io/oliverhees/datenschleuse:1.0.0",
+            "ghcr.io/oliverhees/datenschleuse@sha256:" + "2" * 64,
+            "ghcr.io/oliverhees/datenschleuse:1.0.0@sha256:" + "2" * 64,
+            "ghcr.io/oliverhees/datenschleuse",
+        ):
+            with self.subTest(image=image):
+                self.assertEqual(self._services({"gw": {"image": image}}), ["gw"])
+
+    def test_counter_example_other_published_images_are_not_proxies(self):
+        found = self._services(
+            {
+                "analyzer": {"image": "ghcr.io/oliverhees/datenschleuse-analyzer:1.0.0"},
+                "analyzer-md": {"image": "ghcr.io/oliverhees/datenschleuse-analyzer:1.0.0-md"},
+                "other": {"image": "ghcr.io/oliverhees/datenschleuse-tools@sha256:" + "3" * 64},
+                "foreign": {"image": "example.org/oliverhees/datenschleuse:1"},
+            }
+        )
+        self.assertEqual(found, [])
+
+    def test_a_published_proxy_image_without_the_switch_fails_the_wiring_check(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_compose(tmp, {"gw": {"image": "ghcr.io/oliverhees/datenschleuse:1.0.0", "environment": ["DATENSCHLEUSE_MASTER_KEY=x"]}})
+            ((name, svc),) = _proxy_services(path)
+        self.assertEqual(name, "gw")
+        self.assertTrue(_switch_problems(svc))
 
     def test_string_command_form_is_recognised(self):
         found = self._services({"gw": {"image": "example/gw:1", "command": "--config /app/config.yaml --port 4000"}})

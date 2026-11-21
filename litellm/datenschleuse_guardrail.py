@@ -57,7 +57,7 @@ import os
 import re
 import sys
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 # httpx ist im offiziellen LiteLLM-Image bereits vorhanden (LiteLLM-Dependency)
 # und wird fuer die Presidio-REST-Calls genutzt.
@@ -919,6 +919,23 @@ def _admin_ui_enabled() -> bool:
     return value is None or value.strip().lower() != "true"
 
 
+def _database_password_candidates(database_url: str) -> list:
+    """Passwords a database URL can carry: the userinfo part and, in case the
+    driver reads it (not verified for Prisma), a ``password`` query parameter
+    of any case. Unparsable URLs yield nothing (left to the driver)."""
+    try:
+        parts = urlsplit(database_url)
+        found = [parts.password]
+        found += [v for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.strip().lower() == "password"]
+    except ValueError:
+        return []
+    return [unquote(value) for value in found if value]
+
+
+def _database_password_is_known(database_url: str) -> bool:
+    return any(value.strip().lower() in KNOWN_PLACEHOLDER_PASSWORDS for value in _database_password_candidates(database_url))
+
+
 def _require_login_credentials() -> None:
     """Fail closed on a missing, empty, short or publicly known admin
     password, and on a publicly known database password (finding M4).
@@ -949,7 +966,7 @@ def _require_login_credentials() -> None:
     elif password.strip().lower() in KNOWN_PLACEHOLDER_PASSWORDS:
         raise ValueError(
             f"{UI_PASSWORD_ENV} is a publicly known placeholder: refusing to start "
-            "(it is no authentication). Generate your own password: openssl rand -hex 32. "
+            "(it is no authentication). Generate your own with: openssl rand -hex 32. "
             "docs/DEPLOY.md."
         )
     elif not password.strip():
@@ -957,16 +974,12 @@ def _require_login_credentials() -> None:
             f"{UI_PASSWORD_ENV} is empty: refusing to start (an empty admin password "
             "is an open login). Set one, e.g. openssl rand -hex 32. docs/DEPLOY.md."
         )
-    elif len(password) < MIN_UI_PASSWORD_LENGTH:
+    elif len(password.strip()) < MIN_UI_PASSWORD_LENGTH:
         raise ValueError(
             f"{UI_PASSWORD_ENV} is shorter than {MIN_UI_PASSWORD_LENGTH} characters: "
             "refusing to start. Generate one, e.g. openssl rand -hex 32. docs/DEPLOY.md."
         )
-    try:
-        db_password = urlsplit(database_url).password
-    except ValueError:
-        db_password = None  # unparsable: leave it to the database driver
-    if db_password and unquote(db_password).strip().lower() in KNOWN_PLACEHOLDER_PASSWORDS:
+    if _database_password_is_known(database_url):
         raise ValueError(
             "DATENSCHLEUSE_DB_PASSWORD (the password in DATABASE_URL) is a publicly "
             "known placeholder: refusing to start. Set your own, e.g. "

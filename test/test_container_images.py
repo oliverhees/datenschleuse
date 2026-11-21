@@ -343,4 +343,12 @@ class DocsMatchTheImages(unittest.TestCase):
         deploy = _read(ROOT / "docs" / "DEPLOY.md")
         for needle in ("DATENSCHLEUSE_UID", "datenschleuse-qi-state", "DATENSCHLEUSE_BIND", "--profile anonymizer"):
             self.assertIn(needle, deploy)
-        self.assertNotIn("compose down", deploy.split("## Sichere Standards", 1)[1].split("### Fehlersuche", 1)[0])
+        section = deploy.split("## Sichere Standards", 1)[1].split("### Fehlersuche", 1)[0]
+        # Allowed only in the database-password subsection: resetting the
+        # database needs the whole stack gone (DATENSCHLE-106). Anywhere else
+        # `down` would take the whole stack for a one-service job.
+        heading = "#### Datenbank-Passwort in einer bestehenden Installation ändern"
+        head, _, rest = section.partition(heading)
+        section = head + (rest.split("\n### ", 1)[1] if "\n### " in rest else "")
+        self.assertNotIn("compose down", section)
+        self.assertNotRegex(section, r"compose -f \S+ down")

@@ -66,6 +66,13 @@ class TestComposeImageProfile(unittest.TestCase):
         self.assertIn(f"docker rm -f {name}", _read("docs/DEPLOY.md"))
 
 
+def _without_db_password_section(deploy):
+    """DEPLOY.md without the database-password subsection (see its heading)."""
+    heading = "#### Datenbank-Passwort in einer bestehenden Installation ändern"
+    head, _, rest = deploy.partition(heading)
+    return head + (rest.split("\n### ", 1)[1] if "\n### " in rest else "")
+
+
 class TestImageDocs(unittest.TestCase):
     def test_readme_describes_profile_and_policy(self):
         readme = _read("README.md")
@@ -89,7 +96,11 @@ class TestImageDocs(unittest.TestCase):
 
     def test_deploy_doc_never_recommends_compose_down_for_cleanup(self):
         deploy = _read("docs/DEPLOY.md")
-        pat = re.compile(r"docker compose\s+(?:--profile\s+\S+\s+)?down\b")
+        # The one deliberate use: resetting the database needs the WHOLE stack
+        # gone (the proxy depends on the database), see the section "Datenbank-
+        # Passwort in einer bestehenden Installation ändern" (DATENSCHLE-106).
+        deploy = _without_db_password_section(deploy)
+        pat = re.compile(r"docker compose\s+(?:--profile\s+\S+\s+)?(?:-f\s+\S+\s+)?down\b")
         for line in deploy.splitlines():
             if pat.search(line):
                 # Only allowed as an explicit warning, never as a recommendation.
