@@ -409,6 +409,10 @@ class TestMessagesSurviveLiteLlmLogRedaction(_Env):
         try:
             from litellm.litellm_core_utils.secret_redaction import redact_string
         except Exception as exc:  # litellm not installed
+            if os.environ.get("DS_REQUIRE_LITELLM"):
+                # CI installs the pinned version and sets this: a missing
+                # import must not turn these tests into silent skips again.
+                self.fail(f"DS_REQUIRE_LITELLM is set but litellm is not importable: {exc}")
             self.skipTest(f"litellm not importable: {exc}")
         return redact_string
 
