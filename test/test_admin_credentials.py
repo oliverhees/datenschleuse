@@ -605,6 +605,43 @@ class TestInitEnvScript(unittest.TestCase):
                 self.assertNotIn("Erzeugt", result.stdout)
                 self._assert_nothing_left(root)
 
+    def test_a_malformed_hex_value_is_refused_whichever_call_it_comes_from(self):
+        # QA audit 3, L-2: the test above feeds ONE output to every call, so
+        # the three hex form checks (master key, UI password, database
+        # password) could be removed without a red test (the base64 check
+        # alone caught everything). Here only `-hex` output is bad, `-base64`
+        # is the real one, and each of the three hex calls is the bad one in
+        # turn.
+        import tempfile
+
+        for bad_call in (1, 2, 3):
+            for output in ("", "abc", "g" * 64, "a" * 63, "a" * 65):
+                with self.subTest(bad_call=bad_call, output=output), tempfile.TemporaryDirectory() as tmp:
+                    root = self._prepare(tmp)
+                    counter = pathlib.Path(tmp) / "count"
+                    body = (
+                        f'n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"\n'
+                        f'case "$*" in *-hex*) if [ "$n" -eq {bad_call} ]; then printf "%s\\n" "{output}"; exit 0; fi;; esac\n'
+                        'exec "$REAL_OPENSSL" "$@"\n'
+                    )
+                    result = self._run_with(root, self._shim(tmp, body))
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("unerwartete Form", result.stderr)
+                    self.assertNotIn("Erzeugt", result.stdout)
+                    self._assert_nothing_left(root)
+
+    def test_a_malformed_base64_value_is_refused_while_the_hex_values_are_good(self):
+        import tempfile
+
+        for output in ("", "abc", "x" * 43, "not base64 at all!", "a" * 44):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as tmp:
+                root = self._prepare(tmp)
+                body = f'case "$*" in *-base64*) printf "%s\\n" "{output}"; exit 0;; esac\nexec "$REAL_OPENSSL" "$@"\n'
+                result = self._run_with(root, self._shim(tmp, body))
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("State-Key", result.stderr)
+                self._assert_nothing_left(root)
+
     def test_a_good_openssl_shim_still_works(self):
         # The shim machinery itself must not be what makes the tests red.
         import tempfile
