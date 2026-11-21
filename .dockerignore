@@ -1,0 +1,20 @@
+# Build context of both images is the repository root (litellm/Dockerfile,
+# presidio/Dockerfile.analyzer). Everything below never belongs in a context
+# that is sent to a builder -- above all secrets and the operator's own rules.
+.env
+.env.*
+!.env.example
+rules/custom-rules.yml
+rules/.custom-rules-*.tmp
+.git
+.github
+.claude
+.gates
+test
+docs
+tools
+**/__pycache__
+**/*.pyc
+*.log
+docker-compose.override.yml
+local-cockpit-test

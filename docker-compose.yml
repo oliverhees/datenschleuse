@@ -4,13 +4,28 @@ services:
     # Eigenes Image (statt Stock ghcr.io/berriai/litellm), weil die
     # Custom-Guardrail-Klasse (litellm/datenschleuse_guardrail.py) importierbar
     # sein muss und ggf. Extra-Deps braucht -- siehe litellm/Dockerfile.
+    # Build-Kontext ist das Repo-Root: das Image enthaelt neben dem Code auch
+    # die YAML-Konfiguration aus presidio/ und laeuft damit ohne Mounts (so
+    # wird es auch veroeffentlicht, siehe .github/workflows/release.yml).
     build:
-      context: ./litellm
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: litellm/Dockerfile
     container_name: datenschleuse
     restart: unless-stopped
+    # Das Image laeuft als Nicht-Root. Die UID muss der Eigentuemer von
+    # rules/custom-rules.yml sein: die CLI schreibt die Datei mit 0600, ein
+    # anderer Nutzer koennte sie nicht lesen -- die eigenen Regeln waeren dann
+    # aus (laut gemeldet, aber aus). 1000 ist der erste Nutzer der meisten
+    # Linux-Systeme; sonst DATENSCHLEUSE_UID/GID in der .env auf `id -u`/`id -g`.
+    user: "${DATENSCHLEUSE_UID:-1000}:${DATENSCHLEUSE_GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     ports:
-      - "4000:4000"
+      # Nur auf dem eigenen Rechner erreichbar. Wer die Datenschleuse bewusst
+      # im LAN anbietet: DATENSCHLEUSE_BIND=0.0.0.0 (dann gehoert TLS davor,
+      # siehe docs/DEPLOY.md).
+      - "${DATENSCHLEUSE_BIND:-127.0.0.1}:4000:4000"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
       # Custom-Guardrail zusaetzlich read-only mounten: erlaubt Dev-Iteration
@@ -73,7 +88,13 @@ services:
       - DATENSCHLEUSE_MASTER_KEY=${DATENSCHLEUSE_MASTER_KEY:?DATENSCHLEUSE_MASTER_KEY muss in .env gesetzt sein -- kein Default, damit der Proxy nie ohne Auth startet}
       - EUROUTER_API_KEY=${EUROUTER_API_KEY}
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
-      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
+      # Block-Antwort (feste Kennung, docs/foundation/security-baseline.md):
+      # compat = HTTP 500 wie bisher, strict = HTTP 422.
+      - DATENSCHLEUSE_BLOCK_RESPONSE=${DATENSCHLEUSE_BLOCK_RESPONSE:-compat}
+      # Keine Abrufe beim Start (Kostentabelle lokal), keine API-Doku-Seiten.
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
+      - NO_DOCS=True
+      - NO_REDOC=True
       # Bild-Parts: Standard ist seit DATENSCHLE-83 'block' -- der
       # Image-Redactor ist nicht mehr Teil des Standard-Stacks (ADR-0003:
       # er trug den Grossteil der CVE-Befunde). Wer Bilder verarbeiten
@@ -104,12 +125,21 @@ services:
       # aktuellen LiteLLM-Version unauthentifiziert erreichbar, siehe README.
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:?UI_PASSWORD muss in .env gesetzt sein -- kein Default, damit das Admin-UI nie mit einem bekannten Passwort startet}
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+      # Das Image schaltet das Admin-UI ab; dieser Stack hat die Datenbank
+      # dafuer und die README dokumentiert /ui -- deshalb hier an. Wer es
+      # nicht braucht: DATENSCHLEUSE_DISABLE_ADMIN_UI=True.
+      - DISABLE_ADMIN_UI=${DATENSCHLEUSE_DISABLE_ADMIN_UI:-False}
+    # Kein --detailed_debug mehr als Standard: ausfuehrliche Logs sind ein
+    # bewusster, voruebergehender Schritt (docs/DEPLOY.md, "Fehlersuche").
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
+      # service_healthy statt service_started: das Analyzer-Image hat einen
+      # Healthcheck, der erst gruen wird, wenn das Sprachmodell geladen ist.
+      # Vorher lief jede Anfrage in den fail-closed-Block.
       presidio-analyzer:
-        condition: service_started
-      presidio-anonymizer:
-        condition: service_started
+        condition: service_healthy
+      # Kein depends_on auf presidio-anonymizer: der Guardrail nutzt ihn nicht
+      # (er maskiert selbst), der Dienst liegt hinter dem Profil `anonymizer`.
       # KEIN depends_on auf presidio-image-redactor (DATENSCHLE-83): der Dienst
       # liegt hinter dem Profil `images` und existiert im Standardstart gar
       # nicht. Ein depends_on auf einen Dienst ausserhalb des aktiven Profils
@@ -150,15 +180,27 @@ services:
   # 2. Presidio Analyzer = erkennt PII (mit deutschem Sprachmodell + eigenen DE-Recognizern)
   presidio-analyzer:
     build:
-      context: ./presidio
-      dockerfile: Dockerfile.analyzer
+      context: .
+      dockerfile: presidio/Dockerfile.analyzer
+      args:
+        # de_core_news_lg (Standard, damit sind alle Erkennungszahlen gemessen)
+        # oder de_core_news_md (weniger Speicher, Erkennung nicht gemessen).
+        SPACY_MODEL: ${DATENSCHLEUSE_SPACY_MODEL:-de_core_news_lg}
     container_name: datenschleuse-analyzer
     restart: unless-stopped
+    # Nur /tmp beschreibbar; das Image braucht nichts anderes.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     ports:
-      # Host-Zugriff nur fuer lokale Entwicklung/Benchmark (test/corpus-benchmark.py).
-      # Kein Teil des Produktiv-Traffics -- der laeuft ausschliesslich ueber den
-      # internen datenschleuse-net (LiteLLM -> presidio-analyzer:3000).
-      - "5001:3000"
+      # Host-Zugriff nur fuer lokale Entwicklung/Benchmark (test/corpus-benchmark.py),
+      # und nur vom eigenen Rechner aus. Kein Teil des Produktiv-Traffics -- der
+      # laeuft ausschliesslich ueber den internen datenschleuse-net
+      # (LiteLLM -> presidio-analyzer:3000).
+      - "127.0.0.1:5001:3000"
     environment:
       # Live-Build-Befund (verifiziert 2026-07-22): ANALYZER_CONF_FILE zeigte
       # urspruenglich auf eine nie angelegte Datei (Rest aus dem allerersten,
@@ -171,14 +213,23 @@ services:
       - NLP_CONF_FILE=/conf/nlp-config.yml
       - RECOGNIZER_REGISTRY_CONF_FILE=/conf/recognizers-config.yml
     volumes:
+      # Beide Dateien liegen auch im Image; die Mounts erlauben Aenderungen
+      # ohne Rebuild. nlp-config.yml wird bewusst NICHT mehr gemountet: das
+      # Image erzeugt sie passend zum gebauten Modell (SPACY_MODEL). Eine
+      # gemountete Datei mit einem anderen Modell liesse Presidio dieses Modell
+      # beim Start aus dem Netz laden.
       - ./presidio/analyzer-config.yml:/conf/analyzer-config.yml:ro
-      - ./presidio/nlp-config.yml:/conf/nlp-config.yml:ro
       - ./presidio/recognizers-config.yml:/conf/recognizers-config.yml:ro
     networks:
       - datenschleuse-net
 
-  # 3. Presidio Anonymizer = ersetzt erkannte PII durch Platzhalter
+  # 3. Presidio Anonymizer -- OPTIONAL, Profil `anonymizer`.
+  # Der Guardrail maskiert selbst (eigener Masker, eigenes reid_map) und ruft
+  # diesen Dienst nie auf; frueher startete er trotzdem mit und brachte sein
+  # eigenes CVE-Profil mit (ADR-0003). Wer ihn fuer eigene Werkzeuge braucht:
+  #   docker compose --profile anonymizer up -d
   presidio-anonymizer:
+    profiles: ["anonymizer"]
     # Versions-Tag PLUS Digest (DATENSCHLE-59), siehe datenschleuse-db.
     # `latest` und `2.2.362` zeigten am 2026-08-19 auf denselben Digest.
     image: mcr.microsoft.com/presidio-anonymizer:2.2.362@sha256:a10a12a2a613d13cf29d3ad3641e3258444dd8c90403dd644a0a114c472c2483

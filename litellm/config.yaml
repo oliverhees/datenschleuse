@@ -100,8 +100,13 @@ guardrails:
       #                             Recognizer-Scores der Presidio-Config.
 
 litellm_settings:
-  # fail-closed: bei Guardrail-Fehler die Anfrage NICHT durchlassen
-  set_verbose: true
+  # Kein ausfuehrliches Debug-Log als Standard (frueher `set_verbose: true`,
+  # zusammen mit --detailed_debug im Compose-Kommando). Ausfuehrliche Logs
+  # sind ein bewusster, voruebergehender Schritt zur Fehlersuche
+  # (docs/DEPLOY.md, "Fehlersuche"). Der fruehere Kommentar an dieser Stelle
+  # ("fail-closed") war irrefuehrend: fail-closed haengt nicht an diesem
+  # Schalter, sondern am Guardrail (_analyze, DatenschleuseBlocked).
+  set_verbose: false
   # Projekt-Prinzip "kein PII in Logs": Message-Content wird NIE geloggt,
   # Spend/Tokens/Modell/Zeitpunkt bleiben getrackt -> das ist die Datenbasis
   # fuer das Audit-Dashboard, ohne dass Klartext irgendwo landet. Vor

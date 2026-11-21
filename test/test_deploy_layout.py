@@ -29,9 +29,10 @@ final proof and was NOT executed here.
 
 Boundaries per target
 ---------------------
-* ``docker-compose.yml``: image built from ``litellm/Dockerfile``.
+* ``docker-compose.yml``: image built from ``litellm/Dockerfile`` with the
+  repository root as build context (COPY sources are repo-relative).
 * ``deploy/coolify/docker-compose.yaml``: image built from the same Dockerfile
-  (``build.context`` = ``../../litellm``); modules come from the image, the
+  (``build.context`` = ``../..``); modules come from the image, the
   YAML files from the directory mounts ``/mnt/*-src``.
 * ``test/e2e/docker-compose.e2e.yml``: uses the locally built image
   ``datenschleuse-datenschleuse:latest``. That the tag was built from
@@ -60,6 +61,8 @@ TARGETS = {
     "e2e": (ROOT / "test" / "e2e" / "docker-compose.e2e.yml", "ds-e2e-litellm"),
 }
 DOCKERFILE = LITELLM / "Dockerfile"
+# Build context of litellm/Dockerfile (docker-compose.yml: ``context: .``).
+BUILD_CONTEXT = ROOT
 
 
 # ---------------------------------------------------------------- helpers
@@ -161,7 +164,7 @@ def _build_root(target, dummies):
     for dst, src in copies.items():
         target_file = root / dst.lstrip("/")
         target_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(LITELLM / src, target_file)
+        shutil.copy2(BUILD_CONTEXT / src, target_file)
 
     mounts = sorted(_volumes(path, svc), key=lambda m: m[1].count("/"))
     for host, cont in mounts:

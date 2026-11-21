@@ -1,0 +1,17 @@
+# Exact versions of the guardrail's runtime dependencies inside the published
+# proxy image (litellm/Dockerfile). Format: one `name==version` per line.
+#
+# These are NOT installed by us: the pinned base image
+# ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f3... already ships all four in
+# /app/.venv (read from its venv layer on 2026-11-21). The Dockerfile only
+# CHECKS them at build time and fails if one differs -- so the image never
+# downloads a Python package and needs no pip at all.
+#
+# Ranges for the test environment stay in requirements-guardrail.txt;
+# test/test_container_images.py checks that every pin here satisfies them.
+# Update procedure: together with the base-image digest (supply-chain.md,
+# "Digest-Update"); a mismatch makes the image build fail loudly.
+httpx==0.28.1
+PyYAML==6.0.3
+cryptography==50.0.0
+regex==2026.5.9
