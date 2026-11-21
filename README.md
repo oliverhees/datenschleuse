@@ -30,6 +30,7 @@
 - [Architektur](#-architektur)
 - [Sicherheitsmodell](#-sicherheitsmodell)
   - [Fail-Policy](#fail-policy-verfügbarkeit-vs-datenschutz)
+  - [Blockierte Anfragen erkennen](#blockierte-anfragen-erkennen)
   - [Schutzklassen-Modell](#schutzklassen-modell-drei-sensitivitätsstufen)
   - [Quasi-Identifier](#quasi-identifier-session-übergreifende-akkumulation)
   - [Zitate im Multi-Turn](#zitate-citations-was-durchgeht-und-was-nicht)
@@ -78,6 +79,8 @@ Ehrlich gesagt: Die Basis-Idee (LiteLLM + Presidio) ist nicht unsere Erfindung, 
 - **Eingebautes Admin-Dashboard** — LiteLLM Admin-UI (`/ui`) zeigt Zeitpunkt, Modell, Kosten, Guardrail-Ergebnisse — **nie Klartext-Content** (`turn_off_message_logging`, live verifiziert: die Spalten sind komplett leer).
 - **Zitate (`citations`) im Multi-Turn** — Anthropic hängt Zitat-Blöcke an Assistant-Nachrichten; schickt dein Client die Historie zurück, laufen die **Dokument-Zitate** durch: Struktur wird geprüft, der Freitext darin (zitierte Textstelle, Dokumenttitel) läuft durch denselben Masker wie jeder andere Text — ob ein Name darin erkannt wird, entscheidet die Erkennung, und die ist bei Dokumenttiteln in Dateinamen-Form **nicht zuverlässig** —, und in der Antwort stehen wieder die echten Werte — gestreamt wie ungestreamt. Zitate aus Web- und Suchergebnissen sind **nicht** dabei: [Zitate: was durchgeht und was nicht](#zitate-citations-was-durchgeht-und-was-nicht).
 - **Fail-closed by default** — Presidio nicht erreichbar → Request wird geblockt, nie unmaskiert durchgelassen.
+- **Blocks maschinenlesbar** — jede blockierte Anfrage trägt eine feste Kennung (`datenschleuse_blocked` plus Grund), damit dein Client „blockiert, nicht wiederholen" von „Anbieter gestört" unterscheiden kann: [Blockierte Anfragen erkennen](#blockierte-anfragen-erkennen).
+- **Sichere Standards** — Ports nur auf `127.0.0.1`, kein Debug-Log, keine API-Doku-Seiten, Container ohne Root, Erkennung mit schreibgeschütztem Dateisystem: [DEPLOY.md → Sichere Standards](docs/DEPLOY.md#sichere-standards-und-was-sich-beim-update-ändert).
 - **AGPL-3.0** — der Kern ist echtes Open Source, keine Marketing-Lizenz.
 
 ## 🚀 Quickstart
@@ -94,7 +97,7 @@ cp .env.example .env
 # -- mehrere model_list-Einträge möglich, jeder taucht als wählbares Modell
 # in OpenAI-kompatiblen Clients auf.
 
-# 3. Starten
+# 3. Starten (baut beide Images aus diesem Repo)
 docker compose up --build
 
 # 4. Testen (in zweitem Terminal)
@@ -106,6 +109,10 @@ Deine Tools sprechen die Datenschleuse dann so an:
 - **API-Key:** der `DATENSCHLEUSE_MASTER_KEY` aus deiner `.env`
 - **Modell:** `datenschleuse-gpt` (oder je nach `model_list`-Konfiguration)
 - **Admin-Dashboard:** `http://localhost:4000/ui` (Login: `UI_USERNAME`/`UI_PASSWORD` aus deiner `.env`)
+
+Die Ports sind nur vom eigenen Rechner aus erreichbar (`127.0.0.1`). Nutzt du eigene Begriffe (`rules/custom-rules.yml`), muss der Proxy unter deiner Nutzer-ID laufen: Standard ist `1000`, sonst `DATENSCHLEUSE_UID=$(id -u)` und `DATENSCHLEUSE_GID=$(id -g)` in die `.env`. Kommst du von einem älteren Stand: [DEPLOY.md → Sichere Standards](docs/DEPLOY.md#sichere-standards-und-was-sich-beim-update-ändert).
+
+**Fertige Images:** Ab der ersten veröffentlichten Version gibt es `ghcr.io/oliverhees/datenschleuse` (Proxy) und `ghcr.io/oliverhees/datenschleuse-analyzer` (Erkennung) für amd64 und arm64, mit Herkunftsnachweis und SBOM — per Digest pinnen. Bis zu diesem ersten Release baut `docker compose up --build` aus dem Repo. Details: [DEPLOY.md → Weg C](docs/DEPLOY.md#weg-c--fertige-images-ab-der-ersten-veröffentlichten-version).
 
 **Lieber auf einem eigenen Server deployen?** Siehe [DEPLOY.md](docs/DEPLOY.md) für den Coolify-Ein-Klick-Weg.
 
@@ -179,6 +186,19 @@ Die Datenschleuse sitzt inline im Anfrageweg. Fällt Presidio aus, hat das zwei 
 - **Fail-open (bewusst NICHT implementiert):** Bei Presidio-Ausfall würde die Anfrage unmaskiert durchgereicht. Mehr Verfügbarkeit, aber genau in dem Moment, wo der Schutz am nötigsten wäre (Störung), fällt er weg — für ein Privacy-Tool ein inakzeptabler Trade-off.
 
 Wir wählen **fail-closed**, weil ein verlorener Request ärgerlich, aber ein PII-Leck nicht rückgängig zu machen ist. Anpassbar in `litellm/datenschleuse_guardrail.py` (`_analyze()`), aber das ist eine bewusste Abweichung vom Standard, keine Konfigurationsoption.
+
+### Blockierte Anfragen erkennen
+
+Blockt die Datenschleuse eine Anfrage (fail-closed, Schutzklasse, ungeprüftes Feld …), steht im Fehlerkörper eine feste Kennung und im Header `x-datenschleuse-error: datenschleuse_blocked`:
+
+```json
+{"error": {"message": "…", "type": "None", "param": "None", "code": "500",
+  "provider_specific_fields": {"datenschleuse": {"code": "datenschleuse_blocked", "reason": "sensitivity_tier_3"}}}}
+```
+
+`reason` ist einer von `sensitivity_tier_3`, `sensitivity_tier_2_approval_required`, `analyzer_unavailable`, `custom_rules_incomplete`, `request_rejected`. Prüfe im Client auf diese Kennung, nicht auf den Meldungstext — der ändert sich mit jedem neuen Block-Grund. Ein Block ist nicht wiederholbar.
+
+Standard ist `DATENSCHLEUSE_BLOCK_RESPONSE=compat`: Status 500, `type` und Meldung bleiben genau wie vorher, nur die Kennung kommt dazu — bestehende Clients merken nichts. Mit `strict` antwortet die Datenschleuse mit **HTTP 422** und `type: "datenschleuse_blocked"`. Das Feld `error.code` kann die Kennung nicht tragen, LiteLLM schreibt dort immer den Status hinein. Vertrag und Messung: [`docs/foundation/security-baseline.md`](docs/foundation/security-baseline.md) → „Block-Antwort".
 
 ### Schutzklassen-Modell: drei Sensitivitätsstufen
 
@@ -318,6 +338,7 @@ Ein späteres Portal/Cockpit (Dashboard, Self-Learning-Filter-UI) kann separat l
 - [x] Admin-Dashboard (`/ui`) + Audit-Trail ohne Klartext-Content live bestätigt
 - [ ] Hermes-Desktop-Modell-Picker-Test (Mechanismus verifiziert, echter Klicktest in Hermes selbst noch offen)
 - [ ] Self-Learning-Filter (eigene Muster im laufenden Betrieb nachtragen) — konzipiert, noch nicht gebaut
+- [ ] Fertige Images auf GHCR — Release-Workflow und Smoke-Test liegen im Repo, das erste Release steht aus
 
 Vollständige, laufend gepflegte Kriterienliste: [`ISA.md`](ISA.md). Aktueller Projektstand: [`PROJEKT-STATUS.md`](PROJEKT-STATUS.md). Vision, Markt, Roadmap: [`KONZEPT.md`](KONZEPT.md).
 

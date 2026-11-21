@@ -292,3 +292,23 @@ class DockerIgnore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DocsMatchTheImages(unittest.TestCase):
+    """The docs may promise images only 'from the first published version'."""
+
+    def test_readme_and_deploy_name_images_and_their_status(self):
+        readme = " ".join(_read(ROOT / "README.md").split())
+        deploy = " ".join(_read(ROOT / "docs" / "DEPLOY.md").split())
+        for name in ("ghcr.io/oliverhees/datenschleuse", "ghcr.io/oliverhees/datenschleuse-analyzer"):
+            self.assertIn(name, readme)
+            self.assertIn(name, deploy)
+        self.assertIn("Ab der ersten veröffentlichten Version", readme)
+        self.assertIn("Bis dahin existieren diese Images nicht**", deploy)
+        self.assertIn("das erste Release steht aus", readme)
+
+    def test_deploy_documents_upgrade_traps(self):
+        deploy = _read(ROOT / "docs" / "DEPLOY.md")
+        for needle in ("DATENSCHLEUSE_UID", "datenschleuse-qi-state", "DATENSCHLEUSE_BIND", "--profile anonymizer"):
+            self.assertIn(needle, deploy)
+        self.assertNotIn("compose down", deploy.split("## Sichere Standards", 1)[1].split("### Fehlersuche", 1)[0])

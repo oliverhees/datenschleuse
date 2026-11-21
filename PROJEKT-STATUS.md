@@ -1,6 +1,13 @@
 # Projekt-Status: Datenschleuse
 
-**Phase:** PoC-Gerüst v0.1 (gebaut, ungetestet) + Architektur-/Strategie-Update | **Letzte Aktualisierung:** 2026-07-22
+**Phase:** PoC-Gerüst v0.1 (gebaut, ungetestet) + Architektur-/Strategie-Update | **Letzte Aktualisierung:** 2026-11-21
+
+## Update 2026-11-21: Veröffentlichbare Images, sichere Standards, Block-Kennung
+- **Images:** `litellm/Dockerfile` und `presidio/Dockerfile.analyzer` bauen aus dem Repo-Root und laufen ohne Mounts, ohne Root, mit schreibgeschütztem Dateisystem (nur `/tmp`, `/app/state`), Healthcheck und ohne Netz-Abrufe beim Start. Proxy ohne `pip` (Versionen in `litellm/runtime-pins.txt` geprüft), Sprachmodell als Bau-Argument mit sha256, gunicorn mit `--no-control-socket`.
+- **Release:** `.github/workflows/release.yml` (Tag `v*` oder per Hand) baut für amd64 und arm64 nach `ghcr.io/oliverhees/datenschleuse` und `…-analyzer` (dazu `-md`), mit Herkunftsnachweis und SBOM, Smoke-Test vor dem Taggen. **Noch nicht ausgelöst** — es gibt noch kein veröffentlichtes Image.
+- **Sichere Standards im Compose:** Ports nur `127.0.0.1`, kein Debug-Log, keine API-Doku-Seiten, Anonymizer als Profil, Proxy unter der UID des Regel-Eigentümers. Update-Hinweise: `docs/DEPLOY.md`.
+- **Block-Kennung:** `error.provider_specific_fields.datenschleuse` + Header `x-datenschleuse-error`; Status standardmäßig unverändert 500 (`DATENSCHLEUSE_BLOCK_RESPONSE=strict` für 422). Vertrag: `docs/foundation/security-baseline.md`.
+- **Offen:** echter Docker-Build und -Start (erst im ersten Release-Lauf), Start mit Postgres als Nicht-Root nicht geprüft, Plane-Item-ID für diesen Branch.
 
 ## Update 2026-07-22: Architektur-Pivot zu Hermes-Plugin, Lizenz entschieden
 - Vollständige ISA angelegt: `ISA.md` (38 ISCs, siehe dort für Details)
