@@ -759,7 +759,7 @@ class TestDatabasePasswordChangeIsDocumentedPerInstallPath(unittest.TestCase):
         self.assertEqual(len(coolify), 1, labels)
         for block in coolify:
             for command in ("exec", "down", "up"):
-                self.assertRegex(block, rf"docker compose -f deploy/coolify/docker-compose\.yaml {command}\b")
+                self.assertRegex(block, rf"docker compose --env-file \.env -f deploy/coolify/docker-compose\.yaml {command}\b")
 
     def test_no_compose_command_in_a_block_addresses_the_wrong_file(self):
         import re
@@ -770,7 +770,7 @@ class TestDatabasePasswordChangeIsDocumentedPerInstallPath(unittest.TestCase):
                 if "deploy/coolify/docker-compose.yaml" in label:
                     self.assertTrue(commands)
                     for ln in commands:
-                        self.assertIn("-f deploy/coolify/docker-compose.yaml", ln)
+                        self.assertIn("--env-file .env -f deploy/coolify/docker-compose.yaml", ln)
                 elif "docker-compose.yml" in label:
                     self.assertTrue(commands)
                     for ln in commands:
@@ -790,7 +790,7 @@ class TestDatabasePasswordChangeIsDocumentedPerInstallPath(unittest.TestCase):
             with self.subTest(label=label):
                 for i in removal:
                     earlier = "\n".join(lines[:i])
-                    self.assertRegex(earlier, r"docker compose( -f \S+)? down|docker rm -f|docker compose( -f \S+)? rm", label)
+                    self.assertRegex(earlier, r"docker compose( --env-file \S+)?( -f \S+)? down|docker rm -f|docker compose( --env-file \S+)?( -f \S+)? rm", label)
                     self.assertIn("docker volume ls", earlier)
         self.assertNotIn("datenschleuse_datenschleuse-db-data", self.section)
         self.assertNotRegex(self.section, r"docker volume rm +datenschleuse")
